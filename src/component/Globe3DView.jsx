@@ -9,7 +9,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import Papa from "papaparse";
 import { latLngToUTM, latLngToMGRS, parseUTM, parseMGRS, utmToLatLng, formatUTM } from "./map/utm-mgrs";
 import HeatmapLayer from "./HeatmapLayer";
-import SatelliteTimeSlider from "./SatelliteTimeSlider";
+import SatelliteTimeSlider from "./Satellitetimeslider";
 import DroneFlightPath from "./DroneFlightPath";
 import { buildLatLngGrid, removeLatLngGrid } from "./Gridlayer";
 
