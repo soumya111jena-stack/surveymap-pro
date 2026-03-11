@@ -10,6 +10,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@capacitor/android": "^8.2.0",
+    "@capacitor/core": "^8.2.0",
+    "@capacitor/geolocation": "^8.1.0",
     "@mapbox/leaflet-omnivore": "^0.3.4",
     "@nasaworldwind/worldwind": "^0.11.1",
     "axios": "^1.13.5",
