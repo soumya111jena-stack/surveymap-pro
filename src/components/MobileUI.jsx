@@ -6,7 +6,7 @@ import { bearingLabel, toDMS, zoomToAltitude } from "../utils/mapUtils.js";
 export function MobileSearchBar({ searchQuery, setSearchQuery, onSearch, searchLoading }) {
   const [focused, setFocused] = useState(false);
   return (
-    <div style={{ position:"fixed", top:0, left:0, right:0, zIndex:1330, height:58,
+    <div style={{ position:"relative", top:0, left:0, right:0, zIndex:1330, height:58,
       background:"rgba(5,9,19,0.97)", backdropFilter:"blur(32px) saturate(180%)",
       WebkitBackdropFilter:"blur(32px) saturate(180%)",
       borderBottom:"1px solid rgba(255,255,255,0.055)",
@@ -69,7 +69,18 @@ export function MobileSearchBar({ searchQuery, setSearchQuery, onSearch, searchL
 }
 
 /* ── Mobile Bottom Navigation Bar ───────────────────────────────────────────── */
-export function MobileBottomNav({ onOpen, onCompassToggle, compassNavActive, drawMode, measureMode, surveyMode, isTracking, activeSheet }) {
+export function MobileBottomNav({
+  onOpen, onCompassToggle, compassNavActive,
+  drawMode, measureMode, surveyMode, isTracking,
+  activeSheet,
+  /* new */ kmlName, importedGeoJSONLayers, extraFile,
+}) {
+  // Count total imported files for badge
+  const fileCount =
+    (kmlName ? 1 : 0) +
+    (extraFile ? 1 : 0) +
+    (importedGeoJSONLayers?.length ?? 0);
+
   const tabs = [
     { key:"layers",      label:"Layers",  active: activeSheet === "layers",                color:"#3b82f6",
       icon:<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg> },
@@ -77,6 +88,9 @@ export function MobileBottomNav({ onOpen, onCompassToggle, compassNavActive, dra
       icon:<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg> },
     { key:"measure",     label:"Measure", active: measureMode || activeSheet === "measure",color:"#10b981",
       icon:<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="M21 6H3a1 1 0 00-1 1v3a1 1 0 001 1h18a1 1 0 001-1V7a1 1 0 00-1-1zM7 10v4M12 10v6M17 10v4"/></svg> },
+    { key:"files",       label:"Files",   active: activeSheet === "files",                color:"#60a5fa",
+      badge: fileCount > 0 ? fileCount : null,
+      icon:<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg> },
     { key:"__compass__", label:"Compass", active: compassNavActive,                        color:"#0ea5e9",
       icon:<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg> },
     { key:"more",        label:"More",    active: activeSheet === "more",                  color:"#8b5cf6",
@@ -84,13 +98,13 @@ export function MobileBottomNav({ onOpen, onCompassToggle, compassNavActive, dra
   ];
 
   return (
-    <div style={{ position:"fixed", bottom:0, left:0, right:0, zIndex:1200, height:76,
+    <div style={{ position:"relative", bottom:0, left:0, right:0, zIndex:1200, height:68,
       background:"rgba(4,8,18,0.98)", backdropFilter:"blur(40px) saturate(200%)",
       WebkitBackdropFilter:"blur(40px) saturate(200%)",
       borderTop:"1px solid rgba(255,255,255,0.055)",
       display:"flex", alignItems:"stretch",
       paddingBottom:"env(safe-area-inset-bottom, 0px)" }}>
-      {tabs.map(({ key, label, active, color, icon }) => {
+      {tabs.map(({ key, label, active, color, icon, badge }) => {
         const isCompass = key === "__compass__";
         return (
           <button key={key}
@@ -113,6 +127,21 @@ export function MobileBottomNav({ onOpen, onCompassToggle, compassNavActive, dra
               {isCompass && active && <div style={{ position:"absolute", top:4, right:4,
                 width:7, height:7, borderRadius:"50%", background:"#0ea5e9",
                 boxShadow:"0 0 10px #0ea5e9", animation:"blink 0.8s infinite" }}/>}
+              {/* File count badge */}
+              {badge != null && (
+                <div style={{
+                  position:"absolute", top:2, right:2,
+                  minWidth:16, height:16, borderRadius:8,
+                  background: active ? color : "rgba(96,165,250,0.85)",
+                  color:"#fff", fontSize:9, fontWeight:800,
+                  display:"flex", alignItems:"center", justifyContent:"center",
+                  padding:"0 4px", fontFamily:"'DM Mono',monospace",
+                  boxShadow:`0 0 8px ${color}60`,
+                  lineHeight:1,
+                }}>
+                  {badge}
+                </div>
+              )}
             </div>
             <span style={{ fontSize:10, fontWeight: active ? 700 : 500,
               color: active ? color : "rgba(140,168,210,0.36)",
