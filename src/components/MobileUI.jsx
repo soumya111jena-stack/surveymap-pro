@@ -1,8 +1,8 @@
-// ─── MobileUI.jsx — Mobile-specific UI: search bar, bottom nav, HUD ──────────
+// --- MobileUI.jsx -- Mobile-specific UI: search bar, bottom nav, HUD ----------
 import React, { useState } from "react";
 import { bearingLabel, toDMS, zoomToAltitude } from "../utils/mapUtils.js";
 
-/* ── Mobile Search Bar ───────────────────────────────────────────────────────── */
+/* -- Mobile Search Bar --------------------------------------------------------- */
 export function MobileSearchBar({ searchQuery, setSearchQuery, onSearch, searchLoading }) {
   const [focused, setFocused] = useState(false);
   return (
@@ -37,7 +37,7 @@ export function MobileSearchBar({ searchQuery, setSearchQuery, onSearch, searchL
         <input value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
           onKeyDown={e => e.key === "Enter" && onSearch()}
           onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}
-          placeholder="Search places, coordinates…"
+          placeholder="Search places, coordinates..."
           style={{ width:"100%", height:"100%", padding:"0 36px 0 34px", background:"none",
             border:"none", outline:"none", color:"#d8eaff", fontSize:14,
             fontFamily:"'DM Sans',sans-serif", caretColor:"#60a5fa" }}/>
@@ -68,7 +68,7 @@ export function MobileSearchBar({ searchQuery, setSearchQuery, onSearch, searchL
   );
 }
 
-/* ── Mobile Bottom Navigation Bar ───────────────────────────────────────────── */
+/* -- Mobile Bottom Navigation Bar --------------------------------------------- */
 export function MobileBottomNav({
   onOpen, onCompassToggle, compassNavActive,
   drawMode, measureMode, surveyMode, isTracking,
@@ -154,7 +154,7 @@ export function MobileBottomNav({
   );
 }
 
-/* ── Compact Mobile HUD — 3 slim info strips below search bar ───────────────── */
+/* -- Compact Mobile HUD -- 3 slim info strips below search bar ----------------- */
 export function CompactMobileHUD({ mousePos, mapZoom, compassHeading, compassNavActive, cursorElevation }) {
   const hasPos  = mousePos && !isNaN(mousePos.lat) && !isNaN(mousePos.lng);
   const heading = (((compassHeading ?? 0) % 360) + 360) % 360;
@@ -176,10 +176,10 @@ export function CompactMobileHUD({ mousePos, mapZoom, compassHeading, compassNav
         <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", marginBottom:4 }}>
           <div>
             <div style={{ ...mono, fontSize:17, fontWeight:700, color:"#ffffff", letterSpacing:"0.015em", lineHeight:1.25 }}>
-              {hasPos ? toDMS(mousePos.lat,"N","S") : "—°——′——.——″  N"}
+              {hasPos ? toDMS(mousePos.lat,"N","S") : "--°----'----.----''  N"}
             </div>
             <div style={{ ...mono, fontSize:15, fontWeight:500, color:"rgba(200,225,255,0.72)", letterSpacing:"0.015em", lineHeight:1.25 }}>
-              {hasPos ? toDMS(mousePos.lng,"E","W") : "—°——′——.——″  E"}
+              {hasPos ? toDMS(mousePos.lng,"E","W") : "--°----'----.----''  E"}
             </div>
           </div>
           {/* Scale + sats */}
@@ -206,7 +206,7 @@ export function CompactMobileHUD({ mousePos, mapZoom, compassHeading, compassNav
           </svg>
           <span style={{ ...sans, fontSize:11, color:"rgba(220,235,255,0.82)", fontWeight:500, marginRight:6 }}>Outdoor GPS/GNSS ({sats}/{totalSats} sats)</span>
           <span style={{ ...sans, fontSize:11, color:"rgba(180,210,255,0.55)" }}>±{accM} m&nbsp;&nbsp;</span>
-          <span style={{ ...sans, fontSize:11, color:"rgba(180,210,255,0.55)" }}>{altM != null ? `↑${altM} m` : "↑ — m"}&nbsp;&nbsp;</span>
+          <span style={{ ...sans, fontSize:11, color:"rgba(180,210,255,0.55)" }}>{altM != null ? `↑${altM} m` : "↑ -- m"}&nbsp;&nbsp;</span>
           <span style={{ ...sans, fontSize:11, color:"rgba(180,210,255,0.55)" }}>{speed} km/h</span>
         </div>
         {/* Heading row */}

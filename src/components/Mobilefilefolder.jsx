@@ -1,10 +1,10 @@
 /**
- * MobileFileFolder.jsx  —  src/components/MobileFileFolder.jsx
- * ─────────────────────────────────────────────────────────────────────────────
- * Unified file manager sheet for KML · KMZ · GeoJSON · CSV
+ * MobileFileFolder.jsx  --  src/components/MobileFileFolder.jsx
+ * -----------------------------------------------------------------------------
+ * Unified file manager sheet for KML . KMZ . GeoJSON . CSV
  * Designed to fit cleanly inside MobileBottomSheet (maxHeight: 80vh).
  *
- * ── Wiring in SurveyMap.jsx (5 steps) ───────────────────────────────────────
+ * -- Wiring in SurveyMap.jsx (5 steps) ---------------------------------------
  *
  * 1. IMPORT
  *      import MobileFileFolder from "../components/MobileFileFolder.jsx";
@@ -12,10 +12,10 @@
  * 2. STATE  (add inside SurveyMap)
  *      const [fileVisibility, setFileVisibility] = useState({});
  *
- *      // In handleKMLUpload — add after setKmlFile(file):
+ *      // In handleKMLUpload -- add after setKmlFile(file):
  *      setFileVisibility(p => ({ ...p, __kml__: true }));
  *
- *      // In handleExtraUpload — add after setExtraFileType(ext):
+ *      // In handleExtraUpload -- add after setExtraFileType(ext):
  *      setFileVisibility(p => ({ ...p, [`__${ext}__`]: true }));
  *
  *      // useEffect to auto-register GeoJSON layers:
@@ -25,7 +25,7 @@
  *        });
  *      }, [geoJSON.importedGeoJSONLayers]);
  *
- * 3. SHEET CONTENT — add inside <MobileBottomSheet>:
+ * 3. SHEET CONTENT -- add inside <MobileBottomSheet>:
  *      {activeSheet === "files" && (
  *        <MobileFileFolder
  *          kmlInputRef={kmlInputRef}
@@ -55,7 +55,7 @@
  *        />
  *      )}
  *
- * 4. BOTTOM NAV BADGE — pass counts to MobileBottomNav:
+ * 4. BOTTOM NAV BADGE -- pass counts to MobileBottomNav:
  *      <MobileBottomNav
  *        ...existing props...
  *        kmlName={kmlName}
@@ -67,7 +67,7 @@
 import React, { useState } from "react";
 import { SheetHeader, SheetDivider } from "./UIComponents.jsx";
 
-/* ─── Type config ────────────────────────────────────────────────────────────── */
+/* --- Type config -------------------------------------------------------------- */
 const T = {
   kml:     { label:"KML",     color:"#f59e0b", bg:"rgba(245,158,11,0.09)",  border:"rgba(245,158,11,0.26)"  },
   kmz:     { label:"KMZ",     color:"#f97316", bg:"rgba(249,115,22,0.09)",  border:"rgba(249,115,22,0.26)"  },
@@ -75,7 +75,7 @@ const T = {
   csv:     { label:"CSV",     color:"#22c55e", bg:"rgba(34,197,94,0.09)",   border:"rgba(34,197,94,0.26)"   },
 };
 
-/* ─── Single file row ────────────────────────────────────────────────────────── */
+/* --- Single file row ---------------------------------------------------------- */
 function FileRow({ type, name, featureCount, loading, visible, onToggle, onDelete }) {
   const cfg = T[type] || T.geojson;
   const [delHover, setDelHover] = useState(false);
@@ -118,7 +118,7 @@ function FileRow({ type, name, featureCount, loading, visible, onToggle, onDelet
           color: visible ? `${cfg.color}80` : "rgba(255,255,255,0.12)",
           fontFamily:"'DM Mono',monospace", transition:"color 0.18s",
         }}>
-          {loading ? "Loading…" : featureCount != null
+          {loading ? "Loading..." : featureCount != null
             ? `${featureCount} feature${featureCount !== 1 ? "s" : ""}`
             : `${cfg.label} file`}
         </div>
@@ -167,7 +167,7 @@ function FileRow({ type, name, featureCount, loading, visible, onToggle, onDelet
   );
 }
 
-/* ─── Import card ────────────────────────────────────────────────────────────── */
+/* --- Import card -------------------------------------------------------------- */
 const TYPE_ICONS = {
   kml:     <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>,
   kmz:     <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>,
@@ -246,7 +246,7 @@ export default function MobileFileFolder({
 
   return (
     <>
-      {/* Uses SheetHeader — same padding/sizing as Draw, Measure, Layers sheets */}
+      {/* Uses SheetHeader -- same padding/sizing as Draw, Measure, Layers sheets */}
       <SheetHeader
         title="File Folder"
         sub={total === 0 ? "No files imported" : `${visCount} of ${total} visible on map`}
@@ -260,7 +260,7 @@ export default function MobileFileFolder({
       />
       <SheetDivider/>
 
-      {/* ── Tab switcher ── */}
+      {/* -- Tab switcher -- */}
       <div style={{ display:"flex", gap:6, padding:"10px 16px 0" }}>
         {[["files","My Files"], ["import","Import"]].map(([k, lbl]) => (
           <button key={k} onClick={() => setTab(k)} style={{
@@ -353,7 +353,7 @@ export default function MobileFileFolder({
               </button>
             </div>
           ) : (
-            /* File list — no inner scroll cap; MobileBottomSheet scroll handles overflow */
+            /* File list -- no inner scroll cap; MobileBottomSheet scroll handles overflow */
             <div>
               {files.map(f => (
                 <FileRow
@@ -382,7 +382,7 @@ export default function MobileFileFolder({
             Tap a format to import
           </div>
 
-          {/* 2 × 2 grid */}
+          {/* 2 x 2 grid */}
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:12 }}>
             <ImportCard type="kml"     accept=".kml"           onChange={(e) => { onKMLUpload(e);    setTab("files"); }}/>
             <ImportCard type="kmz"     accept=".kmz"           onChange={(e) => { onExtraUpload(e);  setTab("files"); }}/>
@@ -397,7 +397,7 @@ export default function MobileFileFolder({
             color:"rgba(148,190,240,0.38)", fontSize:11, lineHeight:1.6,
             fontFamily:"'DM Sans',sans-serif",
           }}>
-            📌 After importing, files appear in <strong style={{ color:"rgba(148,190,240,0.6)" }}>My Files</strong>. Tap 👁 to toggle map visibility.
+            [Pin] After importing, files appear in <strong style={{ color:"rgba(148,190,240,0.6)" }}>My Files</strong>. Tap [?] to toggle map visibility.
           </div>
         </div>
       )}

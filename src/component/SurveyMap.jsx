@@ -39,7 +39,8 @@ import { MobileSearchBar, MobileBottomNav, CompactMobileHUD } from "../component
 import { MapFlyController, MapRefCapture, ElevationClickCapture } from "./map/MapHelpers.jsx";
 
 // ── NEW: File Folder ──────────────────────────────────────────────────────────
-import MobileFileFolder from "../components/MobileFileFolder.jsx";
+import MobileFileFolder     from "../components/MobileFileFolder.jsx";
+import MobileElevationSheet from "../components/MobileElevationSheet.jsx";
 
 const MENU_H = 36;
 const TB_H   = 42;
@@ -338,7 +339,7 @@ export default function SurveyMap() {
     if (A === "openTracker")      { setTrackerOpen(true); return; }
     if (A === "openOffline")      { setOfflineOpen(true); return; }
     if (A === "toggleOfflineMode"){ setOfflineMode(p => !p); return; }
-    if (A === "openElevation")    { if (isMobile) { handleElevModeRequest(elevMode || "survey"); setActiveSheet("elevation"); } else { setElevOpen(true); } return; }
+    if (A === "openElevation")    { if (isMobile) { setActiveSheet("elevation"); } else { setElevOpen(true); } return; }
     if (A === "openCompassNav")   { compass.compassNavActive ? compass.stopCompassNav() : compass.startCompassNav(); return; }
     if (A === "about")            { setShowAbout(true); return; }
     if (A === "shortcuts")        { setShowShortcuts(true); return; }
@@ -509,7 +510,7 @@ export default function SurveyMap() {
             }
             <MapSizeInvalidator/>
             <MapRefCapture leafletMapRef={leafletMapRef} setMapRef={setMapRefForTracker}/>
-            <ElevationClickCapture elevOpen={elevOpen} activeSheet={activeSheet} elevMode={elevMode} onMapClick={handleMapClickForElev}/>
+            <ElevationClickCapture elevOpen={elevOpen || activeSheet === "elevation"} activeSheet={activeSheet} elevMode={elevMode} onMapClick={handleMapClickForElev}/>
             <MapFlyController flyTarget={flyTarget}/>
             <AddSearch onLocationFound={handleLocationFound} searchRef={searchFnRef}/>
             <LiveGPS/>
@@ -728,6 +729,30 @@ export default function SurveyMap() {
                 </button>
               ))}
             </div>
+          )}
+
+          {/* ── Elevation sheet (mobile) ── */}
+          {activeSheet === "elevation" && (
+            <MobileElevationSheet
+              elevMode={elevMode}
+              elevProfileData={elevProfileData}
+              elevLoading={elevLoading}
+              elevSourceLabel={elevSourceLabel}
+              customElevPts={customElevPts}
+              route={route}
+              measurePoints={measurePoints}
+              drawPoints={drawPoints}
+              onModeRequest={(mode) => {
+                setElevMode(mode);
+                handleElevModeRequest(mode);
+              }}
+              onClearCustom={() => {
+                setCustomElevPts([]);
+                setElevProfileData([]);
+                setElevSourceLabel("");
+              }}
+              onClose={() => setActiveSheet(null)}
+            />
           )}
 
         </MobileBottomSheet>
