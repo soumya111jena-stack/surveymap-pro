@@ -1,31 +1,26 @@
 /**
- * mapLayers.js — SurveyMap Pro v5.1
+ * mapLayers.js — SurveyMap Pro v5.1.2
  * ─────────────────────────────────────────────────────────────────────────────
- * ZOOM FIX (v5.1.1):
- *   Added maxNativeZoom to every layer.
+ * FIX v5.1.2 — CONTOUR GREY GRID FINAL FIX:
+ *   Removed overlayUrl + overlayMaxNativeZoom from the Contour layer entirely.
  *
- *   maxZoom        = how far the MAP can zoom (always 22 — user can always zoom)
- *   maxNativeZoom  = the highest zoom level the tile SERVER actually has tiles for
+ *   Root cause: tiles.opensnowmap.org/contours is frequently unreachable or
+ *   CORS-blocked. Every tile request returned a network error → Leaflet
+ *   rendered grey broken-image placeholder squares in a grid pattern.
  *
- *   Leaflet will automatically SCALE/STRETCH tiles from maxNativeZoom up to
- *   maxZoom so the map never goes blank at high zoom. Without maxNativeZoom,
- *   tiles return 404 at high zoom → broken image icons.
+ *   Solution: OpenTopoMap already renders contour lines natively in its tiles.
+ *   No separate overlay is needed. Removing overlayUrl eliminates all overlay
+ *   tile requests and the grey grid disappears completely.
  *
- * TILE URL RULES:
- *   {s} → subdomain   {z} → zoom   {x} → column   {y} → row
+ * ZOOM FIELDS:
+ *   maxZoom        = 22  (map container always allows zoom to 22)
+ *   maxNativeZoom  = N   (tile server's actual max zoom)
+ *                        Leaflet stretches tiles from N→22 automatically.
  */
 
-/* ─────────────────────────────────────────────────────────────────────────────
-   MAP LAYER DEFINITIONS
-
-   IMPORTANT ZOOM FIELDS:
-     maxZoom        — always set to 22 so the map container allows deep zoom
-     maxNativeZoom  — the real max zoom the tile source supports
-                      Leaflet stretches tiles above this level automatically
-─────────────────────────────────────────────────────────────────────────────*/
 export const MAP_LAYERS = {
 
-  /* ── Satellite (Esri World Imagery — tiles go to z19) ───────────────────── */
+  /* ── Satellite ──────────────────────────────────────────────────────────── */
   "Satellite": {
     url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
     attribution: "Tiles © Esri — Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community",
@@ -34,7 +29,7 @@ export const MAP_LAYERS = {
     maxNativeZoom: 19,
   },
 
-  /* ── Street (OpenStreetMap — tiles go to z19) ───────────────────────────── */
+  /* ── Street ─────────────────────────────────────────────────────────────── */
   "Street": {
     url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
     attribution: "© <a href='https://www.openstreetmap.org/copyright'>OpenStreetMap</a> contributors",
@@ -43,7 +38,7 @@ export const MAP_LAYERS = {
     maxNativeZoom: 19,
   },
 
-  /* ── Terrain (Stadia/Stamen — tiles go to z18) ──────────────────────────── */
+  /* ── Terrain ────────────────────────────────────────────────────────────── */
   "Terrain": {
     url: "https://tiles.stadiamaps.com/tiles/stamen_terrain/{z}/{x}/{y}{r}.png",
     attribution:
@@ -54,9 +49,7 @@ export const MAP_LAYERS = {
     maxNativeZoom: 18,
   },
 
-  /* ── Hillshade (Esri World Shaded Relief — tiles only go to z13!) ────────
-     maxNativeZoom:13 means at z14+ Leaflet zooms the z13 tile in.
-     This is intentional — Hillshade is a coarse overlay layer.           */
+  /* ── Hillshade ──────────────────────────────────────────────────────────── */
   "Hillshade": {
     url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Shaded_Relief/MapServer/tile/{z}/{y}/{x}",
     attribution: "Tiles © Esri — USGS, Esri",
@@ -66,27 +59,23 @@ export const MAP_LAYERS = {
   },
 
   /* ══════════════════════════════════════════════════════════════════════════
-     CONTOUR
-     Base:    OpenTopoMap   — tiles go to z17  (CC-BY-SA, no key)
-     Overlay: OpenSnowMap   — tiles go to z15  (CC-BY-SA, no key)
-     Both maxNativeZoom values set correctly so tiles stretch gracefully.
+     CONTOUR  ✅ FIX v5.1.2
+     Base: OpenTopoMap — already has contour lines baked in natively.
+     overlayUrl REMOVED — tiles.opensnowmap.org was down/CORS-blocked,
+     causing grey broken-image grid squares. No overlay needed.
   ══════════════════════════════════════════════════════════════════════════ */
   "Contour": {
     url: "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
-    overlayUrl: "https://tiles.opensnowmap.org/contours/{z}/{x}/{y}.png",
-    // Base can go natively to z17; overlay only to z15
-    maxNativeZoom: 17,
-    overlayMaxNativeZoom: 15,
     attribution:
       "Map data © <a href='https://www.openstreetmap.org/copyright'>OpenStreetMap</a> contributors, " +
-      "SRTM | Map style © <a href='https://opentopomap.org'>OpenTopoMap</a> (CC-BY-SA) | " +
-      "Contours © <a href='https://www.opensnowmap.org'>OpenSnowMap</a>",
+      "SRTM | Map style © <a href='https://opentopomap.org'>OpenTopoMap</a> (CC-BY-SA)",
     icon: "Terrain",
     maxZoom: 22,
+    maxNativeZoom: 17,
+    /* overlayUrl and overlayMaxNativeZoom intentionally removed */
   },
 
-  /* ── Satellite + Labels ──────────────────────────────────────────────────
-     Base Esri imagery z19, label overlay also z19                         */
+  /* ── Satellite + Labels ─────────────────────────────────────────────────── */
   "Satellite + Labels": {
     url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
     overlayUrl: "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
@@ -97,7 +86,7 @@ export const MAP_LAYERS = {
     overlayMaxNativeZoom: 19,
   },
 
-  /* ── Dark (CartoDB DarkMatter — tiles go to z20) ────────────────────────── */
+  /* ── Dark ───────────────────────────────────────────────────────────────── */
   "Dark": {
     url: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
     attribution:
@@ -108,7 +97,7 @@ export const MAP_LAYERS = {
     maxNativeZoom: 20,
   },
 
-  /* ── Light (CartoDB Positron — tiles go to z20) ─────────────────────────── */
+  /* ── Light ──────────────────────────────────────────────────────────────── */
   "Light": {
     url: "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
     attribution:
@@ -119,7 +108,7 @@ export const MAP_LAYERS = {
     maxNativeZoom: 20,
   },
 
-  /* ── WMS — States demo (zoom irrelevant for WMS) ────────────────────────── */
+  /* ── WMS – States demo ──────────────────────────────────────────────────── */
   "WMS – States demo": {
     type: "wms",
     url: "https://ahocevar.com/geoserver/wms",
@@ -134,7 +123,6 @@ export const MAP_LAYERS = {
 
 /* ─────────────────────────────────────────────────────────────────────────────
    MENU DEFINITIONS
-   Used to build the top menu bar dropdowns in SurveyMap.jsx.
 ─────────────────────────────────────────────────────────────────────────────*/
 export const MENU_DEFS = {
   File: [
