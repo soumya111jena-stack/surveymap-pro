@@ -1,6 +1,7 @@
 /**
  * Globe3DView.jsx — SurveyMap Pro · Professional Glassmorphism UI
  * Redesigned with refined glassmorphism, modern icons, and premium aesthetics
+ * FIXED: Floating top bar for mobile/APK/scroll views
  */
 import { useEffect, useRef, useState, useCallback } from "react";
 import Papa from "papaparse";
@@ -155,7 +156,7 @@ export default function Globe3DView({savedDrawings=[],onClose}){
   const [convCopied,setConvCopied]=useState("");
   const convPickRef=useRef(null);
 
-  const TB=52,PANEL=272,SB=28;
+  const TB=52,PANEL=272,SB=28,BNH=58; // BNH = bottom nav height (mobile only)
 
   // ── PROFESSIONAL GLASSMORPHISM CSS ────────────────────────────────────────
   const CSS=`
@@ -178,6 +179,7 @@ export default function Globe3DView({savedDrawings=[],onClose}){
       --panel-bg: rgba(8,13,25,0.92);
       --font-ui: 'DM Sans', system-ui, sans-serif;
       --font-mono: 'JetBrains Mono', 'Courier New', monospace;
+      --tb-height: 52px;
     }
     html,body,#root{width:100%;height:100%;overflow:hidden;background:#060c18;}
     @keyframes spin{to{transform:rotate(360deg)}}
@@ -189,9 +191,104 @@ export default function Globe3DView({savedDrawings=[],onClose}){
     @keyframes glowPulse{0%,100%{box-shadow:0 0 12px var(--accent-glow)}50%{box-shadow:0 0 24px var(--accent-glow),0 0 48px rgba(59,130,246,0.15)}}
     @keyframes shimmer{0%{background-position:-200% center}100%{background-position:200% center}}
 
+    /* ══════════════════════════════════
+       FLOATING TOP TOOLBAR — CORE FIX
+       Always floats above everything,
+       never scrolls away on mobile/APK
+    ══════════════════════════════════ */
+    .g3-toolbar{
+      position: fixed !important;
+      top: 0 !important;
+      left: 0 !important;
+      right: 0 !important;
+      height: ${TB}px;
+      z-index: 1100 !important;
+      background: rgba(6,12,24,0.92);
+      border-bottom: 1px solid rgba(255,255,255,0.07);
+      backdrop-filter: blur(20px) saturate(160%);
+      -webkit-backdrop-filter: blur(20px) saturate(160%);
+      display: flex;
+      align-items: center;
+      padding: 0 0 0 12px;
+      font-family: var(--font-ui);
+      box-shadow: 0 1px 0 rgba(255,255,255,0.04), 0 4px 24px rgba(0,0,0,0.5);
+      /* Ensure it stays fixed even in WebView/APK environments */
+      -webkit-transform: translateZ(0);
+      transform: translateZ(0);
+      will-change: transform;
+      /* Safe area for notched phones */
+      padding-top: env(safe-area-inset-top, 0px);
+      padding-left: max(12px, env(safe-area-inset-left, 12px));
+      padding-right: max(0px, env(safe-area-inset-right, 0px));
+    }
+
+    /* Scrollable inner row for toolbar on small screens */
+    .g3-toolbar-inner{
+      display: flex;
+      align-items: center;
+      width: 100%;
+      height: 100%;
+      overflow-x: auto;
+      overflow-y: hidden;
+      -webkit-overflow-scrolling: touch;
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+      gap: 0;
+    }
+    .g3-toolbar-inner::-webkit-scrollbar{display:none;}
+
+    /* Logo — always visible, never shrinks */
+    .g3-logo{
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding-right: 14px;
+      border-right: 1px solid rgba(255,255,255,.07);
+      margin-right: 4px;
+      flex-shrink: 0;
+    }
+
+    /* Toolbar end actions — pushed to far right, never hidden */
+    .g3-toolbar-end{
+      margin-left: auto;
+      padding-right: 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
+    /* View mode pills — never shrink */
+    .g3-view-pills{
+      margin-left: 6px;
+      display: flex;
+      align-items: center;
+      gap: 1px;
+      padding: 3px;
+      background: rgba(0,0,0,.35);
+      border-radius: 9px;
+      border: 1px solid rgba(255,255,255,.12);
+      flex-shrink: 0;
+    }
+
+    /* Toolbar separator */
+    .g3-tb-sep{
+      width: 1px;
+      height: 24px;
+      background: rgba(255,255,255,.1);
+      margin: 0 3px;
+      flex-shrink: 0;
+    }
+
     /* ── PANEL ── */
     .g3-panel{
-      position:fixed;top:${TB}px;left:0;bottom:${SB}px;width:${PANEL}px;z-index:1000;
+      position:fixed;
+      /* Account for safe area top on mobile */
+      top: calc(${TB}px + env(safe-area-inset-top, 0px));
+      left:0;
+      bottom: calc(${SB}px + env(safe-area-inset-bottom, 0px));
+      width:${PANEL}px;
+      z-index:1000;
       background:var(--panel-bg);
       border-right:1px solid var(--glass-border);
       display:flex;flex-direction:column;overflow-y:auto;
@@ -203,6 +300,44 @@ export default function Globe3DView({savedDrawings=[],onClose}){
     .g3-panel::-webkit-scrollbar{width:4px;}
     .g3-panel::-webkit-scrollbar-track{background:transparent;}
     .g3-panel::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.07);border-radius:2px;}
+
+    /* ── MAP VIEWPORT — always below the floating toolbar ── */
+    .g3-map{
+      position: fixed !important;
+      top: calc(${TB}px + env(safe-area-inset-top, 0px)) !important;
+      bottom: calc(${SB}px + env(safe-area-inset-bottom, 0px)) !important;
+      left: ${PANEL}px;
+      right: 0;
+      z-index: 900;
+      background: #060c18;
+    }
+
+    /* ── STATUS BAR — pinned to very bottom ── */
+    .g3-statusbar{
+      position: fixed !important;
+      bottom: 0 !important;
+      left: 0 !important;
+      right: 0 !important;
+      height: calc(${SB}px + env(safe-area-inset-bottom, 0px)) !important;
+      z-index: 1100 !important;
+      background: rgba(6,12,24,0.95);
+      border-top: 1px solid rgba(255,255,255,.06);
+      backdrop-filter: blur(20px);
+      display: flex;
+      align-items: center;
+      padding: 0 12px;
+      padding-bottom: env(safe-area-inset-bottom, 0px);
+      gap: 12px;
+      font-family: var(--font-mono);
+      font-size: 10.5px;
+      color: var(--text-muted);
+      user-select: none;
+      box-shadow: 0 -1px 0 rgba(255,255,255,.03);
+      /* Same fixed float technique as toolbar */
+      -webkit-transform: translateZ(0);
+      transform: translateZ(0);
+      will-change: transform;
+    }
 
     /* ── SECTION HEADERS ── */
     .g3-sec-h{
@@ -234,6 +369,7 @@ export default function Globe3DView({savedDrawings=[],onClose}){
       color:rgba(255,255,255,0.65);font-size:9.5px;font-weight:600;letter-spacing:.05em;
       transition:all .18s;min-width:52px;flex-shrink:0;font-family:var(--font-ui);
       border-bottom:2px solid transparent;
+      white-space: nowrap;
     }
     .g3-tbtn svg{stroke:rgba(255,255,255,0.65);transition:stroke .18s;}
     .g3-tbtn::after{
@@ -307,18 +443,211 @@ export default function Globe3DView({savedDrawings=[],onClose}){
       padding:2px 7px;border-radius:4px;font-family:var(--font-ui);
     }
 
-    /* ── MOBILE ── */
-    @media(max-width:640px){
-      .g3-panel{transform:translateX(-100%);}
-      .g3-panel.open{transform:translateX(0);z-index:1250;}
-      .g3-map{left:0!important;}
-      .g3-tb-lbl{display:none!important;}
-      .g3-tbtn{min-width:42px!important;padding:0 8px!important;}
-      .g3-ham{display:flex!important;}
-      .g3-zoom{bottom:${SB+8}px!important;right:10px!important;}
-      .g3-compass{bottom:${SB+110}px!important;right:10px!important;}
+    /* ══════════════════════════════════════
+       BOTTOM NAV BAR — mobile only
+    ══════════════════════════════════════ */
+    .g3-bottom-nav{
+      display: none;
+      position: fixed !important;
+      bottom: 0 !important;
+      left: 0 !important;
+      right: 0 !important;
+      height: calc(${BNH}px + env(safe-area-inset-bottom, 0px));
+      padding-bottom: env(safe-area-inset-bottom, 0px);
+      z-index: 1150 !important;
+      background: rgba(6,10,20,0.97);
+      border-top: 1px solid rgba(255,255,255,0.08);
+      backdrop-filter: blur(24px) saturate(180%);
+      -webkit-backdrop-filter: blur(24px) saturate(180%);
+      -webkit-transform: translateZ(0);
+      transform: translateZ(0);
+      will-change: transform;
+      flex-direction: row;
+      align-items: stretch;
+      justify-content: space-around;
     }
-    @media(min-width:641px){.g3-ham{display:none!important;}}
+    .g3-bnav-item{
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      border: none;
+      background: transparent;
+      cursor: pointer;
+      padding: 6px 4px;
+      position: relative;
+      color: rgba(255,255,255,0.45);
+      font-size: 9.5px;
+      font-weight: 600;
+      letter-spacing: .04em;
+      font-family: var(--font-ui);
+      transition: color .18s;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .g3-bnav-item svg{ stroke: rgba(255,255,255,0.45); transition: stroke .18s; }
+    .g3-bnav-item.active{ color: #60a5fa; }
+    .g3-bnav-item.active svg{ stroke: #60a5fa; }
+    .g3-bnav-item.active::before{
+      content: '';
+      position: absolute;
+      top: 0; left: 20%; right: 20%;
+      height: 2px;
+      background: linear-gradient(90deg,#3b82f6,#06b6d4);
+      border-radius: 0 0 3px 3px;
+    }
+    .g3-bnav-item.active-warn{ color: #f59e0b; }
+    .g3-bnav-item.active-warn svg{ stroke: #f59e0b; }
+    .g3-bnav-item.active-warn::before{
+      content: '';
+      position: absolute;
+      top: 0; left: 20%; right: 20%;
+      height: 2px;
+      background: linear-gradient(90deg,#f59e0b,#fbbf24);
+      border-radius: 0 0 3px 3px;
+    }
+    .g3-bnav-badge{
+      position: absolute;
+      top: 5px; right: calc(50% - 18px);
+      min-width: 14px; height: 14px;
+      background: #ef4444;
+      border-radius: 7px;
+      font-size: 8px;
+      font-weight: 700;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 3px;
+      border: 1.5px solid rgba(6,10,20,0.97);
+      font-family: var(--font-ui);
+    }
+
+    /* ── MOBILE / APK ── */
+    @media(max-width:640px){
+      /* Panel slides in as overlay */
+      .g3-panel{transform:translateX(-100%); bottom: 0 !important;}
+      .g3-panel.open{transform:translateX(0);z-index:1250;}
+
+      /* Map fills whole screen below toolbar, above bottom nav */
+      .g3-map{
+        left:0!important;
+        bottom: calc(${BNH}px + env(safe-area-inset-bottom, 0px)) !important;
+      }
+
+      /* Status bar hidden on mobile (bottom nav replaces it) */
+      .g3-statusbar{ display: none !important; }
+
+      /* Bottom nav visible on mobile */
+      .g3-bottom-nav{ display: flex !important; }
+
+      /* Hamburger visible */
+      .g3-ham{display:flex!important;}
+
+      /* Toolbar labels hidden to save space */
+      .g3-tb-lbl{display:none!important;}
+
+      /* Smaller toolbar buttons */
+      .g3-tbtn{min-width:40px!important;padding:0 7px!important;}
+
+      /* Floating toolbar even thinner */
+      :root{--tb-height:48px;}
+      .g3-toolbar{height:48px;}
+
+      /* Zoom & compass — above bottom nav */
+      .g3-zoom{
+        bottom: calc(${BNH}px + env(safe-area-inset-bottom, 0px) + 12px) !important;
+        right: 10px !important;
+      }
+      .g3-compass{
+        bottom: calc(${BNH}px + env(safe-area-inset-bottom, 0px) + 8px) !important;
+        right: 10px !important;
+      }
+
+      /* KML stats compact on mobile */
+      .g3-kml-stats{right:10px!important;width:calc(100vw - 20px)!important;max-width:260px!important;}
+
+      /* Elevation profile — full width, above bottom nav */
+      .g3-elev-panel{
+        left: 0 !important;
+        right: 0 !important;
+        bottom: calc(${BNH}px + env(safe-area-inset-bottom, 0px)) !important;
+      }
+
+      /* Mode banners — stay below top toolbar */
+      .g3-mode-banner{
+        top: calc(48px + env(safe-area-inset-top, 0px) + 8px) !important;
+      }
+
+      /* Floating panels full-width on mobile */
+      .g3-float-panel{
+        left: 8px !important;
+        right: 8px !important;
+        width: auto !important;
+        max-width: none !important;
+      }
+
+      /* Survey/draw tool active bottom sheet — above nav */
+      .g3-tool-sheet{
+        bottom: calc(${BNH}px + env(safe-area-inset-bottom, 0px)) !important;
+      }
+    }
+    @media(min-width:641px){
+      .g3-ham{display:none!important;}
+      .g3-bottom-nav{display:none!important;}
+    }
+
+    /* ── SAFE AREA FOR TABLETS / LANDSCAPE NOTCH ── */
+    @supports(padding-top: env(safe-area-inset-top)){
+      .g3-toolbar{
+        height: calc(${TB}px + env(safe-area-inset-top, 0px));
+        padding-top: env(safe-area-inset-top, 0px);
+      }
+      .g3-panel{
+        top: calc(${TB}px + env(safe-area-inset-top, 0px));
+      }
+      .g3-map{
+        top: calc(${TB}px + env(safe-area-inset-top, 0px)) !important;
+      }
+    }
+
+    /* Mobile coordinate strip — above bottom nav */
+    .g3-coord-strip{
+      display: none;
+      position: fixed !important;
+      bottom: calc(${BNH}px + env(safe-area-inset-bottom, 0px)) !important;
+      left: 0 !important;
+      right: 0 !important;
+      height: 26px;
+      z-index: 1140 !important;
+      background: rgba(4,8,18,0.94);
+      border-top: 1px solid rgba(255,255,255,0.05);
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: rgba(255,255,255,0.6);
+      padding: 0 12px;
+      -webkit-transform: translateZ(0);
+      transform: translateZ(0);
+    }
+    @media(max-width:640px){
+      .g3-coord-strip{ display: flex !important; }
+      /* Elevation profile also needs to clear coord strip */
+      .g3-elev-panel{
+        bottom: calc(${BNH}px + 26px + env(safe-area-inset-bottom, 0px)) !important;
+      }
+    }
+    /* Some Android WebViews ignore position:fixed during momentum scroll.
+       Wrapping in a transform context forces compositing layer. */
+    body{
+      -webkit-overflow-scrolling: auto !important;
+      overflow: hidden !important;
+      overscroll-behavior: none;
+      touch-action: pan-x pan-y;
+    }
   `;
 
   // ── INIT ─────────────────────────────────────────────────────────────────
@@ -586,13 +915,10 @@ export default function Globe3DView({savedDrawings=[],onClose}){
     setKmlName(file.name);setKmlStats(null);setKmlFlyIn(false);
     if(orbitRef.current){orbitRef.current.active=false;if(orbitRef.current.animFrame){cancelAnimationFrame(orbitRef.current.animFrame);orbitRef.current.animFrame=null;}try{viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);}catch{}orbitRef.current=null;}
     Cesium.KmlDataSource.load(URL.createObjectURL(file),{camera:viewer.scene.camera,canvas:viewer.scene.canvas,clampToGround:true}).then(ds=>{
-      // ── Professional cartographic KML styling ─────────────────────────────
-      // Warm amber/gold — used by Google Earth, ArcGIS, QGIS as default overlay
-      // High contrast on every basemap: satellite, street, terrain, dark, light
-      const STROKE       = Cesium.Color.fromCssColorString("#f5f3ee");          // vivid amber
-      const STROKE_DARK  = Cesium.Color.fromCssColorString("#ed1010").withAlpha(0.55); // shadow halo
+      const STROKE       = Cesium.Color.fromCssColorString("#f5f3ee");
+      const STROKE_DARK  = Cesium.Color.fromCssColorString("#ed1010").withAlpha(0.55);
       const FILL         = Cesium.Color.fromCssColorString("#f6f4f0").withAlpha(0.18);
-      const PT_COLOR     = Cesium.Color.fromCssColorString("#f7f2f0");          // coral-orange point
+      const PT_COLOR     = Cesium.Color.fromCssColorString("#f7f2f0");
       const PT_OUTLINE   = Cesium.Color.fromCssColorString("#e52e0a").withAlpha(0.8);
 
       for(const ent of ds.entities.values){try{
@@ -703,9 +1029,8 @@ export default function Globe3DView({savedDrawings=[],onClose}){
     <>
       <style>{CSS}</style>
 
-      {/* ── MAP VIEWPORT ── */}
-      <div className="g3-map" ref={containerRef}
-        style={{position:"fixed",top:TB,left:PANEL,right:0,bottom:SB,zIndex:900,background:"#060c18"}}/>
+      {/* ── MAP VIEWPORT — uses .g3-map class now ── */}
+      <div className="g3-map" ref={containerRef}/>
 
       {/* ── LOADING SCREEN ── */}
       {!ready&&!initErr&&(
@@ -732,120 +1057,126 @@ export default function Globe3DView({savedDrawings=[],onClose}){
       )}
 
       {/* ══════════════════════════════════════════════════════════════════
-          TOP TOOLBAR
+          FLOATING TOP TOOLBAR — fixed, never scrolls, works on APK/mobile
       ══════════════════════════════════════════════════════════════════ */}
-      <div style={{
-        position:"fixed",top:0,left:0,right:0,height:TB,zIndex:1100,
-        background:"rgba(6,12,24,0.92)",
-        borderBottom:"1px solid rgba(255,255,255,0.07)",
-        backdropFilter:"blur(20px) saturate(160%)",
-        WebkitBackdropFilter:"blur(20px) saturate(160%)",
-        display:"flex",alignItems:"center",padding:"0 0 0 12px",
-        fontFamily:"var(--font-ui)",
-        boxShadow:"0 1px 0 rgba(255,255,255,0.04), 0 4px 24px rgba(0,0,0,0.5)",
-      }}>
-        {/* Logo */}
-        <div style={{display:"flex",alignItems:"center",gap:8,paddingRight:16,borderRight:"1px solid rgba(255,255,255,.07)",marginRight:4,flexShrink:0}}>
-          <div style={{
-            width:28,height:28,borderRadius:7,
-            background:"linear-gradient(135deg,#1d4ed8,#0891b2)",
-            display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,
-            boxShadow:"0 0 12px rgba(59,130,246,0.4)",
-          }}>🌍</div>
-          <div>
-            <div style={{color:"var(--text-primary)",fontWeight:700,fontSize:13,letterSpacing:".01em",lineHeight:1.1}}>SurveyMap</div>
-            <div style={{color:"rgba(96,165,250,0.9)",fontSize:9,fontWeight:700,letterSpacing:".12em",lineHeight:1}}>PRO</div>
+      <div className="g3-toolbar">
+        <div className="g3-toolbar-inner">
+
+          {/* Logo — always visible, flex-shrink:0 */}
+          <div className="g3-logo">
+            <div style={{
+              width:28,height:28,borderRadius:7,
+              background:"linear-gradient(135deg,#1d4ed8,#0891b2)",
+              display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,
+              boxShadow:"0 0 12px rgba(59,130,246,0.4)",
+              flexShrink:0,
+            }}>🌍</div>
+            <div style={{flexShrink:0}}>
+              <div style={{color:"var(--text-primary)",fontWeight:700,fontSize:13,letterSpacing:".01em",lineHeight:1.1,whiteSpace:"nowrap"}}>SurveyMap</div>
+              <div style={{color:"rgba(96,165,250,0.9)",fontSize:9,fontWeight:700,letterSpacing:".12em",lineHeight:1}}>PRO</div>
+            </div>
           </div>
-        </div>
 
-        {/* Hamburger (mobile) */}
-        <button className="g3-ham" onClick={()=>setPanelOpen(p=>!p)}
-          style={{display:"none",width:36,height:36,borderRadius:7,border:"1px solid rgba(255,255,255,.1)",background:"rgba(255,255,255,.04)",color:"rgba(255,255,255,0.7)",cursor:"pointer",alignItems:"center",justifyContent:"center",marginRight:6,flexShrink:0}}>
-          <Icons.Menu/>
-        </button>
-
-        {/* Layer buttons */}
-        {LAYERS.slice(0,6).map(l=>(
-          <button key={l.key} className={`g3-tbtn${activeLayer===l.key?" active":""}`} onClick={()=>setActiveLayer(l.key)}>
-            <span style={{display:"flex",alignItems:"center",justifyContent:"center",lineHeight:1}}>{l.icon}</span>
-            <span className="g3-tb-lbl">{l.label}</span>
+          {/* Hamburger (mobile) */}
+          <button className="g3-ham" onClick={()=>setPanelOpen(p=>!p)}
+            style={{display:"none",width:36,height:36,borderRadius:7,border:"1px solid rgba(255,255,255,.1)",background:"rgba(255,255,255,.04)",color:"rgba(255,255,255,0.7)",cursor:"pointer",alignItems:"center",justifyContent:"center",marginRight:6,flexShrink:0}}>
+            <Icons.Menu/>
           </button>
-        ))}
 
-        {/* Separator */}
-        <div style={{width:1,height:24,background:"rgba(255,255,255,.1)",margin:"0 3px",flexShrink:0}}/>
+          {/* Layer buttons */}
+          {LAYERS.slice(0,6).map(l=>(
+            <button key={l.key} className={`g3-tbtn${activeLayer===l.key?" active":""}`} onClick={()=>setActiveLayer(l.key)}>
+              <span style={{display:"flex",alignItems:"center",justifyContent:"center",lineHeight:1}}>{l.icon}</span>
+              <span className="g3-tb-lbl">{l.label}</span>
+            </button>
+          ))}
 
-        {/* Tool buttons */}
-        {[
-          {icon:<Icons.Draw/>,label:"Draw",active:drawMode,action:()=>{setDrawMode(true);drawPtsRef.current=[];setDrawPoints([]);}},
-          {icon:<Icons.Measure/>,label:"Measure",active:measureMode,action:()=>setMeasureMode(true)},
-          {icon:<Icons.Survey/>,label:"Survey",active:surveyMode,action:()=>setSurveyMode(true)},
-          {icon:<Icons.Elevation/>,label:"Profile",active:elevMode,action:()=>{
-            if(elevMode){setElevMode(false);setElevPoints([]);setElevProfile(null);elevPtsRef.current=[];const viewer=viewerRef.current;elevEntsRef.current.forEach(e=>{try{viewer.entities.remove(e);}catch(_){}});elevEntsRef.current=[];}
-            else{setElevMode(true);setElevPoints([]);setElevProfile(null);}
-          }},
-        ].map(({icon,label,active,action})=>(
-          <button key={label} className={`g3-tbtn${active?" active":""}`} onClick={action}>
-            {icon}
-            <span className="g3-tb-lbl">{label}</span>
-          </button>
-        ))}
+          {/* Separator */}
+          <div className="g3-tb-sep"/>
 
-        {/* File upload buttons */}
-        {[
-          {icon:<Icons.KML/>,label:"KML",accept:".kml,.kmz",onChange:handleKML},
-          {icon:<Icons.CSV/>,label:"CSV",accept:".csv",onChange:handleCSV},
-        ].map(({icon,label,accept,onChange})=>(
-          <button key={label} className="g3-tbtn">
-            <label style={{cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",gap:3}}>
+          {/* Tool buttons */}
+          {[
+            {icon:<Icons.Draw/>,label:"Draw",active:drawMode,action:()=>{setDrawMode(true);drawPtsRef.current=[];setDrawPoints([]);}},
+            {icon:<Icons.Measure/>,label:"Measure",active:measureMode,action:()=>setMeasureMode(true)},
+            {icon:<Icons.Survey/>,label:"Survey",active:surveyMode,action:()=>setSurveyMode(true)},
+            {icon:<Icons.Elevation/>,label:"Profile",active:elevMode,action:()=>{
+              if(elevMode){setElevMode(false);setElevPoints([]);setElevProfile(null);elevPtsRef.current=[];const viewer=viewerRef.current;elevEntsRef.current.forEach(e=>{try{viewer.entities.remove(e);}catch(_){}});elevEntsRef.current=[];}
+              else{setElevMode(true);setElevPoints([]);setElevProfile(null);}
+            }},
+          ].map(({icon,label,active,action})=>(
+            <button key={label} className={`g3-tbtn${active?" active":""}`} onClick={action}>
               {icon}
               <span className="g3-tb-lbl">{label}</span>
-              <input type="file" accept={accept} onChange={onChange} style={{display:"none"}}/>
-            </label>
-          </button>
-        ))}
+            </button>
+          ))}
 
-        {/* Separator */}
-        <div style={{width:1,height:24,background:"rgba(255,255,255,.1)",margin:"0 3px",flexShrink:0}}/>
+          {/* File upload buttons */}
+          {[
+            {icon:<Icons.KML/>,label:"KML",accept:".kml,.kmz",onChange:handleKML},
+            {icon:<Icons.CSV/>,label:"CSV",accept:".csv",onChange:handleCSV},
+          ].map(({icon,label,accept,onChange})=>(
+            <button key={label} className="g3-tbtn">
+              <label style={{cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",gap:3}}>
+                {icon}
+                <span className="g3-tb-lbl">{label}</span>
+                <input type="file" accept={accept} onChange={onChange} style={{display:"none"}}/>
+              </label>
+            </button>
+          ))}
 
-        {/* Feature toggles */}
-         {[
-  {icon:<Icons.Layers/>,label:"Data",active:dataLayersOpen,action:()=>setDataLayersOpen(p=>!p)},
-  {icon:<Icons.Heatmap/>,label:"Heat",active:heatmapOpen,action:()=>setHeatmapOpen(p=>!p)},
-  {icon:<Icons.Timeline/>,label:"Timeline",active:sliderOpen,action:()=>setSliderOpen(p=>!p)},
-  {icon:<Icons.Drone/>,label:"Drone",active:droneOpen,action:()=>setDroneOpen(p=>!p)},
-  {icon:<Icons.Night/>,label:"Night",active:nightAuto,action:()=>setNightAuto(p=>!p)},
-  {icon:<Icons.Coords/>,label:"Convert",active:coordConvOpen,action:()=>setCoordConvOpen(p=>!p)},
-].map(({icon,label,active,action})=>(
-  <button key={label} className={`g3-tbtn${active?" active":""}`} onClick={action}>
-    {icon}
-    <span className="g3-tb-lbl">{label}</span>
-  </button>
-))}
+          {/* Separator */}
+          <div className="g3-tb-sep"/>
 
-        {/* View mode slider/pills */}
-        <div style={{marginLeft:6,display:"flex",alignItems:"center",gap:1,padding:"3px",background:"rgba(0,0,0,.35)",borderRadius:9,border:"1px solid rgba(255,255,255,.12)",flexShrink:0}}>
-          {[["3D","3D"],["2D","2D"],["CV","Col"]].map(([mode,label])=>{
-            const isActive=viewMode===(mode==="CV"?"Columbus":mode);
-            return(
-              <button key={mode} onClick={()=>setViewMode(mode==="CV"?"Columbus":mode)}
-                style={{padding:"5px 12px",borderRadius:6,border:"none",cursor:"pointer",fontSize:10,fontWeight:700,letterSpacing:".05em",fontFamily:"var(--font-ui)",transition:"all .18s",background:isActive?"linear-gradient(135deg,#1d4ed8,#0891b2)":"transparent",color:isActive?"#fff":"rgba(255,255,255,0.55)",boxShadow:isActive?"0 2px 8px rgba(59,130,246,.4)":"none"}}>
-                {label}
-              </button>
-            );
-          })}
-        </div>
+          {/* Feature toggles */}
+          {[
+            {icon:<Icons.Layers/>,label:"Data",active:dataLayersOpen,action:()=>setDataLayersOpen(p=>!p)},
+            {icon:<Icons.Heatmap/>,label:"Heat",active:heatmapOpen,action:()=>setHeatmapOpen(p=>!p)},
+            {icon:<Icons.Timeline/>,label:"Timeline",active:sliderOpen,action:()=>setSliderOpen(p=>!p)},
+            {icon:<Icons.Drone/>,label:"Drone",active:droneOpen,action:()=>setDroneOpen(p=>!p)},
+            {icon:<Icons.Night/>,label:"Night",active:nightAuto,action:()=>setNightAuto(p=>!p)},
+            {icon:<Icons.Coords/>,label:"Convert",active:coordConvOpen,action:()=>setCoordConvOpen(p=>!p)},
+          ].map(({icon,label,active,action})=>(
+            <button key={label} className={`g3-tbtn${active?" active":""}`} onClick={action}>
+              {icon}
+              <span className="g3-tb-lbl">{label}</span>
+            </button>
+          ))}
 
-        <div style={{marginLeft:"auto",paddingRight:12,display:"flex",alignItems:"center",gap:8}}>
-          <button onClick={onClose}
-            style={{padding:"7px 16px",borderRadius:8,border:"1px solid rgba(255,255,255,.15)",background:"rgba(255,255,255,.06)",color:"rgba(255,255,255,0.75)",fontSize:12,cursor:"pointer",fontWeight:600,fontFamily:"var(--font-ui)",display:"flex",alignItems:"center",gap:5,transition:"all .15s",letterSpacing:".02em"}}
-            onMouseEnter={e=>{e.currentTarget.style.background="rgba(255,255,255,.12)";e.currentTarget.style.color="#fff";e.currentTarget.style.borderColor="rgba(255,255,255,.25)";}}
-            onMouseLeave={e=>{e.currentTarget.style.background="rgba(255,255,255,.06)";e.currentTarget.style.color="rgba(255,255,255,0.75)";e.currentTarget.style.borderColor="rgba(255,255,255,.15)";}}>
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M15 18l-6-6 6-6"/></svg>
-            2D Map
-          </button>
-        </div>
-      </div>
+          {/* View mode pills */}
+          <div className="g3-view-pills">
+            {[["3D","3D"],["2D","2D"],["CV","Col"]].map(([mode,label])=>{
+              const isActive=viewMode===(mode==="CV"?"Columbus":mode);
+              return(
+                <button key={mode} onClick={()=>setViewMode(mode==="CV"?"Columbus":mode)}
+                  style={{padding:"5px 12px",borderRadius:6,border:"none",cursor:"pointer",fontSize:10,fontWeight:700,letterSpacing:".05em",fontFamily:"var(--font-ui)",transition:"all .18s",background:isActive?"linear-gradient(135deg,#1d4ed8,#0891b2)":"transparent",color:isActive?"#fff":"rgba(255,255,255,0.55)",boxShadow:isActive?"0 2px 8px rgba(59,130,246,.4)":"none",whiteSpace:"nowrap"}}>
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* End actions — always pinned right */}
+          <div className="g3-toolbar-end">
+            {/* Active mode pill — mobile only */}
+            {(drawMode||measureMode||surveyMode||elevMode)&&(
+              <div style={{display:"flex",alignItems:"center",gap:5,padding:"4px 10px",borderRadius:20,background:elevMode?"rgba(245,158,11,0.12)":drawMode?"rgba(249,115,22,0.12)":measureMode?"rgba(250,204,21,0.1)":"rgba(239,68,68,0.1)",border:`1px solid ${elevMode?"rgba(245,158,11,.3)":drawMode?"rgba(249,115,22,.3)":measureMode?"rgba(250,204,21,.25)":"rgba(239,68,68,.25)"}`,flexShrink:0}}>
+                <div style={{width:6,height:6,borderRadius:"50%",background:elevMode?"#f59e0b":drawMode?"#f97316":measureMode?"#facc15":"#ef4444",animation:"glowPulse 1.5s ease infinite"}}/>
+                <span style={{fontSize:9,fontWeight:700,color:elevMode?"#fbbf24":drawMode?"#fb923c":measureMode?"#fde047":"#f87171",fontFamily:"var(--font-ui)",letterSpacing:".06em",whiteSpace:"nowrap"}}>
+                  {elevMode?"ELEV":drawMode?"DRAW":measureMode?"MEASURE":"SURVEY"}
+                </span>
+              </div>
+            )}
+            <button onClick={onClose}
+              style={{padding:"7px 16px",borderRadius:8,border:"1px solid rgba(255,255,255,.15)",background:"rgba(255,255,255,.06)",color:"rgba(255,255,255,0.75)",fontSize:12,cursor:"pointer",fontWeight:600,fontFamily:"var(--font-ui)",display:"flex",alignItems:"center",gap:5,transition:"all .15s",letterSpacing:".02em",whiteSpace:"nowrap",flexShrink:0}}
+              onMouseEnter={e=>{e.currentTarget.style.background="rgba(255,255,255,.12)";e.currentTarget.style.color="#fff";e.currentTarget.style.borderColor="rgba(255,255,255,.25)";}}
+              onMouseLeave={e=>{e.currentTarget.style.background="rgba(255,255,255,.06)";e.currentTarget.style.color="rgba(255,255,255,0.75)";e.currentTarget.style.borderColor="rgba(255,255,255,.15)";}}>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M15 18l-6-6 6-6"/></svg>
+              2D Map
+            </button>
+          </div>
+
+        </div>{/* /g3-toolbar-inner */}
+      </div>{/* /g3-toolbar */}
 
       {/* Mobile backdrop */}
       {panelOpen&&<div onClick={()=>setPanelOpen(false)} style={{position:"fixed",inset:0,zIndex:1240,background:"rgba(0,0,0,.6)",backdropFilter:"blur(4px)"}}/>}
@@ -1082,14 +1413,12 @@ export default function Globe3DView({savedDrawings=[],onClose}){
 
               {/* ── DRAW ── */}
               <div style={{marginBottom:14}}>
-                {/* Sub-header */}
                 <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:10}}>
                   <div style={{flex:1,height:1,background:"rgba(255,255,255,.06)"}}/>
                   <span style={{color:"rgba(255,255,255,.25)",fontSize:9,fontWeight:700,letterSpacing:".12em",fontFamily:"var(--font-ui)",flexShrink:0}}>DRAW</span>
                   <div style={{flex:1,height:1,background:"rgba(255,255,255,.06)"}}/>
                 </div>
 
-                {/* Draw type selector — segmented control */}
                 <div style={{display:"flex",background:"rgba(0,0,0,.3)",borderRadius:9,border:"1px solid rgba(255,255,255,.08)",padding:3,marginBottom:10,gap:2}}>
                   {[
                     {t:"path",lb:"Path",svg:<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M3 17c3-3 6 3 9 0s6-3 9 0"/></svg>},
@@ -1107,7 +1436,6 @@ export default function Globe3DView({savedDrawings=[],onClose}){
                   })}
                 </div>
 
-                {/* Draw action area */}
                 {!drawMode?(
                   <button onClick={()=>{setDrawMode(true);drawPtsRef.current=[];setDrawPoints([]);}}
                     style={{width:"100%",padding:"9px 14px",borderRadius:8,border:"1px solid rgba(255,255,255,.14)",background:"rgba(255,255,255,.06)",color:"rgba(255,255,255,.9)",fontWeight:600,fontSize:12,cursor:"pointer",fontFamily:"var(--font-ui)",display:"flex",alignItems:"center",justifyContent:"center",gap:7,transition:"all .18s",letterSpacing:".01em"}}
@@ -1118,7 +1446,6 @@ export default function Globe3DView({savedDrawings=[],onClose}){
                   </button>
                 ):(
                   <div style={{display:"flex",flexDirection:"column",gap:6}}>
-                    {/* Active state pill */}
                     <div style={{background:"rgba(255,255,255,.04)",border:"1px solid rgba(255,255,255,.1)",borderRadius:8,padding:"9px 12px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
                       <div style={{display:"flex",alignItems:"center",gap:7}}>
                         <div style={{width:6,height:6,borderRadius:"50%",background:"rgba(255,255,255,.7)",animation:"glowPulse 1.8s ease infinite"}}/>
@@ -1160,7 +1487,6 @@ export default function Globe3DView({savedDrawings=[],onClose}){
                   </button>
                 ):(
                   <div style={{display:"flex",flexDirection:"column",gap:6}}>
-                    {/* Distance readout */}
                     <div style={{background:"rgba(255,255,255,.03)",border:"1px solid rgba(255,255,255,.09)",borderRadius:10,padding:"12px 14px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
                       <div>
                         <div style={{color:"rgba(255,255,255,.3)",fontSize:9,fontWeight:700,letterSpacing:".1em",fontFamily:"var(--font-ui)",marginBottom:3}}>DISTANCE</div>
@@ -1172,7 +1498,6 @@ export default function Globe3DView({savedDrawings=[],onClose}){
                       </div>
                     </div>
 
-                    {/* Unit selector — segmented */}
                     <div style={{display:"flex",background:"rgba(0,0,0,.25)",borderRadius:7,border:"1px solid rgba(255,255,255,.07)",padding:2,gap:1}}>
                       {[["auto","Auto"],["km","km"],["m","m"],["mi","mi"],["ft","ft"],["nmi","nmi"]].map(([u,lb])=>{
                         const sel=measureUnit===u;
@@ -1221,7 +1546,6 @@ export default function Globe3DView({savedDrawings=[],onClose}){
                   </button>
                 ):(
                   <div style={{display:"flex",flexDirection:"column",gap:6}}>
-                    {/* Recording state */}
                     <div style={{background:"rgba(255,255,255,.03)",border:"1px solid rgba(255,255,255,.09)",borderRadius:8,padding:"10px 13px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
                       <div style={{display:"flex",alignItems:"center",gap:8}}>
                         <div style={{position:"relative",width:10,height:10,flexShrink:0}}>
@@ -1307,17 +1631,9 @@ export default function Globe3DView({savedDrawings=[],onClose}){
       </div>
 
       {/* ══════════════════════════════════════════════════════════════════
-          STATUS BAR
+          STATUS BAR — floating, pinned to bottom
       ══════════════════════════════════════════════════════════════════ */}
-      <div style={{
-        position:"fixed",bottom:0,left:0,right:0,height:SB,zIndex:1100,
-        background:"rgba(6,12,24,0.95)",
-        borderTop:"1px solid rgba(255,255,255,.06)",
-        backdropFilter:"blur(20px)",
-        display:"flex",alignItems:"center",padding:"0 12px",gap:12,
-        fontFamily:"var(--font-mono)",fontSize:10.5,color:"var(--text-muted)",userSelect:"none",
-        boxShadow:"0 -1px 0 rgba(255,255,255,.03)",
-      }}>
+      <div className="g3-statusbar">
         {mousePos?(()=>{
           const utm=(coordDisplay==="UTM"||coordDisplay==="MGRS")?latLngToUTM(mousePos.lat,mousePos.lng):null;
           return<>
@@ -1357,12 +1673,65 @@ export default function Globe3DView({savedDrawings=[],onClose}){
         <span style={{color:"var(--text-dim)",fontSize:9}}>{viewMode} · CesiumJS</span>
       </div>
 
+      {/* Mobile coord strip */}
+      <div className="g3-coord-strip">
+        {mousePos?(
+          <>
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" strokeWidth="2.5" strokeLinecap="round"><path d="M12 22s-8-4.5-8-11.8A8 8 0 0 1 12 2a8 8 0 0 1 8 8.2c0 7.3-8 11.8-8 11.8z"/><circle cx="12" cy="10" r="3"/></svg>
+            <span style={{color:"rgba(255,255,255,0.75)",fontWeight:600}}>{mousePos.lat.toFixed(4)}°{mousePos.lat>=0?"N":"S"}</span>
+            <span style={{color:"rgba(255,255,255,0.3)"}}>·</span>
+            <span style={{color:"rgba(255,255,255,0.75)",fontWeight:600}}>{mousePos.lng.toFixed(4)}°{mousePos.lng>=0?"E":"W"}</span>
+            <button onClick={()=>setCoordDisplay(d=>d==="LatLng"?"UTM":d==="UTM"?"MGRS":"LatLng")}
+              style={{padding:"1px 6px",borderRadius:3,border:"1px solid rgba(255,255,255,.12)",background:"rgba(255,255,255,.04)",color:"rgba(255,255,255,0.45)",fontSize:8,cursor:"pointer",fontFamily:"var(--font-ui)",fontWeight:600,letterSpacing:".04em"}}>
+              {coordDisplay}
+            </button>
+          </>
+        ):(
+          <span style={{color:"rgba(255,255,255,0.3)"}}>Tap map for coordinates</span>
+        )}
+      </div>
+
+      {/* ══════════════════════════════════════════════════════════════════
+          MOBILE BOTTOM NAV BAR
+      ══════════════════════════════════════════════════════════════════ */}
+      <nav className="g3-bottom-nav">
+        {/* Layers */}
+        <button className={`g3-bnav-item${panelOpen?" active":""}`} onClick={()=>setPanelOpen(p=>!p)}>
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+          Layers
+        </button>
+        {/* Draw */}
+        <button className={`g3-bnav-item${drawMode?" active":""}`} onClick={()=>{if(drawMode){drawPtsRef.current=[];setDrawPoints([]);setDrawMode(false);}else{setDrawMode(true);setMeasureMode(false);setSurveyMode(false);setElevMode(false);drawPtsRef.current=[];setDrawPoints([]);}}}>
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
+          Draw
+          {drawPoints.length>0&&<span className="g3-bnav-badge">{drawPoints.length}</span>}
+        </button>
+        {/* Measure */}
+        <button className={`g3-bnav-item${measureMode?" active":""}`} onClick={()=>{if(measureMode){clearMeasure();}else{setMeasureMode(true);setDrawMode(false);setSurveyMode(false);setElevMode(false);}}}>
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M2 12h20M2 12l4-4M2 12l4 4M22 12l-4-4M22 12l-4 4"/></svg>
+          Measure
+          {measurePoints.length>0&&<span className="g3-bnav-badge">{measurePoints.length}</span>}
+        </button>
+        {/* Elevation / Profile */}
+        <button className={`g3-bnav-item${elevMode?" active-warn":""}`} onClick={()=>{if(elevMode){setElevMode(false);setElevPoints([]);setElevProfile(null);elevPtsRef.current=[];const viewer=viewerRef.current;elevEntsRef.current.forEach(e=>{try{viewer.entities.remove(e);}catch(_){}});elevEntsRef.current=[];}else{setElevMode(true);setDrawMode(false);setMeasureMode(false);setSurveyMode(false);setElevPoints([]);setElevProfile(null);}}}>
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+          Elevation
+          {elevPoints.length>0&&<span className="g3-bnav-badge" style={{background:"#f59e0b"}}>{elevPoints.length}</span>}
+        </button>
+        {/* Survey */}
+        <button className={`g3-bnav-item${surveyMode?" active":""}`} onClick={()=>{if(surveyMode){setSurveyMode(false);}else{setSurveyMode(true);setDrawMode(false);setMeasureMode(false);setElevMode(false);}}}>
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="2" width="8" height="8"/><rect x="14" y="2" width="8" height="8"/><rect x="2" y="14" width="8" height="8"/><path d="M14 18h8M18 14v8"/></svg>
+          Survey
+          {surveyRoute&&surveyRoute.length>0&&<span className="g3-bnav-badge">{surveyRoute.length}</span>}
+        </button>
+      </nav>
+
       {/* ══════════════════════════════════════════════════════════════════
           ELEVATION MODE BANNER
       ══════════════════════════════════════════════════════════════════ */}
       {elevMode&&(
         <>
-          <div style={{position:"fixed",top:TB+12,left:"50%",transform:"translateX(-50%)",zIndex:1200,background:"rgba(8,13,25,0.92)",border:"1px solid rgba(245,158,11,.3)",borderRadius:10,padding:"8px 18px",display:"flex",alignItems:"center",gap:12,boxShadow:"0 4px 24px rgba(0,0,0,.6), 0 0 0 1px rgba(245,158,11,.1)",backdropFilter:"blur(16px)",fontFamily:"var(--font-ui)",whiteSpace:"nowrap",animation:"fadeSlideIn .2s ease"}}>
+          <div className="g3-mode-banner" style={{position:"fixed",top:TB+12,left:"50%",transform:"translateX(-50%)",zIndex:1200,background:"rgba(8,13,25,0.92)",border:"1px solid rgba(245,158,11,.3)",borderRadius:10,padding:"8px 18px",display:"flex",alignItems:"center",gap:12,boxShadow:"0 4px 24px rgba(0,0,0,.6), 0 0 0 1px rgba(245,158,11,.1)",backdropFilter:"blur(16px)",fontFamily:"var(--font-ui)",whiteSpace:"nowrap",animation:"fadeSlideIn .2s ease"}}>
             <div style={{display:"flex",alignItems:"center",gap:7}}>
               <Icons.Elevation/>
               <span style={{color:"#fbbf24",fontWeight:700,fontSize:12}}>Elevation Profile Mode</span>
@@ -1378,7 +1747,7 @@ export default function Globe3DView({savedDrawings=[],onClose}){
 
           {/* Elevation Profile Chart */}
           {elevProfile&&(()=>{
-            const PANEL_H=228;const W=window.innerWidth-PANEL;const PAD_L=58,PAD_R=20,PAD_T=12;const cH=PANEL_H-PAD_T-42-36;const cW=W-PAD_L-PAD_R;
+            const PANEL_H=228;const isMobile=window.innerWidth<=640;const W=isMobile?window.innerWidth:(window.innerWidth-PANEL);const PAD_L=58,PAD_R=20,PAD_T=12;const cH=PANEL_H-PAD_T-42-36;const cW=W-PAD_L-PAD_R;
             const samples=elevProfile.samples;const minH=elevProfile.stats.minH,maxH=elevProfile.stats.maxH;const hRange=(maxH-minH)||1;const maxD=samples[samples.length-1].d||1;const unit=elevProfile._unit||"m";
             const toX=d=>PAD_L+(d/maxD)*cW;const toY=h=>PAD_T+cH-((h-minH)/hRange)*cH;
             const toUnit=(m)=>unit==="ft"?`${(m*3.28084).toFixed(0)}ft`:`${m.toFixed(0)}m`;
@@ -1391,7 +1760,7 @@ export default function Globe3DView({savedDrawings=[],onClose}){
             const onSvgMove=(e)=>{const rect=e.currentTarget.getBoundingClientRect();const pct=(e.clientX-rect.left-PAD_L)/cW;const idx=Math.max(0,Math.min(samples.length-1,Math.round(pct*(samples.length-1))));setElevHoverIdx(idx);const Cesium=CesiumRef.current,viewer=viewerRef.current;if(viewer&&Cesium&&hoverMarkerRef.current&&elevProfile.positions?.[idx]){const p=elevProfile.positions[idx];hoverMarkerRef.current.position=Cesium.Cartesian3.fromDegrees(p.lng,p.lat,samples[idx].h+5);hoverMarkerRef.current.show=true;}};
             const onSvgLeave=()=>{setElevHoverIdx(null);if(hoverMarkerRef.current)hoverMarkerRef.current.show=false;};
             return(
-              <div style={{position:"fixed",bottom:SB,left:PANEL,right:0,height:PANEL_H,zIndex:1200,background:"rgba(6,10,20,.96)",borderTop:"1px solid rgba(59,130,246,.2)",fontFamily:"var(--font-ui)",backdropFilter:"blur(24px)",boxShadow:"0 -8px 32px rgba(0,0,0,.7)",animation:"slideUp .25s ease"}}>
+              <div className="g3-elev-panel" style={{position:"fixed",bottom:SB,left:PANEL,right:0,height:PANEL_H,zIndex:1200,background:"rgba(6,10,20,.96)",borderTop:"1px solid rgba(59,130,246,.2)",fontFamily:"var(--font-ui)",backdropFilter:"blur(24px)",boxShadow:"0 -8px 32px rgba(0,0,0,.7)",animation:"slideUp .25s ease"}}>
                 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"6px 14px",borderBottom:"1px solid rgba(255,255,255,.05)",height:42}}>
                   <div style={{display:"flex",alignItems:"center",gap:12}}>
                     <span style={{color:"var(--text-secondary)",fontWeight:700,fontSize:11,letterSpacing:".07em"}}>ELEVATION PROFILE</span>
@@ -1577,7 +1946,7 @@ export default function Globe3DView({savedDrawings=[],onClose}){
 
       {/* KML Camera Stats */}
       {kmlStats&&!kmlFlyIn&&(
-        <div style={{position:"fixed",top:TB+8,right:10,zIndex:1002,width:200,background:"rgba(6,10,20,.9)",border:"1px solid rgba(255,255,255,.08)",backdropFilter:"blur(16px)",fontFamily:"var(--font-mono)",fontSize:10,userSelect:"none",borderRadius:10,overflow:"hidden",animation:"slideLeft .3s ease"}}>
+        <div className="g3-kml-stats" style={{position:"fixed",top:TB+8,right:10,zIndex:1002,width:200,background:"rgba(6,10,20,.9)",border:"1px solid rgba(255,255,255,.08)",backdropFilter:"blur(16px)",fontFamily:"var(--font-mono)",fontSize:10,userSelect:"none",borderRadius:10,overflow:"hidden",animation:"slideLeft .3s ease"}}>
           <div style={{padding:"7px 12px",borderBottom:"1px solid rgba(255,255,255,.06)",display:"flex",alignItems:"center",justifyContent:"space-between",background:"rgba(255,255,255,.02)"}}>
             <span style={{color:"var(--text-dim)",fontSize:9,letterSpacing:".1em",fontWeight:700}}>CAMERA ORIENTATION</span>
             <button onClick={()=>setKmlStats(null)} style={{background:"none",border:"none",color:"var(--text-dim)",cursor:"pointer",lineHeight:1}}><Icons.Close/></button>
@@ -1646,7 +2015,7 @@ export default function Globe3DView({savedDrawings=[],onClose}){
               {convPickMode&&<span style={{fontSize:10,background:"rgba(167,139,250,.25)",padding:"2px 8px",borderRadius:20,color:"#ddd6fe"}}>Active</span>}
             </button>
 
-            {/* Format reference (when no result) */}
+            {/* Format reference */}
             {!convResult&&(
               <div style={{background:"rgba(255,255,255,.02)",border:"1px solid rgba(255,255,255,.06)",borderRadius:10,padding:"12px"}}>
                 <div style={{color:"var(--text-dim)",fontSize:10,fontWeight:700,letterSpacing:".08em",marginBottom:10}}>SUPPORTED FORMATS</div>
@@ -1722,13 +2091,12 @@ export default function Globe3DView({savedDrawings=[],onClose}){
       )}
 
       {/* ══════════════════════════════════════════════════════════════════
-          FEATURE PANELS (HeatMap, Satellite, Drone)
+          FEATURE PANELS
       ══════════════════════════════════════════════════════════════════ */}
-      {/* ══ FEATURE PANELS (HeatMap, Satellite, Drone, DataLayers) ══ */}
-<HeatmapLayer viewer={viewerRef.current} Cesium={CesiumRef.current} visible={heatmapOpen} onClose={()=>setHeatmapOpen(false)}/>
-<SatelliteTimeSlider viewer={viewerRef.current} Cesium={CesiumRef.current} visible={sliderOpen} onClose={()=>setSliderOpen(false)}/>
-<DroneFlightPath viewer={viewerRef.current} Cesium={CesiumRef.current} visible={droneOpen} onClose={()=>setDroneOpen(false)}/>
-<DataLayersPanel viewer={viewerRef.current} Cesium={CesiumRef.current} visible={dataLayersOpen} onClose={()=>setDataLayersOpen(false)}/>
+      <HeatmapLayer viewer={viewerRef.current} Cesium={CesiumRef.current} visible={heatmapOpen} onClose={()=>setHeatmapOpen(false)}/>
+      <SatelliteTimeSlider viewer={viewerRef.current} Cesium={CesiumRef.current} visible={sliderOpen} onClose={()=>setSliderOpen(false)}/>
+      <DroneFlightPath viewer={viewerRef.current} Cesium={CesiumRef.current} visible={droneOpen} onClose={()=>setDroneOpen(false)}/>
+      <DataLayersPanel viewer={viewerRef.current} Cesium={CesiumRef.current} visible={dataLayersOpen} onClose={()=>setDataLayersOpen(false)}/>
     </>
   );
 }

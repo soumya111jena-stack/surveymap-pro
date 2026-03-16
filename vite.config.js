@@ -8,25 +8,19 @@ export default defineConfig({
     react(),
     viteStaticCopy({
       targets: [
-        {
-          src: "node_modules/cesium/Build/Cesium/Assets",
-          dest: "cesium",
-        },
-        {
-          src: "node_modules/cesium/Build/Cesium/Widgets",
-          dest: "cesium",
-        },
-        {
-          src: "node_modules/cesium/Build/Cesium/Workers",
-          dest: "cesium",
-        },
-        {
-          src: "node_modules/cesium/Build/Cesium/ThirdParty",
-          dest: "cesium",
-        },
+        { src: "node_modules/cesium/Build/Cesium/Assets",     dest: "cesium" },
+        { src: "node_modules/cesium/Build/Cesium/Widgets",    dest: "cesium" },
+        { src: "node_modules/cesium/Build/Cesium/Workers",    dest: "cesium" },
+        { src: "node_modules/cesium/Build/Cesium/ThirdParty", dest: "cesium" },
       ],
     }),
   ],
+
+  server: {
+    host: "localhost",
+    port: 5173,
+    // NO https — localhost already supports Service Workers over http
+  },
 
   resolve: {
     alias: {

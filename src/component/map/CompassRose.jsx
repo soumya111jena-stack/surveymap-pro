@@ -1,427 +1,335 @@
-import { useEffect, useState, useRef } from "react";
+/**
+ * CompassRose.jsx — AlpineQuest EXACT replica
+ *
+ * Key insight from screenshot:
+ *  • MAP DOES NOT ROTATE — stays fixed North-up always
+ *  • COMPASS NEEDLE rotates to show real magnetic heading
+ *  • Blue directional arrow on map at your location
+ *  • Blue FOV triangle (field of view cone) on map
+ *  • Heading label: "49.0° NE" shown separately (passed up to parent)
+ *  • Standard compass: N top, E right, S bottom, W left
+ *  • Drag compass ring → does nothing to map, just shows visual
+ */
+import { useRef, useState, useCallback, useEffect } from "react";
 import { useMap } from "react-leaflet";
 import L from "leaflet";
 
-function CompassRose() {
-  const map = useMap();
-  const [bearing, setBearing] = useState(0);
-  const [isHovered, setIsHovered] = useState(false);
-  const [isDragging, setIsDragging] = useState(false);
-  const dragStartAngleRef = useRef(0);
-  const startBearingRef = useRef(0);
-  const rafRef = useRef();
-  const compassRef = useRef(null);
-  const prevBearingRef = useRef(0);
+const norm  = d => ((d % 360) + 360) % 360;
+const toRad = d => d * Math.PI / 180;
 
-  useEffect(() => {
-    // Check if map rotation is supported
-    if (!map.getBearing || !map.setBearing) {
-      console.warn("Map rotation not supported in this Leaflet version");
-      return;
-    }
-
-    // Smooth rotation update using requestAnimationFrame
-    const updateBearing = () => {
-      const currentBearing = map.getBearing() || 0;
-      
-      // Handle bearing wrap-around for smooth animation
-      let diff = currentBearing - prevBearingRef.current;
-      if (diff > 180) diff -= 360;
-      if (diff < -180) diff += 360;
-      
-      // Smooth interpolation
-      const smoothBearing = prevBearingRef.current + diff * 0.3;
-      prevBearingRef.current = smoothBearing;
-      setBearing(smoothBearing);
-      
-      rafRef.current = requestAnimationFrame(updateBearing);
-    };
-
-    // Start animation loop
-    rafRef.current = requestAnimationFrame(updateBearing);
-
-    // Event listeners for map rotation
-    const handleRotate = () => {
-      setBearing(map.getBearing() || 0);
-      prevBearingRef.current = map.getBearing() || 0;
-    };
-
-    map.on("rotate", handleRotate);
-    map.on("rotatestart", handleRotate);
-    map.on("rotateend", handleRotate);
-
-    return () => {
-      map.off("rotate", handleRotate);
-      map.off("rotatestart", handleRotate);
-      map.off("rotateend", handleRotate);
-      if (rafRef.current) {
-        cancelAnimationFrame(rafRef.current);
-      }
-    };
-  }, [map]);
-
-  // Calculate angle from center to mouse position
-  const getAngleFromCenter = (clientX, clientY) => {
-    if (!compassRef.current) return 0;
-    
-    const rect = compassRef.current.getBoundingClientRect();
-    const centerX = rect.left + rect.width / 2;
-    const centerY = rect.top + rect.height / 2;
-    
-    const dx = clientX - centerX;
-    const dy = clientY - centerY;
-    
-    // Calculate angle in degrees (0° = North/up)
-    let angle = Math.atan2(dx, -dy) * 180 / Math.PI;
-    angle = (angle + 360) % 360;
-    
-    return angle;
-  };
-
-  // Handle drag start
-  const handleDragStart = (e) => {
-    e.preventDefault();
-    
-    // Get initial angle and bearing
-    const clientX = e.type === 'mousedown' ? e.clientX : e.touches[0].clientX;
-    const clientY = e.type === 'mousedown' ? e.clientY : e.touches[0].clientY;
-    
-    dragStartAngleRef.current = getAngleFromCenter(clientX, clientY);
-    startBearingRef.current = bearing;
-    setIsDragging(true);
-    
-    // Change cursor
-    document.body.style.cursor = 'grabbing';
-  };
-
-  // Handle drag move
-  const handleDragMove = (e) => {
-    if (!isDragging) return;
-    
-    e.preventDefault();
-    
-    const clientX = e.type === 'mousemove' ? e.clientX : e.touches[0].clientX;
-    const clientY = e.type === 'mousemove' ? e.clientY : e.touches[0].clientY;
-    
-    const currentAngle = getAngleFromCenter(clientX, clientY);
-    
-    // Calculate angle difference
-    let angleDiff = currentAngle - dragStartAngleRef.current;
-    
-    // Handle angle wrap-around
-    if (angleDiff > 180) angleDiff -= 360;
-    if (angleDiff < -180) angleDiff += 360;
-    
-    // Calculate new bearing (reverse direction for intuitive control)
-    const newBearing = (startBearingRef.current - angleDiff + 360) % 360;
-    
-    // Apply rotation to map
-    if (map.setBearing) {
-      map.setBearing(newBearing);
-    }
-  };
-
-  // Handle drag end
-  const handleDragEnd = (e) => {
-    if (!isDragging) return;
-    
-    e.preventDefault();
-    setIsDragging(false);
-    document.body.style.cursor = '';
-  };
-
-  // Reset bearing to north
-  const resetNorth = (e) => {
-    // Don't reset if we're dragging
-    if (isDragging) return;
-    
-    if (map.setBearing) {
-      map.setBearing(0);
-      setBearing(0);
-      prevBearingRef.current = 0;
-    }
-  };
-
-  // Format bearing for display
-  const bearingFormatted = Math.round(bearing) % 360;
-  const direction = bearingFormatted === 0 ? 'N' :
-                    bearingFormatted === 90 ? 'E' :
-                    bearingFormatted === 180 ? 'S' :
-                    bearingFormatted === 270 ? 'W' :
-                    bearingFormatted > 0 && bearingFormatted < 90 ? 'NE' :
-                    bearingFormatted > 90 && bearingFormatted < 180 ? 'SE' :
-                    bearingFormatted > 180 && bearingFormatted < 270 ? 'SW' : 'NW';
-
-  useEffect(() => {
-    // Add global event listeners when dragging
-    if (isDragging) {
-      window.addEventListener('mousemove', handleDragMove);
-      window.addEventListener('mouseup', handleDragEnd);
-      window.addEventListener('touchmove', handleDragMove, { passive: false });
-      window.addEventListener('touchend', handleDragEnd);
-      window.addEventListener('touchcancel', handleDragEnd);
-    }
-
-    return () => {
-      window.removeEventListener('mousemove', handleDragMove);
-      window.removeEventListener('mouseup', handleDragEnd);
-      window.removeEventListener('touchmove', handleDragMove);
-      window.removeEventListener('touchend', handleDragEnd);
-      window.removeEventListener('touchcancel', handleDragEnd);
-    };
-  }, [isDragging]);
-
-  return (
-    <div
-      ref={compassRef}
-      className="compass-rose-container"
-      title={`Drag to rotate map • Click to reset north (${bearingFormatted}° ${direction})`}
-      onMouseDown={handleDragStart}
-      onTouchStart={handleDragStart}
-      onClick={resetNorth}
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-      style={{
-        position: "absolute",
-        bottom: 108,
-        right: 10,
-        zIndex: 999,
-        width: 56,
-        height: 56,
-        cursor: isDragging ? 'grabbing' : 'grab',
-        filter: `drop-shadow(0 4px 16px rgba(0,0,0,0.5))`,
-        transition: "filter 0.2s ease, transform 0.2s ease",
-        transform: isHovered && !isDragging ? "scale(1.05)" : "scale(1)",
-        userSelect: 'none',
-        touchAction: 'none', // Prevent scrolling while dragging on touch devices
-      }}
-    >
-      {/* SVG Compass */}
-      <svg width="56" height="56" viewBox="0 0 56 56">
-        <defs>
-          <radialGradient id="compassGradient" cx="28" cy="28" r="27">
-            <stop offset="0%" stopColor="rgba(30, 41, 59, 0.98)" />
-            <stop offset="100%" stopColor="rgba(15, 23, 42, 0.99)" />
-          </radialGradient>
-          <radialGradient id="innerGlow" cx="28" cy="28" r="24">
-            <stop offset="0%" stopColor="rgba(96, 165, 250, 0.2)" />
-            <stop offset="100%" stopColor="rgba(96, 165, 250, 0)" />
-          </radialGradient>
-          <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
-            <feGaussianBlur in="SourceAlpha" stdDeviation="2" />
-            <feMerge>
-              <feMergeNode in="offsetblur" />
-              <feMergeNode in="SourceGraphic" />
-            </feMerge>
-          </filter>
-          <filter id="dropShadow">
-            <feDropShadow dx="0" dy="2" stdDeviation="2" floodOpacity="0.3"/>
-          </filter>
-        </defs>
-
-        {/* Outer ring with metallic effect */}
-        <circle
-          cx="28"
-          cy="28"
-          r="26"
-          fill="url(#compassGradient)"
-          stroke={isDragging ? "rgba(96, 165, 250, 0.8)" : isHovered ? "rgba(96, 165, 250, 0.4)" : "rgba(255,255,255,0.15)"}
-          strokeWidth="1.5"
-          style={{ transition: "stroke 0.2s ease" }}
-        />
-
-        {/* Inner glow when dragging */}
-        {isDragging && (
-          <circle
-            cx="28"
-            cy="28"
-            r="24"
-            fill="url(#innerGlow)"
-          />
-        )}
-
-        {/* Decorative inner ring */}
-        <circle
-          cx="28"
-          cy="28"
-          r="22"
-          fill="none"
-          stroke="rgba(255,255,255,0.08)"
-          strokeWidth="0.5"
-          strokeDasharray="3 6"
-        />
-
-        {/* Degree marks - every 15 degrees */}
-        {Array.from({ length: 24 }).map((_, i) => {
-          const angle = i * 15;
-          const isCardinal = i % 6 === 0; // N, E, S, W
-          const isHalfCardinal = i % 3 === 0; // NE, SE, SW, NW
-          const length = isCardinal ? 6 : isHalfCardinal ? 4 : 2.5;
-          const strokeWidth = isCardinal ? 1.5 : isHalfCardinal ? 1.2 : 0.8;
-          
-          const x1 = 28 + 21 * Math.sin((angle * Math.PI) / 180);
-          const y1 = 28 - 21 * Math.cos((angle * Math.PI) / 180);
-          const x2 = 28 + (21 - length) * Math.sin((angle * Math.PI) / 180);
-          const y2 = 28 - (21 - length) * Math.cos((angle * Math.PI) / 180);
-          
-          return (
-            <line
-              key={angle}
-              x1={x1}
-              y1={y1}
-              x2={x2}
-              y2={y2}
-              stroke={isCardinal ? "rgba(255,255,255,0.7)" : "rgba(255,255,255,0.3)"}
-              strokeWidth={strokeWidth}
-            />
-          );
-        })}
-
-        {/* Bearing indicator with smooth rotation */}
-        <g
-          transform={`rotate(${-bearing} 28 28)`}
-          style={{ transition: isDragging ? "none" : "transform 0.1s linear" }}
-        >
-          {/* North arrow - premium design */}
-          <path
-            d="M28,8 L24,24 L28,21 L32,24 Z"
-            fill="#ef4444"
-            filter="url(#glow)"
-          />
-          <path
-            d="M28,11 L25,24 L28,22 L31,24 Z"
-            fill="#f87171"
-          />
-          
-          {/* South indicator */}
-          <path
-            d="M28,48 L24,32 L28,35 L32,32 Z"
-            fill="rgba(255,255,255,0.25)"
-          />
-          
-          {/* East/West indicators */}
-          <circle cx="42" cy="28" r="2" fill="rgba(255,255,255,0.2)" />
-          <circle cx="14" cy="28" r="2" fill="rgba(255,255,255,0.2)" />
-          
-          {/* Center pivot with depth */}
-          <circle
-            cx="28"
-            cy="28"
-            r="4"
-            fill="rgba(255,255,255,0.95)"
-            stroke="rgba(15,23,42,0.8)"
-            strokeWidth="1.2"
-            filter="url(#dropShadow)"
-          />
-          <circle
-            cx="28"
-            cy="28"
-            r="2"
-            fill="rgba(96,165,250,0.8)"
-          />
-        </g>
-
-        {/* Cardinal direction labels */}
-        <text
-          x="28"
-          y="15"
-          textAnchor="middle"
-          dominantBaseline="middle"
-          fill="#ef4444"
-          fontSize="9"
-          fontWeight="800"
-          fontFamily="'Segoe UI', Arial, sans-serif"
-          letterSpacing="0.5"
-        >
-          N
-        </text>
-        <text
-          x="28"
-          y="43"
-          textAnchor="middle"
-          dominantBaseline="middle"
-          fill="rgba(255,255,255,0.6)"
-          fontSize="8"
-          fontWeight="600"
-          fontFamily="'Segoe UI', Arial, sans-serif"
-        >
-          S
-        </text>
-        <text
-          x="12"
-          y="28"
-          textAnchor="middle"
-          dominantBaseline="middle"
-          fill="rgba(255,255,255,0.6)"
-          fontSize="8"
-          fontWeight="600"
-          fontFamily="'Segoe UI', Arial, sans-serif"
-        >
-          W
-        </text>
-        <text
-          x="44"
-          y="28"
-          textAnchor="middle"
-          dominantBaseline="middle"
-          fill="rgba(255,255,255,0.6)"
-          fontSize="8"
-          fontWeight="600"
-          fontFamily="'Segoe UI', Arial, sans-serif"
-        >
-          E
-        </text>
-
-        {/* Bearing display ring - appears when dragging */}
-        {isDragging && (
-          <circle
-            cx="28"
-            cy="28"
-            r="27"
-            fill="none"
-            stroke="rgba(96,165,250,0.3)"
-            strokeWidth="2"
-            strokeDasharray="4 4"
-            style={{ animation: "spin 8s linear infinite" }}
-          />
-        )}
-      </svg>
-
-      {/* Bearing indicator strip (appears on hover/drag) */}
-      {(isHovered || isDragging) && (
-        <div
-          style={{
-            position: "absolute",
-            bottom: -20,
-            left: "50%",
-            transform: "translateX(-50%)",
-            background: "rgba(15,23,42,0.95)",
-            color: "#60a5fa",
-            padding: "2px 8px",
-            borderRadius: 12,
-            fontSize: 9,
-            fontWeight: 600,
-            fontFamily: "monospace",
-            border: "1px solid rgba(96,165,250,0.3)",
-            whiteSpace: "nowrap",
-            boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
-            pointerEvents: "none",
-            zIndex: 1000,
-          }}
-        >
-          {bearingFormatted}° {direction}
-          {isDragging && " • Drag to rotate"}
-        </div>
-      )}
-
-      <style>{`
-        @keyframes spin {
-          from { transform: rotate(0deg); }
-          to { transform: rotate(360deg); }
-        }
-      `}</style>
-    </div>
-  );
+function bearingLabel(deg) {
+  const dirs = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"];
+  return dirs[Math.round(norm(deg) / 22.5) % 16];
 }
 
-export default CompassRose;
+// ── Blue directional arrow + FOV cone on the map (like AQ) ──────────────────
+function DirectionArrow({ map, heading, position }) {
+  const layerRef = useRef(null);
+  const arrowRef = useRef(null);
+
+  useEffect(() => {
+    if (!map || position == null) return;
+
+    // Remove old layers
+    layerRef.current?.remove();
+    arrowRef.current?.remove();
+
+    const { lat, lng } = position;
+    const h = norm(heading);
+
+    // FOV cone — blue triangle pointing in heading direction
+    // Calculate 3 points of the triangle extending from position
+    const R = 0.018; // ~2km radius in degrees
+    const fovHalf = 25; // ±25° half-angle
+    const tipLat  = lat + R * Math.cos(toRad(h));
+    const tipLng  = lng + R * Math.sin(toRad(h)) / Math.cos(toRad(lat));
+    const l1Lat   = lat + R * 0.7 * Math.cos(toRad(h - fovHalf));
+    const l1Lng   = lng + R * 0.7 * Math.sin(toRad(h - fovHalf)) / Math.cos(toRad(lat));
+    const l2Lat   = lat + R * 0.7 * Math.cos(toRad(h + fovHalf));
+    const l2Lng   = lng + R * 0.7 * Math.sin(toRad(h + fovHalf)) / Math.cos(toRad(lat));
+
+    layerRef.current = L.polygon(
+      [[tipLat, tipLng], [l1Lat, l1Lng], [lat, lng], [l2Lat, l2Lng]],
+      { color: "#3b82f6", fillColor: "#3b82f6", fillOpacity: 0.22, weight: 0, interactive: false }
+    ).addTo(map);
+
+    // Arrow marker — blue triangle pointing in heading direction
+    const arrowIcon = L.divIcon({
+      className: "",
+      iconSize: [28, 28],
+      iconAnchor: [14, 14],
+      html: `<div style="
+        width:28px;height:28px;
+        transform:rotate(${h}deg);
+        display:flex;align-items:center;justify-content:center;
+      ">
+        <svg width="28" height="28" viewBox="0 0 28 28">
+          <polygon points="14,2 8,22 14,18 20,22"
+            fill="#2563eb" stroke="#fff" stroke-width="1.5"
+            stroke-linejoin="round" opacity="0.97"/>
+        </svg>
+      </div>`,
+    });
+
+    arrowRef.current = L.marker([lat, lng], {
+      icon: arrowIcon, zIndexOffset: 2000, interactive: false
+    }).addTo(map);
+
+    return () => {
+      layerRef.current?.remove();
+      arrowRef.current?.remove();
+    };
+  }, [map, heading, position]);
+
+  return null;
+}
+
+// ── Main CompassRose ─────────────────────────────────────────────────────────
+export default function CompassRose({ size = 70, onHeadingChange }) {
+  const map = useMap();
+
+  const [heading,  setHeading]  = useState(0);    // device magnetic heading
+  const [active,   setActive]   = useState(false); // compass enabled
+  const [position, setPosition] = useState(null);  // {lat, lng}
+  const [smoothH,  setSmoothH]  = useState(0);     // smoothed heading for SVG
+
+  const targetH  = useRef(0);
+  const currentH = useRef(0);
+  const animRef  = useRef(null);
+  const watchRef = useRef(null);
+
+  // ── smooth needle animation ───────────────────────────────────────────────
+  useEffect(() => {
+    const tick = () => {
+      const diff = (norm(targetH.current - currentH.current + 180) - 180);
+      if (Math.abs(diff) > 0.2) {
+        currentH.current = norm(currentH.current + diff * 0.16);
+        setSmoothH(currentH.current);
+      }
+      animRef.current = requestAnimationFrame(tick);
+    };
+    animRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(animRef.current);
+  }, []);
+
+  // ── device orientation → heading ──────────────────────────────────────────
+  const onOrientation = useCallback((e) => {
+    let h = null;
+    if (e.webkitCompassHeading != null)     h = e.webkitCompassHeading;
+    else if (e.absolute && e.alpha != null) h = norm(360 - e.alpha);
+    else if (e.alpha != null)               h = norm(360 - e.alpha);
+    if (h == null) return;
+    h = norm(h);
+    targetH.current = h;
+    setHeading(h);
+    onHeadingChange?.(h);
+  }, [onHeadingChange]);
+
+  const attachOrientation = useCallback(() => {
+    window.addEventListener("deviceorientationabsolute", onOrientation, true);
+    window.addEventListener("deviceorientation",         onOrientation, true);
+  }, [onOrientation]);
+
+  useEffect(() => {
+    if (typeof DeviceOrientationEvent?.requestPermission !== "function") {
+      attachOrientation();
+    }
+    return () => {
+      window.removeEventListener("deviceorientationabsolute", onOrientation, true);
+      window.removeEventListener("deviceorientation",         onOrientation, true);
+    };
+  }, [onOrientation, attachOrientation]);
+
+  // ── GPS position for arrow on map ─────────────────────────────────────────
+  useEffect(() => {
+    if (!active) return;
+    watchRef.current = navigator.geolocation?.watchPosition(
+      pos => setPosition({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+      () => {},
+      { enableHighAccuracy: true, timeout: 30000, maximumAge: 5000 }
+    );
+    return () => {
+      if (watchRef.current) navigator.geolocation.clearWatch(watchRef.current);
+    };
+  }, [active]);
+
+  // ── tap to enable ─────────────────────────────────────────────────────────
+  const handleTap = useCallback(async () => {
+    if (active) return;
+    if (typeof DeviceOrientationEvent?.requestPermission === "function") {
+      try {
+        const r = await DeviceOrientationEvent.requestPermission();
+        if (r === "granted") attachOrientation();
+      } catch (_) {}
+    }
+    setActive(true);
+  }, [active, attachOrientation]);
+
+  // ── SVG compass values — needle rotates, ring stays fixed ─────────────────
+  const s = size, cx = s/2, cy = s/2, R = cx - 2;
+  // Needle points to magnetic north: rotate by -smoothH so needle
+  // always points toward actual N when device is held at heading smoothH
+  const needleRot = norm(-smoothH);
+  const isNorth   = smoothH < 2 || smoothH > 358;
+
+  return (
+    <>
+      <style>{`
+        .aqcr2 { -webkit-tap-highlight-color:transparent; user-select:none; -webkit-user-select:none; touch-action:none; }
+        @keyframes aq2-pulse { 0%,100%{opacity:1}50%{opacity:0.3} }
+        .aq2-active-ring { animation: aq2-pulse 1.6s ease infinite; }
+      `}</style>
+
+      {/* Direction arrow on map */}
+      {active && position && (
+        <DirectionArrow map={map} heading={smoothH} position={position} />
+      )}
+
+      {/* ── Compass widget ── */}
+      <div
+        className="aqcr2"
+        style={{
+          width: s, height: s,
+          cursor: active ? "default" : "pointer",
+          filter: "drop-shadow(0 3px 18px rgba(0,0,0,0.95))",
+          flexShrink: 0,
+        }}
+        onClick={!active ? handleTap : undefined}
+        title={active ? `${smoothH.toFixed(1)}° ${bearingLabel(smoothH)}` : "Tap to enable compass"}
+      >
+        <svg width={s} height={s} viewBox={`0 0 ${s} ${s}`} overflow="visible">
+          <defs>
+            <radialGradient id="crbg2" cx="50%" cy="35%" r="65%">
+              <stop offset="0%"   stopColor="#1e1e1e"/>
+              <stop offset="100%" stopColor="#070707"/>
+            </radialGradient>
+          </defs>
+
+          {/* Outer body */}
+          <circle cx={cx} cy={cy} r={R}
+            fill="url(#crbg2)"
+            stroke={active ? "rgba(34,197,94,0.65)" : "rgba(255,255,255,0.15)"}
+            strokeWidth={active ? "1.8" : "1"}
+          />
+          {active && (
+            <circle cx={cx} cy={cy} r={R}
+              fill="none" stroke="rgba(34,197,94,0.3)" strokeWidth="3.5"
+              className="aq2-active-ring"
+            />
+          )}
+
+          {/* ── FIXED degree ring — N E S W don't move ── */}
+          {/* Tick marks (fixed) */}
+          {Array.from({length:72},(_,i)=>i*5).map(a => {
+            const isC=a%90===0, isS=a%45===0;
+            return (
+              <line key={a}
+                x1={cx} y1={cy-R+1.5}
+                x2={cx} y2={cy-R+(isC?8:isS?5.5:3)}
+                stroke={isC?"rgba(255,255,255,0.6)":"rgba(255,255,255,0.16)"}
+                strokeWidth={isC?"1.3":"0.65"}
+                transform={`rotate(${a} ${cx} ${cy})`}
+              />
+            );
+          })}
+
+          {/* Cardinal labels — FIXED, never rotate */}
+          {/* N=top, E=right, S=bottom, W=left — real compass */}
+          {[
+            ["N",  0,   "rgba(255,255,255,0.95)", 9.5],
+            ["E",  90,  "rgba(255,255,255,0.35)", 7.5],
+            ["S",  180, "rgba(255,255,255,0.35)", 7.5],
+            ["W",  270, "rgba(255,255,255,0.35)", 7.5],
+          ].map(([l, a, c, fs]) => {
+            const rad = toRad(a - 90), tr = R - 14;
+            return (
+              <text key={l}
+                x={cx + tr*Math.cos(rad)}
+                y={cy + tr*Math.sin(rad) + 3.5}
+                textAnchor="middle" fill={c} fontSize={fs}
+                fontWeight="700" fontFamily="'DM Sans',sans-serif"
+              >{l}</text>
+            );
+          })}
+
+          {/* ── ROTATING needle — points to magnetic north ── */}
+          <g transform={`rotate(${needleRot} ${cx} ${cy})`}>
+            {/* North tip — RED (like AlpineQuest) */}
+            <polygon
+              points={`${cx},${cy-R+7} ${cx-5.5},${cy+3} ${cx},${cy-2} ${cx+5.5},${cy+3}`}
+              fill={active ? "#e11d48" : "rgba(255,255,255,0.55)"}
+              opacity="0.97"
+            />
+            {/* South tip — grey */}
+            <polygon
+              points={`${cx},${cy+R-7} ${cx-4.5},${cy-3} ${cx},${cy+2} ${cx+4.5},${cy-3}`}
+              fill="rgba(185,185,185,0.38)"
+            />
+            {/* EW stubs */}
+            <line x1={cx-R+5} y1={cy} x2={cx-R+11} y2={cy}
+              stroke="rgba(255,255,255,0.15)" strokeWidth="1.2"/>
+            <line x1={cx+R-11} y1={cy} x2={cx+R-5} y2={cy}
+              stroke="rgba(255,255,255,0.15)" strokeWidth="1.2"/>
+          </g>
+
+          {/* ── Center hub ── */}
+          <circle cx={cx} cy={cy} r="8"
+            fill="#111" stroke="rgba(255,255,255,0.1)" strokeWidth="0.8"/>
+          <circle cx={cx} cy={cy} r="4.5"
+            fill={active ? "#22c55e" : "rgba(255,255,255,0.2)"}
+            stroke="rgba(0,0,0,0.8)" strokeWidth="1"
+          />
+          <circle cx={cx} cy={cy} r="1.8" fill="rgba(0,0,0,0.65)"/>
+
+          {/* Heading text at bottom of dial */}
+          {active && (
+            <text x={cx} y={s-3} textAnchor="middle"
+              fill="rgba(255,255,255,0.5)" fontSize="6"
+              fontFamily="'JetBrains Mono',monospace" fontWeight="600"
+            >{Math.round(smoothH)}°</text>
+          )}
+          {!active && (
+            <text x={cx} y={s-3.5} textAnchor="middle"
+              fill="rgba(255,255,255,0.18)" fontSize="5.5"
+              fontFamily="'DM Sans',sans-serif"
+            >tap</text>
+          )}
+        </svg>
+      </div>
+
+      {/* Heading label below compass — "49.0° NE" like AlpineQuest */}
+      {active && (
+        <div style={{
+          marginTop: 4, textAlign: "center",
+          background: "rgba(10,10,10,0.82)",
+          backdropFilter: "blur(8px)",
+          border: "1px solid rgba(255,255,255,0.1)",
+          borderRadius: 6, padding: "3px 8px",
+          display: "inline-flex", alignItems: "center", gap: 5,
+          alignSelf: "center",
+          boxShadow: "0 2px 8px rgba(0,0,0,0.6)",
+        }}>
+          {/* Mini needle indicator */}
+          <svg width="9" height="13" viewBox="0 0 9 13" style={{flexShrink:0}}>
+            <polygon points="4.5,0 1.5,7 4.5,5.5 7.5,7"
+              fill="#e11d48" opacity="0.95"/>
+            <polygon points="4.5,13 1.5,6 4.5,7.5 7.5,6"
+              fill="rgba(185,185,185,0.4)"/>
+          </svg>
+          <span style={{
+            color:"#fff", fontSize:11, fontWeight:700,
+            fontFamily:"'JetBrains Mono',monospace", letterSpacing:".02em",
+          }}>
+            {smoothH.toFixed(1)}°
+          </span>
+          <span style={{
+            color:"rgba(255,255,255,0.5)", fontSize:10, fontWeight:600,
+            fontFamily:"'DM Sans',sans-serif",
+          }}>
+            {bearingLabel(smoothH)}
+          </span>
+        </div>
+      )}
+    </>
+  );
+}

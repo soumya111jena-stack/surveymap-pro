@@ -36,37 +36,34 @@
 
     </application>
 
-    <!-- ═══════════════════════════════════════════════════
+    <!-- ═══════════════════════════════════════════════
          NETWORK
-    ════════════════════════════════════════════════════ -->
+    ════════════════════════════════════════════════ -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
-    <!-- ═══════════════════════════════════════════════════
-         GPS / LOCATION  (required for LiveTrackRecorder)
-         @capacitor/geolocation needs BOTH fine + coarse
-    ════════════════════════════════════════════════════ -->
+    <!-- ═══════════════════════════════════════════════
+         GPS / LOCATION  (@capacitor/geolocation)
+    ════════════════════════════════════════════════ -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-
-    <!-- Background location — only add if you track when app is minimised.
-         Remove this line if you only track while the app is in the foreground. -->
+    <!-- Uncomment only if tracking while app is in background -->
     <!-- <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" /> -->
 
-    <uses-feature android:name="android.hardware.location.gps" android:required="true" />
+    <uses-feature android:name="android.hardware.location.gps"     android:required="true" />
     <uses-feature android:name="android.hardware.location.network" android:required="false" />
 
-    <!-- ═══════════════════════════════════════════════════
-         CAMERA  (required for photo waypoints)
-    ════════════════════════════════════════════════════ -->
+    <!-- ═══════════════════════════════════════════════
+         CAMERA  (@capacitor/camera — photo waypoints)
+    ════════════════════════════════════════════════ -->
     <uses-permission android:name="android.permission.CAMERA" />
-    <uses-feature android:name="android.hardware.camera" android:required="true" />
+    <uses-feature android:name="android.hardware.camera"           android:required="true" />
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
 
-    <!-- ═══════════════════════════════════════════════════
-         STORAGE  (read photos + write GPX/KMZ exports)
-         Android 13+ uses READ_MEDIA_IMAGES instead of READ_EXTERNAL_STORAGE
-    ════════════════════════════════════════════════════ -->
+    <!-- ═══════════════════════════════════════════════
+         STORAGE  (GPX / KMZ export + photo read)
+         Android 13+ uses READ_MEDIA_IMAGES
+    ════════════════════════════════════════════════ -->
 
     <!-- Android 12 and below -->
     <uses-permission
@@ -76,7 +73,30 @@
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="29" />
 
-    <!-- Android 13+ (API 33+) granular media permissions -->
+    <!-- Android 13+ (API 33+) -->
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+
+    <!-- ═══════════════════════════════════════════════
+         QUERIES — required on Android 11+ (API 30+)
+         so @capacitor/camera can launch the camera app
+         WITHOUT this block, camera silently fails on
+         Android 11+ due to package visibility rules
+    ════════════════════════════════════════════════ -->
+    <queries>
+        <!-- Launch the camera for photo capture -->
+        <intent>
+            <action android:name="android.media.action.IMAGE_CAPTURE" />
+        </intent>
+        <!-- Pick image from gallery -->
+        <intent>
+            <action android:name="android.intent.action.GET_CONTENT" />
+            <data android:mimeType="image/*" />
+        </intent>
+        <!-- Android 13+ photo picker -->
+        <intent>
+            <action android:name="android.intent.action.PICK" />
+            <data android:mimeType="image/*" />
+        </intent>
+    </queries>
 
 </manifest>
