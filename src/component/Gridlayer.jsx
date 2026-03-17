@@ -15,7 +15,7 @@
  *  • Sub-grid iteration is bounded so it can't produce thousands of lines
  */
 
-// ─── Constants ───────────────────────────────────────────────────────────────
+// ─── Constants ───────────────────────────────────────────────────────────────\
 
 const MAX_ENTITIES = 280;   // hard cap — never add more than this many entities
 
