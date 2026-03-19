@@ -2,6 +2,7 @@
  * Globe3DView.jsx — SurveyMap Pro · Professional Glassmorphism UI
  * Redesigned with refined glassmorphism, modern icons, and premium aesthetics
  * FIXED: Floating top bar for mobile/APK/scroll views
+ * FIXED v2: CSS active-warn::before restored, </nav> added, class name fixed, coord panel className added
  */
 import { useEffect, useRef, useState, useCallback } from "react";
 import Papa from "papaparse";
@@ -191,11 +192,6 @@ export default function Globe3DView({savedDrawings=[],onClose}){
     @keyframes glowPulse{0%,100%{box-shadow:0 0 12px var(--accent-glow)}50%{box-shadow:0 0 24px var(--accent-glow),0 0 48px rgba(59,130,246,0.15)}}
     @keyframes shimmer{0%{background-position:-200% center}100%{background-position:200% center}}
 
-    /* ══════════════════════════════════
-       FLOATING TOP TOOLBAR — CORE FIX
-       Always floats above everything,
-       never scrolls away on mobile/APK
-    ══════════════════════════════════ */
     .g3-toolbar{
       position: fixed !important;
       top: 0 !important;
@@ -212,17 +208,13 @@ export default function Globe3DView({savedDrawings=[],onClose}){
       padding: 0 0 0 12px;
       font-family: var(--font-ui);
       box-shadow: 0 1px 0 rgba(255,255,255,0.04), 0 4px 24px rgba(0,0,0,0.5);
-      /* Ensure it stays fixed even in WebView/APK environments */
       -webkit-transform: translateZ(0);
       transform: translateZ(0);
       will-change: transform;
-      /* Safe area for notched phones */
       padding-top: env(safe-area-inset-top, 0px);
       padding-left: max(12px, env(safe-area-inset-left, 12px));
       padding-right: max(0px, env(safe-area-inset-right, 0px));
     }
-
-    /* Scrollable inner row for toolbar on small screens */
     .g3-toolbar-inner{
       display: flex;
       align-items: center;
@@ -236,8 +228,6 @@ export default function Globe3DView({savedDrawings=[],onClose}){
       gap: 0;
     }
     .g3-toolbar-inner::-webkit-scrollbar{display:none;}
-
-    /* Logo — always visible, never shrinks */
     .g3-logo{
       display: flex;
       align-items: center;
@@ -247,8 +237,6 @@ export default function Globe3DView({savedDrawings=[],onClose}){
       margin-right: 4px;
       flex-shrink: 0;
     }
-
-    /* Toolbar end actions — pushed to far right, never hidden */
     .g3-toolbar-end{
       margin-left: auto;
       padding-right: 12px;
@@ -257,8 +245,6 @@ export default function Globe3DView({savedDrawings=[],onClose}){
       gap: 8px;
       flex-shrink: 0;
     }
-
-    /* View mode pills — never shrink */
     .g3-view-pills{
       margin-left: 6px;
       display: flex;
@@ -270,8 +256,6 @@ export default function Globe3DView({savedDrawings=[],onClose}){
       border: 1px solid rgba(255,255,255,.12);
       flex-shrink: 0;
     }
-
-    /* Toolbar separator */
     .g3-tb-sep{
       width: 1px;
       height: 24px;
@@ -279,11 +263,8 @@ export default function Globe3DView({savedDrawings=[],onClose}){
       margin: 0 3px;
       flex-shrink: 0;
     }
-
-    /* ── PANEL ── */
     .g3-panel{
       position:fixed;
-      /* Account for safe area top on mobile */
       top: calc(${TB}px + env(safe-area-inset-top, 0px));
       left:0;
       bottom: calc(${SB}px + env(safe-area-inset-bottom, 0px));
@@ -300,8 +281,6 @@ export default function Globe3DView({savedDrawings=[],onClose}){
     .g3-panel::-webkit-scrollbar{width:4px;}
     .g3-panel::-webkit-scrollbar-track{background:transparent;}
     .g3-panel::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.07);border-radius:2px;}
-
-    /* ── MAP VIEWPORT — always below the floating toolbar ── */
     .g3-map{
       position: fixed !important;
       top: calc(${TB}px + env(safe-area-inset-top, 0px)) !important;
@@ -311,8 +290,6 @@ export default function Globe3DView({savedDrawings=[],onClose}){
       z-index: 900;
       background: #060c18;
     }
-
-    /* ── STATUS BAR — pinned to very bottom ── */
     .g3-statusbar{
       position: fixed !important;
       bottom: 0 !important;
@@ -333,13 +310,10 @@ export default function Globe3DView({savedDrawings=[],onClose}){
       color: var(--text-muted);
       user-select: none;
       box-shadow: 0 -1px 0 rgba(255,255,255,.03);
-      /* Same fixed float technique as toolbar */
       -webkit-transform: translateZ(0);
       transform: translateZ(0);
       will-change: transform;
     }
-
-    /* ── SECTION HEADERS ── */
     .g3-sec-h{
       display:flex;align-items:center;justify-content:space-between;
       padding:11px 16px;cursor:pointer;user-select:none;
@@ -351,8 +325,6 @@ export default function Globe3DView({savedDrawings=[],onClose}){
     .g3-sec-h:hover{background:var(--glass-hover);color:var(--text-secondary);}
     .g3-sec-h .sec-icon{display:flex;align-items:center;gap:7px;}
     .g3-sec-body{padding:12px 14px 14px;border-bottom:1px solid rgba(255,255,255,.04);}
-
-    /* ── LAYER ROW ── */
     .g3-layer-row{
       display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:8px;
       cursor:pointer;user-select:none;margin-bottom:2px;
@@ -360,8 +332,6 @@ export default function Globe3DView({savedDrawings=[],onClose}){
     }
     .g3-layer-row:hover{background:var(--glass-hover);border-color:var(--glass-border);}
     .g3-layer-row.active{background:rgba(59,130,246,0.1);border-color:rgba(59,130,246,0.3);}
-
-    /* ── TOOLBAR BUTTONS ── */
     .g3-tbtn{
       display:flex;flex-direction:column;align-items:center;justify-content:center;
       padding:0 11px;height:${TB}px;border:none;cursor:pointer;gap:3px;
@@ -383,8 +353,6 @@ export default function Globe3DView({savedDrawings=[],onClose}){
     .g3-tbtn.active{color:#60a5fa;background:rgba(59,130,246,.12);}
     .g3-tbtn.active svg{stroke:#60a5fa;}
     .g3-tbtn.active::after{width:100%;background:linear-gradient(90deg,#3b82f6,#06b6d4);}
-
-    /* ── PRIMARY BUTTON ── */
     .g3-primary{
       width:100%;padding:9px 14px;border-radius:8px;border:none;
       color:#fff;font-weight:600;font-size:12px;cursor:pointer;
@@ -394,28 +362,13 @@ export default function Globe3DView({savedDrawings=[],onClose}){
     }
     .g3-primary:hover{filter:brightness(1.12);transform:translateY(-1px);}
     .g3-primary:active{transform:translateY(0);}
-
-    /* ── GLASS CARD ── */
-    .g3-card{
-      background:rgba(255,255,255,.025);
-      border:1px solid var(--glass-border);
-      border-radius:10px;padding:12px;
-    }
-
-    /* ── BADGE ── */
-    .g3-badge{
-      font-size:9px;padding:2px 7px;border-radius:20px;
-      font-weight:700;letter-spacing:.04em;font-family:var(--font-ui);
-    }
-
-    /* ── CHECKBOX ── */
+    .g3-card{background:rgba(255,255,255,.025);border:1px solid var(--glass-border);border-radius:10px;padding:12px;}
+    .g3-badge{font-size:9px;padding:2px 7px;border-radius:20px;font-weight:700;letter-spacing:.04em;font-family:var(--font-ui);}
     .g3-chk{
       width:16px;height:16px;border-radius:4px;flex-shrink:0;
       display:flex;align-items:center;justify-content:center;
       transition:all .15s;border:1.5px solid;
     }
-
-    /* ── INPUT ── */
     .g3-input{
       width:100%;padding:8px 11px;border-radius:8px;
       border:1px solid var(--glass-border);
@@ -426,26 +379,16 @@ export default function Globe3DView({savedDrawings=[],onClose}){
     }
     .g3-input:focus{border-color:rgba(59,130,246,.5);box-shadow:0 0 0 3px rgba(59,130,246,.1);}
     .g3-input::placeholder{color:var(--text-dim);}
-
-    /* ── TOOLBAR LABELS ── */
     .g3-tb-lbl{color:inherit;font-size:9px;font-weight:600;letter-spacing:.05em;line-height:1;}
-
-    /* Force all SVGs inside toolbar to inherit stroke */
     .g3-tbtn svg{display:block;}
-
-    /* ── DIVIDER ── */
     .g3-divider{height:1px;background:linear-gradient(90deg,transparent,rgba(255,255,255,.06),transparent);margin:12px 0;}
-
-    /* ── TOOLTIP TAG ── */
     .g3-tag{
       display:inline-flex;align-items:center;gap:4px;
       font-size:9px;font-weight:700;letter-spacing:.05em;
       padding:2px 7px;border-radius:4px;font-family:var(--font-ui);
     }
 
-    /* ══════════════════════════════════════
-       BOTTOM NAV BAR — mobile only
-    ══════════════════════════════════════ */
+    /* ══ BOTTOM NAV BAR ══ */
     .g3-bottom-nav{
       display: none;
       position: fixed !important;
@@ -486,6 +429,15 @@ export default function Globe3DView({savedDrawings=[],onClose}){
       transition: color .18s;
       -webkit-tap-highlight-color: transparent;
     }
+    /* ── FIX 3: class is g3-bnav-label (was bnav-label in JSX) ── */
+    .g3-bnav-label{
+      font-size: 9px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 100%;
+      display: block;
+    }
     .g3-bnav-item svg{ stroke: rgba(255,255,255,0.45); transition: stroke .18s; }
     .g3-bnav-item.active{ color: #60a5fa; }
     .g3-bnav-item.active svg{ stroke: #60a5fa; }
@@ -499,12 +451,24 @@ export default function Globe3DView({savedDrawings=[],onClose}){
     }
     .g3-bnav-item.active-warn{ color: #f59e0b; }
     .g3-bnav-item.active-warn svg{ stroke: #f59e0b; }
+    /* ── FIX 1: active-warn::before was MISSING its selector — restored here ── */
     .g3-bnav-item.active-warn::before{
       content: '';
       position: absolute;
       top: 0; left: 20%; right: 20%;
       height: 2px;
       background: linear-gradient(90deg,#f59e0b,#fbbf24);
+      border-radius: 0 0 3px 3px;
+    }
+    /* active-green — placed AFTER active-warn::before closing brace */
+    .g3-bnav-item.active-green{ color: #10b981; }
+    .g3-bnav-item.active-green svg{ stroke: #10b981; }
+    .g3-bnav-item.active-green::before{
+      content: '';
+      position: absolute;
+      top: 0; left: 15%; right: 15%;
+      height: 2px;
+      background: linear-gradient(90deg,#10b981,#34d399);
       border-radius: 0 0 3px 3px;
     }
     .g3-bnav-badge{
@@ -526,36 +490,32 @@ export default function Globe3DView({savedDrawings=[],onClose}){
 
     /* ── MOBILE / APK ── */
     @media(max-width:640px){
-      /* Panel slides in as overlay */
-      .g3-panel{transform:translateX(-100%); bottom: 0 !important;}
-      .g3-panel.open{transform:translateX(0);z-index:1250;}
-
-      /* Map fills whole screen below toolbar, above bottom nav */
+      .g3-panel{
+        transform:translateX(-100%);
+        bottom: 0 !important;
+        top: calc(${TB}px + env(safe-area-inset-top, 0px)) !important;
+        width: min(${PANEL}px, 90vw) !important;
+        z-index: 1260;
+      }
+      .g3-panel.open{transform:translateX(0);}
       .g3-map{
         left:0!important;
         bottom: calc(${BNH}px + env(safe-area-inset-bottom, 0px)) !important;
       }
-
-      /* Status bar hidden on mobile (bottom nav replaces it) */
       .g3-statusbar{ display: none !important; }
-
-      /* Bottom nav visible on mobile */
       .g3-bottom-nav{ display: flex !important; }
-
-      /* Hamburger visible */
       .g3-ham{display:flex!important;}
-
-      /* Toolbar labels hidden to save space */
-      .g3-tb-lbl{display:none!important;}
-
-      /* Smaller toolbar buttons */
-      .g3-tbtn{min-width:40px!important;padding:0 7px!important;}
-
-      /* Floating toolbar even thinner */
+      .g3-tb-lbl{
+        display: block !important;
+        font-size: 8px !important;
+        font-weight: 700 !important;
+        letter-spacing: .03em !important;
+        line-height: 1 !important;
+        white-space: nowrap !important;
+      }
+      .g3-tbtn{min-width:44px!important;padding:0 8px!important;height:48px!important;gap:2px!important;}
       :root{--tb-height:48px;}
       .g3-toolbar{height:48px;}
-
-      /* Zoom & compass — above bottom nav */
       .g3-zoom{
         bottom: calc(${BNH}px + env(safe-area-inset-bottom, 0px) + 12px) !important;
         right: 10px !important;
@@ -564,32 +524,35 @@ export default function Globe3DView({savedDrawings=[],onClose}){
         bottom: calc(${BNH}px + env(safe-area-inset-bottom, 0px) + 8px) !important;
         right: 10px !important;
       }
-
-      /* KML stats compact on mobile */
       .g3-kml-stats{right:10px!important;width:calc(100vw - 20px)!important;max-width:260px!important;}
-
-      /* Elevation profile — full width, above bottom nav */
       .g3-elev-panel{
         left: 0 !important;
         right: 0 !important;
         bottom: calc(${BNH}px + env(safe-area-inset-bottom, 0px)) !important;
       }
-
-      /* Mode banners — stay below top toolbar */
       .g3-mode-banner{
         top: calc(48px + env(safe-area-inset-top, 0px) + 8px) !important;
+        left: 8px !important;
+        right: 8px !important;
+        width: auto !important;
+        transform: none !important;
+        flex-wrap: wrap;
       }
-
-      /* Floating panels full-width on mobile */
       .g3-float-panel{
         left: 8px !important;
         right: 8px !important;
         width: auto !important;
         max-width: none !important;
       }
-
-      /* Survey/draw tool active bottom sheet — above nav */
       .g3-tool-sheet{
+        bottom: calc(${BNH}px + env(safe-area-inset-bottom, 0px)) !important;
+      }
+      /* FIX 4: coord converter full-screen on mobile */
+      .g3-coord-conv-panel{
+        left: 0 !important;
+        right: 0 !important;
+        width: 100% !important;
+        top: calc(48px + env(safe-area-inset-top, 0px)) !important;
         bottom: calc(${BNH}px + env(safe-area-inset-bottom, 0px)) !important;
       }
     }
@@ -597,22 +560,14 @@ export default function Globe3DView({savedDrawings=[],onClose}){
       .g3-ham{display:none!important;}
       .g3-bottom-nav{display:none!important;}
     }
-
-    /* ── SAFE AREA FOR TABLETS / LANDSCAPE NOTCH ── */
     @supports(padding-top: env(safe-area-inset-top)){
       .g3-toolbar{
         height: calc(${TB}px + env(safe-area-inset-top, 0px));
         padding-top: env(safe-area-inset-top, 0px);
       }
-      .g3-panel{
-        top: calc(${TB}px + env(safe-area-inset-top, 0px));
-      }
-      .g3-map{
-        top: calc(${TB}px + env(safe-area-inset-top, 0px)) !important;
-      }
+      .g3-panel{top: calc(${TB}px + env(safe-area-inset-top, 0px));}
+      .g3-map{top: calc(${TB}px + env(safe-area-inset-top, 0px)) !important;}
     }
-
-    /* Mobile coordinate strip — above bottom nav */
     .g3-coord-strip{
       display: none;
       position: fixed !important;
@@ -635,13 +590,10 @@ export default function Globe3DView({savedDrawings=[],onClose}){
     }
     @media(max-width:640px){
       .g3-coord-strip{ display: flex !important; }
-      /* Elevation profile also needs to clear coord strip */
       .g3-elev-panel{
         bottom: calc(${BNH}px + 26px + env(safe-area-inset-bottom, 0px)) !important;
       }
     }
-    /* Some Android WebViews ignore position:fixed during momentum scroll.
-       Wrapping in a transform context forces compositing layer. */
     body{
       -webkit-overflow-scrolling: auto !important;
       overflow: hidden !important;
@@ -915,50 +867,13 @@ export default function Globe3DView({savedDrawings=[],onClose}){
     setKmlName(file.name);setKmlStats(null);setKmlFlyIn(false);
     if(orbitRef.current){orbitRef.current.active=false;if(orbitRef.current.animFrame){cancelAnimationFrame(orbitRef.current.animFrame);orbitRef.current.animFrame=null;}try{viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);}catch{}orbitRef.current=null;}
     Cesium.KmlDataSource.load(URL.createObjectURL(file),{camera:viewer.scene.camera,canvas:viewer.scene.canvas,clampToGround:true}).then(ds=>{
-      const STROKE       = Cesium.Color.fromCssColorString("#f5f3ee");
-      const STROKE_DARK  = Cesium.Color.fromCssColorString("#ed1010").withAlpha(0.55);
-      const FILL         = Cesium.Color.fromCssColorString("#f6f4f0").withAlpha(0.18);
-      const PT_COLOR     = Cesium.Color.fromCssColorString("#f7f2f0");
-      const PT_OUTLINE   = Cesium.Color.fromCssColorString("#e52e0a").withAlpha(0.8);
-
+      const STROKE=Cesium.Color.fromCssColorString("#f5f3ee");const STROKE_DARK=Cesium.Color.fromCssColorString("#ed1010").withAlpha(0.55);const FILL=Cesium.Color.fromCssColorString("#f6f4f0").withAlpha(0.18);const PT_COLOR=Cesium.Color.fromCssColorString("#f7f2f0");const PT_OUTLINE=Cesium.Color.fromCssColorString("#e52e0a").withAlpha(0.8);
       for(const ent of ds.entities.values){try{
-        if(ent.polyline){
-          ent.polyline.clampToGround   = new Cesium.ConstantProperty(true);
-          ent.polyline.arcType         = new Cesium.ConstantProperty(Cesium.ArcType.GEODESIC);
-          ent.polyline.width           = new Cesium.ConstantProperty(3);
-          ent.polyline.material        = new Cesium.PolylineOutlineMaterialProperty({
-            color:        STROKE,
-            outlineColor: STROKE_DARK,
-            outlineWidth: 2.5,
-          });
-        }
-        if(ent.polygon){
-          ent.polygon.material           = new Cesium.ColorMaterialProperty(FILL);
-          ent.polygon.outline            = new Cesium.ConstantProperty(true);
-          ent.polygon.outlineColor       = new Cesium.ConstantProperty(STROKE);
-          ent.polygon.outlineWidth       = new Cesium.ConstantProperty(3);
-          ent.polygon.classificationType = new Cesium.ConstantProperty(Cesium.ClassificationType.TERRAIN);
-        }
-        if(ent.billboard){
-          ent.billboard.heightReference          = new Cesium.ConstantProperty(Cesium.HeightReference.CLAMP_TO_GROUND);
-          ent.billboard.disableDepthTestDistance = new Cesium.ConstantProperty(Number.POSITIVE_INFINITY);
-        }
-        if(ent.point){
-          ent.point.color                    = new Cesium.ConstantProperty(PT_COLOR);
-          ent.point.outlineColor             = new Cesium.ConstantProperty(PT_OUTLINE);
-          ent.point.outlineWidth             = new Cesium.ConstantProperty(2);
-          ent.point.pixelSize                = new Cesium.ConstantProperty(11);
-          ent.point.heightReference          = new Cesium.ConstantProperty(Cesium.HeightReference.CLAMP_TO_GROUND);
-          ent.point.disableDepthTestDistance = new Cesium.ConstantProperty(Number.POSITIVE_INFINITY);
-        }
-        if(ent.label){
-          ent.label.fillColor                = new Cesium.ConstantProperty(Cesium.Color.WHITE);
-          ent.label.outlineColor             = new Cesium.ConstantProperty(Cesium.Color.BLACK);
-          ent.label.outlineWidth             = new Cesium.ConstantProperty(2.5);
-          ent.label.style                    = new Cesium.ConstantProperty(Cesium.LabelStyle.FILL_AND_OUTLINE);
-          ent.label.heightReference          = new Cesium.ConstantProperty(Cesium.HeightReference.CLAMP_TO_GROUND);
-          ent.label.disableDepthTestDistance = new Cesium.ConstantProperty(Number.POSITIVE_INFINITY);
-        }
+        if(ent.polyline){ent.polyline.clampToGround=new Cesium.ConstantProperty(true);ent.polyline.arcType=new Cesium.ConstantProperty(Cesium.ArcType.GEODESIC);ent.polyline.width=new Cesium.ConstantProperty(3);ent.polyline.material=new Cesium.PolylineOutlineMaterialProperty({color:STROKE,outlineColor:STROKE_DARK,outlineWidth:2.5});}
+        if(ent.polygon){ent.polygon.material=new Cesium.ColorMaterialProperty(FILL);ent.polygon.outline=new Cesium.ConstantProperty(true);ent.polygon.outlineColor=new Cesium.ConstantProperty(STROKE);ent.polygon.outlineWidth=new Cesium.ConstantProperty(3);ent.polygon.classificationType=new Cesium.ConstantProperty(Cesium.ClassificationType.TERRAIN);}
+        if(ent.billboard){ent.billboard.heightReference=new Cesium.ConstantProperty(Cesium.HeightReference.CLAMP_TO_GROUND);ent.billboard.disableDepthTestDistance=new Cesium.ConstantProperty(Number.POSITIVE_INFINITY);}
+        if(ent.point){ent.point.color=new Cesium.ConstantProperty(PT_COLOR);ent.point.outlineColor=new Cesium.ConstantProperty(PT_OUTLINE);ent.point.outlineWidth=new Cesium.ConstantProperty(2);ent.point.pixelSize=new Cesium.ConstantProperty(11);ent.point.heightReference=new Cesium.ConstantProperty(Cesium.HeightReference.CLAMP_TO_GROUND);ent.point.disableDepthTestDistance=new Cesium.ConstantProperty(Number.POSITIVE_INFINITY);}
+        if(ent.label){ent.label.fillColor=new Cesium.ConstantProperty(Cesium.Color.WHITE);ent.label.outlineColor=new Cesium.ConstantProperty(Cesium.Color.BLACK);ent.label.outlineWidth=new Cesium.ConstantProperty(2.5);ent.label.style=new Cesium.ConstantProperty(Cesium.LabelStyle.FILL_AND_OUTLINE);ent.label.heightReference=new Cesium.ConstantProperty(Cesium.HeightReference.CLAMP_TO_GROUND);ent.label.disableDepthTestDistance=new Cesium.ConstantProperty(Number.POSITIVE_INFINITY);}
       }catch(_){}}
       viewer.dataSources.add(ds);
       const entities=ds.entities.values;let sumLat=0,sumLng=0,minLat=90,maxLat=-90,minLng=180,maxLng=-180,ptCount=0;
@@ -1005,14 +920,12 @@ export default function Globe3DView({savedDrawings=[],onClose}){
   function zoomIn(){if(!ready)return;viewerRef.current.camera.zoomIn(viewerRef.current.camera.positionCartographic.height*0.4);}
   function zoomOut(){if(!ready)return;viewerRef.current.camera.zoomOut(viewerRef.current.camera.positionCartographic.height*0.6);}
 
-  // ── Reusable checkbox component ───────────────────────────────────────────
   const GlassCheckbox=({active,color="#3b82f6"})=>(
     <div className="g3-chk" style={{borderColor:active?color:"rgba(255,255,255,0.2)",background:active?color:"rgba(255,255,255,0.03)"}}>
       {active&&<Icons.Check/>}
     </div>
   );
 
-  // ── Section header ────────────────────────────────────────────────────────
   const SectionHeader=({icon,label,sectionKey})=>(
     <div className="g3-sec-h" onClick={()=>toggleSec(sectionKey)}>
       <div className="sec-icon">
@@ -1029,10 +942,8 @@ export default function Globe3DView({savedDrawings=[],onClose}){
     <>
       <style>{CSS}</style>
 
-      {/* ── MAP VIEWPORT — uses .g3-map class now ── */}
       <div className="g3-map" ref={containerRef}/>
 
-      {/* ── LOADING SCREEN ── */}
       {!ready&&!initErr&&(
         <div style={{position:"fixed",inset:0,zIndex:2000,background:"#060c18",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:20}}>
           <div style={{position:"relative",width:64,height:64}}>
@@ -1056,34 +967,22 @@ export default function Globe3DView({savedDrawings=[],onClose}){
         </div>
       )}
 
-      {/* ══════════════════════════════════════════════════════════════════
-          FLOATING TOP TOOLBAR — fixed, never scrolls, works on APK/mobile
-      ══════════════════════════════════════════════════════════════════ */}
+      {/* ══ FLOATING TOP TOOLBAR ══ */}
       <div className="g3-toolbar">
         <div className="g3-toolbar-inner">
-
-          {/* Logo — always visible, flex-shrink:0 */}
           <div className="g3-logo">
-            <div style={{
-              width:28,height:28,borderRadius:7,
-              background:"linear-gradient(135deg,#1d4ed8,#0891b2)",
-              display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,
-              boxShadow:"0 0 12px rgba(59,130,246,0.4)",
-              flexShrink:0,
-            }}>🌍</div>
+            <div style={{width:28,height:28,borderRadius:7,background:"linear-gradient(135deg,#1d4ed8,#0891b2)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,boxShadow:"0 0 12px rgba(59,130,246,0.4)",flexShrink:0}}>🌍</div>
             <div style={{flexShrink:0}}>
               <div style={{color:"var(--text-primary)",fontWeight:700,fontSize:13,letterSpacing:".01em",lineHeight:1.1,whiteSpace:"nowrap"}}>SurveyMap</div>
               <div style={{color:"rgba(96,165,250,0.9)",fontSize:9,fontWeight:700,letterSpacing:".12em",lineHeight:1}}>PRO</div>
             </div>
           </div>
 
-          {/* Hamburger (mobile) */}
           <button className="g3-ham" onClick={()=>setPanelOpen(p=>!p)}
             style={{display:"none",width:36,height:36,borderRadius:7,border:"1px solid rgba(255,255,255,.1)",background:"rgba(255,255,255,.04)",color:"rgba(255,255,255,0.7)",cursor:"pointer",alignItems:"center",justifyContent:"center",marginRight:6,flexShrink:0}}>
             <Icons.Menu/>
           </button>
 
-          {/* Layer buttons */}
           {LAYERS.slice(0,6).map(l=>(
             <button key={l.key} className={`g3-tbtn${activeLayer===l.key?" active":""}`} onClick={()=>setActiveLayer(l.key)}>
               <span style={{display:"flex",alignItems:"center",justifyContent:"center",lineHeight:1}}>{l.icon}</span>
@@ -1091,10 +990,8 @@ export default function Globe3DView({savedDrawings=[],onClose}){
             </button>
           ))}
 
-          {/* Separator */}
           <div className="g3-tb-sep"/>
 
-          {/* Tool buttons */}
           {[
             {icon:<Icons.Draw/>,label:"Draw",active:drawMode,action:()=>{setDrawMode(true);drawPtsRef.current=[];setDrawPoints([]);}},
             {icon:<Icons.Measure/>,label:"Measure",active:measureMode,action:()=>setMeasureMode(true)},
@@ -1110,7 +1007,6 @@ export default function Globe3DView({savedDrawings=[],onClose}){
             </button>
           ))}
 
-          {/* File upload buttons */}
           {[
             {icon:<Icons.KML/>,label:"KML",accept:".kml,.kmz",onChange:handleKML},
             {icon:<Icons.CSV/>,label:"CSV",accept:".csv",onChange:handleCSV},
@@ -1124,10 +1020,8 @@ export default function Globe3DView({savedDrawings=[],onClose}){
             </button>
           ))}
 
-          {/* Separator */}
           <div className="g3-tb-sep"/>
 
-          {/* Feature toggles */}
           {[
             {icon:<Icons.Layers/>,label:"Data",active:dataLayersOpen,action:()=>setDataLayersOpen(p=>!p)},
             {icon:<Icons.Heatmap/>,label:"Heat",active:heatmapOpen,action:()=>setHeatmapOpen(p=>!p)},
@@ -1142,7 +1036,6 @@ export default function Globe3DView({savedDrawings=[],onClose}){
             </button>
           ))}
 
-          {/* View mode pills */}
           <div className="g3-view-pills">
             {[["3D","3D"],["2D","2D"],["CV","Col"]].map(([mode,label])=>{
               const isActive=viewMode===(mode==="CV"?"Columbus":mode);
@@ -1155,9 +1048,7 @@ export default function Globe3DView({savedDrawings=[],onClose}){
             })}
           </div>
 
-          {/* End actions — always pinned right */}
           <div className="g3-toolbar-end">
-            {/* Active mode pill — mobile only */}
             {(drawMode||measureMode||surveyMode||elevMode)&&(
               <div style={{display:"flex",alignItems:"center",gap:5,padding:"4px 10px",borderRadius:20,background:elevMode?"rgba(245,158,11,0.12)":drawMode?"rgba(249,115,22,0.12)":measureMode?"rgba(250,204,21,0.1)":"rgba(239,68,68,0.1)",border:`1px solid ${elevMode?"rgba(245,158,11,.3)":drawMode?"rgba(249,115,22,.3)":measureMode?"rgba(250,204,21,.25)":"rgba(239,68,68,.25)"}`,flexShrink:0}}>
                 <div style={{width:6,height:6,borderRadius:"50%",background:elevMode?"#f59e0b":drawMode?"#f97316":measureMode?"#facc15":"#ef4444",animation:"glowPulse 1.5s ease infinite"}}/>
@@ -1174,19 +1065,13 @@ export default function Globe3DView({savedDrawings=[],onClose}){
               2D Map
             </button>
           </div>
+        </div>
+      </div>
 
-        </div>{/* /g3-toolbar-inner */}
-      </div>{/* /g3-toolbar */}
-
-      {/* Mobile backdrop */}
       {panelOpen&&<div onClick={()=>setPanelOpen(false)} style={{position:"fixed",inset:0,zIndex:1240,background:"rgba(0,0,0,.6)",backdropFilter:"blur(4px)"}}/>}
 
-      {/* ══════════════════════════════════════════════════════════════════
-          LEFT PANEL
-      ══════════════════════════════════════════════════════════════════ */}
+      {/* ══ LEFT PANEL ══ */}
       <div className={`g3-panel${panelOpen?" open":""}`}>
-
-        {/* ── SEARCH ── */}
         <div style={{padding:"14px 14px 12px",borderBottom:"1px solid rgba(255,255,255,.06)"}}>
           <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:8}}>
             <Icons.Search/>
@@ -1194,29 +1079,18 @@ export default function Globe3DView({savedDrawings=[],onClose}){
           </div>
           <form onSubmit={handleSearch} style={{display:"flex",gap:6,marginBottom:8}}>
             <div style={{flex:1,position:"relative"}}>
-              <input value={searchQ} onChange={e=>setSearchQ(e.target.value)}
-                placeholder="Place, city, or 20.29, 85.82…"
-                className="g3-input" style={{paddingRight:36}}/>
-              {searchLoading&&(
-                <div style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",width:14,height:14,border:"2px solid rgba(59,130,246,.2)",borderTopColor:"#3b82f6",borderRadius:"50%",animation:"spin .7s linear infinite"}}/>
-              )}
+              <input value={searchQ} onChange={e=>setSearchQ(e.target.value)} placeholder="Place, city, or 20.29, 85.82…" className="g3-input" style={{paddingRight:36}}/>
+              {searchLoading&&(<div style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",width:14,height:14,border:"2px solid rgba(59,130,246,.2)",borderTopColor:"#3b82f6",borderRadius:"50%",animation:"spin .7s linear infinite"}}/>)}
             </div>
-            <button type="submit" disabled={searchLoading}
-              style={{padding:"0 14px",borderRadius:8,border:"none",background:"linear-gradient(135deg,#1d4ed8,#0891b2)",color:"#fff",cursor:"pointer",fontSize:13,fontWeight:700,flexShrink:0,transition:"filter .15s"}}
-              onMouseEnter={e=>e.currentTarget.style.filter="brightness(1.15)"}
-              onMouseLeave={e=>e.currentTarget.style.filter="brightness(1)"}>
+            <button type="submit" disabled={searchLoading} style={{padding:"0 14px",borderRadius:8,border:"none",background:"linear-gradient(135deg,#1d4ed8,#0891b2)",color:"#fff",cursor:"pointer",fontSize:13,fontWeight:700,flexShrink:0,transition:"filter .15s"}} onMouseEnter={e=>e.currentTarget.style.filter="brightness(1.15)"} onMouseLeave={e=>e.currentTarget.style.filter="brightness(1)"}>
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
             </button>
           </form>
-          <button onClick={handleGPS}
-            style={{width:"100%",padding:"7px 10px",borderRadius:8,border:"1px solid rgba(255,255,255,.08)",background:"rgba(255,255,255,.03)",color:"var(--text-secondary)",fontSize:11,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:6,fontFamily:"var(--font-ui)",fontWeight:500,transition:"all .15s"}}
-            onMouseEnter={e=>{e.currentTarget.style.background="rgba(6,182,212,.08)";e.currentTarget.style.borderColor="rgba(6,182,212,.3)";e.currentTarget.style.color="#22d3ee";}}
-            onMouseLeave={e=>{e.currentTarget.style.background="rgba(255,255,255,.03)";e.currentTarget.style.borderColor="rgba(255,255,255,.08)";e.currentTarget.style.color="var(--text-secondary)";}}>
+          <button onClick={handleGPS} style={{width:"100%",padding:"7px 10px",borderRadius:8,border:"1px solid rgba(255,255,255,.08)",background:"rgba(255,255,255,.03)",color:"var(--text-secondary)",fontSize:11,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:6,fontFamily:"var(--font-ui)",fontWeight:500,transition:"all .15s"}} onMouseEnter={e=>{e.currentTarget.style.background="rgba(6,182,212,.08)";e.currentTarget.style.borderColor="rgba(6,182,212,.3)";e.currentTarget.style.color="#22d3ee";}} onMouseLeave={e=>{e.currentTarget.style.background="rgba(255,255,255,.03)";e.currentTarget.style.borderColor="rgba(255,255,255,.08)";e.currentTarget.style.color="var(--text-secondary)";}}>
             <Icons.GPS/> Use My Location
           </button>
         </div>
 
-        {/* ── PLACES ── */}
         <div>
           <SectionHeader icon={<Icons.Star/>} label="MY PLACES" sectionKey="places"/>
           {openSec.places&&(
@@ -1239,28 +1113,20 @@ export default function Globe3DView({savedDrawings=[],onClose}){
                   ))}
                 </div>
               )}
-
               <div style={{display:"flex",gap:5,marginBottom:10}}>
                 {[{t:"marker",lb:"Pin",icon:"•"},{t:"path",lb:"Path",icon:"~"}].map(({t,lb,icon})=>(
-                  <button key={t} onClick={()=>{setDrawType(t);setDrawMode(true);drawPtsRef.current=[];setDrawPoints([]);}}
-                    style={{flex:1,padding:"7px 5px",borderRadius:8,border:"1px solid rgba(255,255,255,.08)",background:"rgba(255,255,255,.03)",color:"var(--text-secondary)",fontSize:11,cursor:"pointer",fontFamily:"var(--font-ui)",display:"flex",alignItems:"center",justifyContent:"center",gap:4,transition:"all .15s"}}
-                    onMouseEnter={e=>{e.currentTarget.style.background="rgba(255,255,255,.07)";e.currentTarget.style.color="var(--text-primary)";}}
-                    onMouseLeave={e=>{e.currentTarget.style.background="rgba(255,255,255,.03)";e.currentTarget.style.color="var(--text-secondary)";}}>
+                  <button key={t} onClick={()=>{setDrawType(t);setDrawMode(true);drawPtsRef.current=[];setDrawPoints([]);}} style={{flex:1,padding:"7px 5px",borderRadius:8,border:"1px solid rgba(255,255,255,.08)",background:"rgba(255,255,255,.03)",color:"var(--text-secondary)",fontSize:11,cursor:"pointer",fontFamily:"var(--font-ui)",display:"flex",alignItems:"center",justifyContent:"center",gap:4,transition:"all .15s"}} onMouseEnter={e=>{e.currentTarget.style.background="rgba(255,255,255,.07)";e.currentTarget.style.color="var(--text-primary)";}} onMouseLeave={e=>{e.currentTarget.style.background="rgba(255,255,255,.03)";e.currentTarget.style.color="var(--text-secondary)";}}>
                     <span style={{fontSize:13}}>{icon}</span>{lb}
                   </button>
                 ))}
               </div>
-
               {localDrawings.length>0&&(
                 <>
                   <div style={{height:1,background:"rgba(255,255,255,.05)",marginBottom:10}}/>
                   <div style={{color:"var(--text-dim)",fontSize:9,fontWeight:700,letterSpacing:".1em",marginBottom:6,fontFamily:"var(--font-ui)"}}>EXPORT</div>
                   <div style={{display:"flex",flexDirection:"column",gap:3}}>
-                    {[["KML","application/vnd.google-earth.kml+xml",()=>dlFile(toKML(localDrawings),"survey.kml","application/vnd.google-earth.kml+xml")],["GeoJSON","application/geo+json",()=>dlFile(JSON.stringify(toGeoJSON(localDrawings),null,2),"survey.geojson","application/geo+json")],["CSV","text/csv",()=>dlFile(toCSV(localDrawings),"survey.csv","text/csv")]].map(([lb,,fn])=>(
-                      <button key={lb} onClick={fn}
-                        style={{padding:"7px 10px",borderRadius:7,border:"1px solid rgba(255,255,255,.07)",background:"rgba(255,255,255,.02)",color:"var(--text-muted)",fontSize:11,cursor:"pointer",fontFamily:"var(--font-ui)",display:"flex",alignItems:"center",gap:6,transition:"all .15s"}}
-                        onMouseEnter={e=>{e.currentTarget.style.background="rgba(255,255,255,.06)";e.currentTarget.style.color="var(--text-primary)";}}
-                        onMouseLeave={e=>{e.currentTarget.style.background="rgba(255,255,255,.02)";e.currentTarget.style.color="var(--text-muted)";}}>
+                    {[["KML",()=>dlFile(toKML(localDrawings),"survey.kml","application/vnd.google-earth.kml+xml")],["GeoJSON",()=>dlFile(JSON.stringify(toGeoJSON(localDrawings),null,2),"survey.geojson","application/geo+json")],["CSV",()=>dlFile(toCSV(localDrawings),"survey.csv","text/csv")]].map(([lb,fn])=>(
+                      <button key={lb} onClick={fn} style={{padding:"7px 10px",borderRadius:7,border:"1px solid rgba(255,255,255,.07)",background:"rgba(255,255,255,.02)",color:"var(--text-muted)",fontSize:11,cursor:"pointer",fontFamily:"var(--font-ui)",display:"flex",alignItems:"center",gap:6,transition:"all .15s"}} onMouseEnter={e=>{e.currentTarget.style.background="rgba(255,255,255,.06)";e.currentTarget.style.color="var(--text-primary)";}} onMouseLeave={e=>{e.currentTarget.style.background="rgba(255,255,255,.02)";e.currentTarget.style.color="var(--text-muted)";}}>
                         <Icons.Export/> Export {lb}
                       </button>
                     ))}
@@ -1271,21 +1137,16 @@ export default function Globe3DView({savedDrawings=[],onClose}){
           )}
         </div>
 
-        {/* ── LAYERS ── */}
         <div>
           <SectionHeader icon={<Icons.Layers/>} label="LAYERS" sectionKey="layers"/>
           {openSec.layers&&(
             <div className="g3-sec-body" style={{animation:"fadeSlideIn .2s ease"}}>
-
-              {/* Night auto */}
               <div className={`g3-layer-row${nightAuto?" active":""}`} onClick={()=>setNightAuto(p=>!p)} style={{marginBottom:8}}>
                 <GlassCheckbox active={nightAuto} color="#6366f1"/>
                 <Icons.Night/>
                 <span style={{color:nightAuto?"var(--text-primary)":"var(--text-secondary)",fontSize:11,fontFamily:"var(--font-ui)"}}>Auto Night Mode</span>
                 {nightAuto&&<span className="g3-badge" style={{marginLeft:"auto",background:"rgba(99,102,241,.2)",color:"#a5b4fc",border:"1px solid rgba(99,102,241,.3)"}}>ON</span>}
               </div>
-
-              {/* Layer options */}
               <div style={{display:"flex",flexDirection:"column",gap:1}}>
                 {LAYERS.map(l=>(
                   <div key={l.key} className={`g3-layer-row${activeLayer===l.key?" active":""}`} onClick={()=>setActiveLayer(l.key)}>
@@ -1295,16 +1156,12 @@ export default function Globe3DView({savedDrawings=[],onClose}){
                   </div>
                 ))}
               </div>
-
-              {/* CSV status */}
               {csvStatus&&(
                 <div style={{marginTop:10,padding:"7px 10px",borderRadius:8,background:csvStatus==="done"?"rgba(16,185,129,.07)":csvStatus==="error"?"rgba(239,68,68,.07)":"rgba(245,158,11,.07)",border:`1px solid ${csvStatus==="done"?"rgba(16,185,129,.3)":csvStatus==="error"?"rgba(239,68,68,.3)":"rgba(245,158,11,.3)"}`,color:csvStatus==="done"?"#34d399":csvStatus==="error"?"#f87171":"#fbbf24",fontSize:11,fontWeight:600,fontFamily:"var(--font-ui)",display:"flex",alignItems:"center",gap:6}}>
                   <span>{csvStatus==="loading"?"⏳":csvStatus==="done"?"✓":"✕"}</span>
                   <span>{csvStatus==="loading"?"Loading CSV…":csvStatus==="done"?`${csvCount.toLocaleString()} points loaded`:"Failed to load CSV"}</span>
                 </div>
               )}
-
-              {/* DEM */}
               <div style={{marginTop:12,paddingTop:12,borderTop:"1px solid rgba(255,255,255,.05)"}}>
                 <div style={{color:"var(--text-dim)",fontSize:9,fontWeight:700,letterSpacing:".1em",marginBottom:8,fontFamily:"var(--font-ui)"}}>TERRAIN VISUALIZATION</div>
                 <div className={`g3-layer-row${demEnabled?" active":""}`} onClick={()=>setDemEnabled(p=>!p)} style={{marginBottom:demEnabled?8:0}}>
@@ -1316,15 +1173,7 @@ export default function Globe3DView({savedDrawings=[],onClose}){
                 {demEnabled&&(
                   <div style={{display:"flex",flexDirection:"column",gap:8,paddingLeft:4}}>
                     <div style={{display:"flex",background:"rgba(0,0,0,.3)",borderRadius:8,border:"1px solid rgba(255,255,255,.08)",padding:2,gap:1}}>
-                      {[["hypsometric","Colors"],["slope","Shading"],["both","Both"]].map(([v,lb])=>{
-                        const sel=demStyle===v;
-                        return(
-                          <button key={v} onClick={()=>setDemStyle(v)}
-                            style={{flex:1,padding:"5px 2px",borderRadius:6,border:"none",fontSize:9,fontWeight:sel?700:500,cursor:"pointer",fontFamily:"var(--font-ui)",background:sel?"rgba(255,255,255,.12)":"transparent",color:sel?"rgba(255,255,255,.9)":"rgba(255,255,255,.3)",transition:"all .12s",boxShadow:sel?"inset 0 0 0 1px rgba(255,255,255,.14)":"none"}}>
-                            {lb}
-                          </button>
-                        );
-                      })}
+                      {[["hypsometric","Colors"],["slope","Shading"],["both","Both"]].map(([v,lb])=>{const sel=demStyle===v;return(<button key={v} onClick={()=>setDemStyle(v)} style={{flex:1,padding:"5px 2px",borderRadius:6,border:"none",fontSize:9,fontWeight:sel?700:500,cursor:"pointer",fontFamily:"var(--font-ui)",background:sel?"rgba(255,255,255,.12)":"transparent",color:sel?"rgba(255,255,255,.9)":"rgba(255,255,255,.3)",transition:"all .12s",boxShadow:sel?"inset 0 0 0 1px rgba(255,255,255,.14)":"none"}}>{lb}</button>);})}
                     </div>
                     <div style={{display:"flex",alignItems:"center",gap:8}}>
                       <span style={{fontSize:9,color:"var(--text-dim)",fontWeight:700,width:52,fontFamily:"var(--font-ui)"}}>OPACITY</span>
@@ -1334,18 +1183,12 @@ export default function Globe3DView({savedDrawings=[],onClose}){
                   </div>
                 )}
               </div>
-
-              {/* 3D Buildings */}
               <div style={{marginTop:12,paddingTop:12,borderTop:"1px solid rgba(255,255,255,.05)"}}>
                 <div style={{color:"var(--text-dim)",fontSize:9,fontWeight:700,letterSpacing:".1em",marginBottom:8,fontFamily:"var(--font-ui)"}}>3D BUILDINGS</div>
-                <div className={`g3-layer-row${buildingsEnabled?" active":""}`}
-                  onClick={()=>{if(!buildingsLoading)setBuildingsEnabled(p=>!p);}}
-                  style={{opacity:buildingsLoading?0.6:1,marginBottom:buildingsEnabled?8:0}}>
+                <div className={`g3-layer-row${buildingsEnabled?" active":""}`} onClick={()=>{if(!buildingsLoading)setBuildingsEnabled(p=>!p);}} style={{opacity:buildingsLoading?0.6:1,marginBottom:buildingsEnabled?8:0}}>
                   <GlassCheckbox active={buildingsEnabled&&!buildingsLoading}/>
                   <Icons.Building/>
-                  <span style={{color:buildingsEnabled?"var(--text-primary)":"var(--text-secondary)",fontSize:11,fontFamily:"var(--font-ui)"}}>
-                    {buildingsLoading?"Loading buildings…":"OSM 3D Buildings"}
-                  </span>
+                  <span style={{color:buildingsEnabled?"var(--text-primary)":"var(--text-secondary)",fontSize:11,fontFamily:"var(--font-ui)"}}>{buildingsLoading?"Loading buildings…":"OSM 3D Buildings"}</span>
                   {buildingsLoading&&<span style={{marginLeft:"auto",width:12,height:12,border:"2px solid rgba(59,130,246,.2)",borderTopColor:"#3b82f6",borderRadius:"50%",animation:"spin .8s linear infinite",flexShrink:0}}/>}
                   {buildingsEnabled&&!buildingsLoading&&<span className="g3-badge" style={{marginLeft:"auto",background:"rgba(59,130,246,.2)",color:"#60a5fa",border:"1px solid rgba(59,130,246,.3)"}}>ON</span>}
                 </div>
@@ -1354,17 +1197,12 @@ export default function Globe3DView({savedDrawings=[],onClose}){
                     <div style={{fontSize:10,color:"var(--text-muted)",lineHeight:1.6,fontFamily:"var(--font-ui)",marginBottom:6}}>Zoom into a city to see buildings</div>
                     <div style={{display:"flex",flexWrap:"wrap",gap:"4px 10px"}}>
                       {[["#cbd5e1","Residential"],["#93c5fd","Commercial"],["#fca5a5","Hospital"],["#fcd34d","School"],["#c4b5fd","Religious"],["#9ca3af","Industrial"]].map(([c,l])=>(
-                        <span key={l} style={{display:"flex",alignItems:"center",gap:4,fontSize:9,color:"var(--text-muted)",fontFamily:"var(--font-ui)"}}>
-                          <span style={{width:8,height:8,borderRadius:2,background:c,flexShrink:0}}/>
-                          {l}
-                        </span>
+                        <span key={l} style={{display:"flex",alignItems:"center",gap:4,fontSize:9,color:"var(--text-muted)",fontFamily:"var(--font-ui)"}}><span style={{width:8,height:8,borderRadius:2,background:c,flexShrink:0}}/>{l}</span>
                       ))}
                     </div>
                   </div>
                 )}
               </div>
-
-              {/* Grid */}
               <div style={{marginTop:12,paddingTop:12,borderTop:"1px solid rgba(255,255,255,.05)"}}>
                 <div style={{color:"var(--text-dim)",fontSize:9,fontWeight:700,letterSpacing:".1em",marginBottom:8,fontFamily:"var(--font-ui)"}}>COORDINATE GRID</div>
                 <div className={`g3-layer-row${gridEnabled?" active":""}`} onClick={()=>setGridEnabled(p=>!p)} style={{marginBottom:gridEnabled?8:0}}>
@@ -1375,29 +1213,13 @@ export default function Globe3DView({savedDrawings=[],onClose}){
                 </div>
                 {gridEnabled&&(
                   <div style={{display:"flex",background:"rgba(0,0,0,.3)",borderRadius:8,border:"1px solid rgba(255,255,255,.08)",padding:2,marginBottom:8,paddingLeft:4,gap:1}}>
-                    {[["LatLng","LL"],["UTM","UTM"],["MGRS","MGRS"]].map(([m,lb])=>{
-                      const sel=gridMode===m;
-                      return(
-                        <button key={m} onClick={()=>setGridMode(m)}
-                          style={{flex:1,padding:"5px 4px",borderRadius:6,border:"none",cursor:"pointer",fontSize:9,fontWeight:sel?700:500,background:sel?"rgba(255,255,255,.12)":"transparent",color:sel?"rgba(255,255,255,.9)":"rgba(255,255,255,.3)",fontFamily:"var(--font-ui)",transition:"all .15s",boxShadow:sel?"inset 0 0 0 1px rgba(255,255,255,.14)":"none"}}>
-                          {lb}
-                        </button>
-                      );
-                    })}
+                    {[["LatLng","LL"],["UTM","UTM"],["MGRS","MGRS"]].map(([m,lb])=>{const sel=gridMode===m;return(<button key={m} onClick={()=>setGridMode(m)} style={{flex:1,padding:"5px 4px",borderRadius:6,border:"none",cursor:"pointer",fontSize:9,fontWeight:sel?700:500,background:sel?"rgba(255,255,255,.12)":"transparent",color:sel?"rgba(255,255,255,.9)":"rgba(255,255,255,.3)",fontFamily:"var(--font-ui)",transition:"all .15s",boxShadow:sel?"inset 0 0 0 1px rgba(255,255,255,.14)":"none"}}>{lb}</button>);})}
                   </div>
                 )}
                 <div style={{marginTop:8}}>
                   <div style={{color:"rgba(255,255,255,.25)",fontSize:9,fontWeight:700,letterSpacing:".12em",marginBottom:6,fontFamily:"var(--font-ui)"}}>COORD FORMAT</div>
                   <div style={{display:"flex",background:"rgba(0,0,0,.3)",borderRadius:8,border:"1px solid rgba(255,255,255,.08)",padding:2,gap:1}}>
-                    {["LatLng","UTM","MGRS"].map(mode=>{
-                      const sel=coordDisplay===mode;
-                      return(
-                        <button key={mode} onClick={()=>setCoordDisplay(mode)}
-                          style={{flex:1,padding:"5px 4px",borderRadius:6,border:"none",cursor:"pointer",fontSize:9,fontWeight:sel?700:500,background:sel?"rgba(255,255,255,.12)":"transparent",color:sel?"rgba(255,255,255,.9)":"rgba(255,255,255,.3)",fontFamily:"var(--font-ui)",transition:"all .15s",boxShadow:sel?"inset 0 0 0 1px rgba(255,255,255,.14)":"none"}}>
-                          {mode}
-                        </button>
-                      );
-                    })}
+                    {["LatLng","UTM","MGRS"].map(mode=>{const sel=coordDisplay===mode;return(<button key={mode} onClick={()=>setCoordDisplay(mode)} style={{flex:1,padding:"5px 4px",borderRadius:6,border:"none",cursor:"pointer",fontSize:9,fontWeight:sel?700:500,background:sel?"rgba(255,255,255,.12)":"transparent",color:sel?"rgba(255,255,255,.9)":"rgba(255,255,255,.3)",fontFamily:"var(--font-ui)",transition:"all .15s",boxShadow:sel?"inset 0 0 0 1px rgba(255,255,255,.14)":"none"}}>{mode}</button>);})}
                   </div>
                 </div>
               </div>
@@ -1405,218 +1227,97 @@ export default function Globe3DView({savedDrawings=[],onClose}){
           )}
         </div>
 
-        {/* ── TOOLS ── */}
         <div>
           <SectionHeader icon={<Icons.Tools/>} label="TOOLS" sectionKey="tools"/>
           {openSec.tools&&(
             <div className="g3-sec-body" style={{animation:"fadeSlideIn .2s ease",display:"flex",flexDirection:"column",gap:0}}>
-
-              {/* ── DRAW ── */}
               <div style={{marginBottom:14}}>
-                <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:10}}>
-                  <div style={{flex:1,height:1,background:"rgba(255,255,255,.06)"}}/>
-                  <span style={{color:"rgba(255,255,255,.25)",fontSize:9,fontWeight:700,letterSpacing:".12em",fontFamily:"var(--font-ui)",flexShrink:0}}>DRAW</span>
-                  <div style={{flex:1,height:1,background:"rgba(255,255,255,.06)"}}/>
-                </div>
-
+                <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:10}}><div style={{flex:1,height:1,background:"rgba(255,255,255,.06)"}}/><span style={{color:"rgba(255,255,255,.25)",fontSize:9,fontWeight:700,letterSpacing:".12em",fontFamily:"var(--font-ui)",flexShrink:0}}>DRAW</span><div style={{flex:1,height:1,background:"rgba(255,255,255,.06)"}}/></div>
                 <div style={{display:"flex",background:"rgba(0,0,0,.3)",borderRadius:9,border:"1px solid rgba(255,255,255,.08)",padding:3,marginBottom:10,gap:2}}>
-                  {[
-                    {t:"path",lb:"Path",svg:<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M3 17c3-3 6 3 9 0s6-3 9 0"/></svg>},
-                    {t:"polygon",lb:"Polygon",svg:<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5"/></svg>},
-                    {t:"marker",lb:"Pin",svg:<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s-8-4.5-8-11.8A8 8 0 0 1 12 2a8 8 0 0 1 8 8.2c0 7.3-8 11.8-8 11.8z"/><circle cx="12" cy="10" r="2.5"/></svg>},
-                  ].map(({t,lb,svg})=>{
-                    const sel=drawType===t;
-                    return(
-                      <button key={t} onClick={()=>setDrawType(t)}
-                        style={{flex:1,padding:"7px 4px",borderRadius:6,border:"none",cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",gap:3,transition:"all .15s",fontFamily:"var(--font-ui)",background:sel?"rgba(255,255,255,.1)":"transparent",color:sel?"rgba(255,255,255,.95)":"rgba(255,255,255,.35)",fontSize:10,fontWeight:sel?700:500,boxShadow:sel?"inset 0 0 0 1px rgba(255,255,255,.14)":"none"}}>
-                        {svg}
-                        <span>{lb}</span>
-                      </button>
-                    );
-                  })}
+                  {[{t:"path",lb:"Path",svg:<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M3 17c3-3 6 3 9 0s6-3 9 0"/></svg>},{t:"polygon",lb:"Polygon",svg:<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5"/></svg>},{t:"marker",lb:"Pin",svg:<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s-8-4.5-8-11.8A8 8 0 0 1 12 2a8 8 0 0 1 8 8.2c0 7.3-8 11.8-8 11.8z"/><circle cx="12" cy="10" r="2.5"/></svg>}].map(({t,lb,svg})=>{const sel=drawType===t;return(<button key={t} onClick={()=>setDrawType(t)} style={{flex:1,padding:"7px 4px",borderRadius:6,border:"none",cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",gap:3,transition:"all .15s",fontFamily:"var(--font-ui)",background:sel?"rgba(255,255,255,.1)":"transparent",color:sel?"rgba(255,255,255,.95)":"rgba(255,255,255,.35)",fontSize:10,fontWeight:sel?700:500,boxShadow:sel?"inset 0 0 0 1px rgba(255,255,255,.14)":"none"}}>{svg}<span>{lb}</span></button>);})}
                 </div>
-
                 {!drawMode?(
-                  <button onClick={()=>{setDrawMode(true);drawPtsRef.current=[];setDrawPoints([]);}}
-                    style={{width:"100%",padding:"9px 14px",borderRadius:8,border:"1px solid rgba(255,255,255,.14)",background:"rgba(255,255,255,.06)",color:"rgba(255,255,255,.9)",fontWeight:600,fontSize:12,cursor:"pointer",fontFamily:"var(--font-ui)",display:"flex",alignItems:"center",justifyContent:"center",gap:7,transition:"all .18s",letterSpacing:".01em"}}
-                    onMouseEnter={e=>{e.currentTarget.style.background="rgba(255,255,255,.1)";e.currentTarget.style.borderColor="rgba(255,255,255,.22)";}}
-                    onMouseLeave={e=>{e.currentTarget.style.background="rgba(255,255,255,.06)";e.currentTarget.style.borderColor="rgba(255,255,255,.14)";}}>
-                    <Icons.Draw/>
-                    Start Drawing
+                  <button onClick={()=>{setDrawMode(true);drawPtsRef.current=[];setDrawPoints([]);}} style={{width:"100%",padding:"9px 14px",borderRadius:8,border:"1px solid rgba(255,255,255,.14)",background:"rgba(255,255,255,.06)",color:"rgba(255,255,255,.9)",fontWeight:600,fontSize:12,cursor:"pointer",fontFamily:"var(--font-ui)",display:"flex",alignItems:"center",justifyContent:"center",gap:7,transition:"all .18s",letterSpacing:".01em"}} onMouseEnter={e=>{e.currentTarget.style.background="rgba(255,255,255,.1)";e.currentTarget.style.borderColor="rgba(255,255,255,.22)";}} onMouseLeave={e=>{e.currentTarget.style.background="rgba(255,255,255,.06)";e.currentTarget.style.borderColor="rgba(255,255,255,.14)";}}>
+                    <Icons.Draw/>Start Drawing
                   </button>
                 ):(
                   <div style={{display:"flex",flexDirection:"column",gap:6}}>
                     <div style={{background:"rgba(255,255,255,.04)",border:"1px solid rgba(255,255,255,.1)",borderRadius:8,padding:"9px 12px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-                      <div style={{display:"flex",alignItems:"center",gap:7}}>
-                        <div style={{width:6,height:6,borderRadius:"50%",background:"rgba(255,255,255,.7)",animation:"glowPulse 1.8s ease infinite"}}/>
-                        <span style={{color:"rgba(255,255,255,.7)",fontSize:11,fontFamily:"var(--font-ui)"}}>{drawType==="marker"?"Click to place a pin":"Click map to add points"}</span>
-                      </div>
+                      <div style={{display:"flex",alignItems:"center",gap:7}}><div style={{width:6,height:6,borderRadius:"50%",background:"rgba(255,255,255,.7)",animation:"glowPulse 1.8s ease infinite"}}/><span style={{color:"rgba(255,255,255,.7)",fontSize:11,fontFamily:"var(--font-ui)"}}>{drawType==="marker"?"Click to place a pin":"Click map to add points"}</span></div>
                       <span style={{color:"rgba(255,255,255,.5)",fontFamily:"var(--font-mono)",fontSize:11,fontWeight:600,background:"rgba(255,255,255,.07)",padding:"1px 7px",borderRadius:20}}>{drawPoints.length} pts</span>
                     </div>
                     <div style={{display:"flex",gap:5}}>
-                      <button onClick={finishDrawing}
-                        style={{flex:1,padding:"8px",borderRadius:8,border:"1px solid rgba(255,255,255,.2)",background:"rgba(255,255,255,.1)",color:"rgba(255,255,255,.9)",fontWeight:600,fontSize:11,cursor:"pointer",fontFamily:"var(--font-ui)",transition:"all .15s"}}
-                        onMouseEnter={e=>e.currentTarget.style.background="rgba(255,255,255,.16)"}
-                        onMouseLeave={e=>e.currentTarget.style.background="rgba(255,255,255,.1)"}>
-                        Save
-                      </button>
-                      <button onClick={cancelDrawing}
-                        style={{flex:1,padding:"8px",borderRadius:8,border:"1px solid rgba(255,255,255,.08)",background:"transparent",color:"rgba(255,255,255,.4)",fontWeight:500,fontSize:11,cursor:"pointer",fontFamily:"var(--font-ui)"}}>
-                        Cancel
-                      </button>
+                      <button onClick={finishDrawing} style={{flex:1,padding:"8px",borderRadius:8,border:"1px solid rgba(255,255,255,.2)",background:"rgba(255,255,255,.1)",color:"rgba(255,255,255,.9)",fontWeight:600,fontSize:11,cursor:"pointer",fontFamily:"var(--font-ui)",transition:"all .15s"}} onMouseEnter={e=>e.currentTarget.style.background="rgba(255,255,255,.16)"} onMouseLeave={e=>e.currentTarget.style.background="rgba(255,255,255,.1)"}>Save</button>
+                      <button onClick={cancelDrawing} style={{flex:1,padding:"8px",borderRadius:8,border:"1px solid rgba(255,255,255,.08)",background:"transparent",color:"rgba(255,255,255,.4)",fontWeight:500,fontSize:11,cursor:"pointer",fontFamily:"var(--font-ui)"}}>Cancel</button>
                     </div>
                   </div>
                 )}
               </div>
-
-              {/* ── MEASURE ── */}
               <div style={{marginBottom:14}}>
-                <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:10}}>
-                  <div style={{flex:1,height:1,background:"rgba(255,255,255,.06)"}}/>
-                  <span style={{color:"rgba(255,255,255,.25)",fontSize:9,fontWeight:700,letterSpacing:".12em",fontFamily:"var(--font-ui)",flexShrink:0}}>MEASURE</span>
-                  <div style={{flex:1,height:1,background:"rgba(255,255,255,.06)"}}/>
-                </div>
-
+                <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:10}}><div style={{flex:1,height:1,background:"rgba(255,255,255,.06)"}}/><span style={{color:"rgba(255,255,255,.25)",fontSize:9,fontWeight:700,letterSpacing:".12em",fontFamily:"var(--font-ui)",flexShrink:0}}>MEASURE</span><div style={{flex:1,height:1,background:"rgba(255,255,255,.06)"}}/></div>
                 {!measureMode?(
-                  <button onClick={()=>setMeasureMode(true)}
-                    style={{width:"100%",padding:"9px 14px",borderRadius:8,border:"1px solid rgba(255,255,255,.14)",background:"rgba(255,255,255,.06)",color:"rgba(255,255,255,.9)",fontWeight:600,fontSize:12,cursor:"pointer",fontFamily:"var(--font-ui)",display:"flex",alignItems:"center",justifyContent:"center",gap:7,transition:"all .18s"}}
-                    onMouseEnter={e=>{e.currentTarget.style.background="rgba(255,255,255,.1)";e.currentTarget.style.borderColor="rgba(255,255,255,.22)";}}
-                    onMouseLeave={e=>{e.currentTarget.style.background="rgba(255,255,255,.06)";e.currentTarget.style.borderColor="rgba(255,255,255,.14)";}}>
-                    <Icons.Measure/>
-                    Measure Distance
+                  <button onClick={()=>setMeasureMode(true)} style={{width:"100%",padding:"9px 14px",borderRadius:8,border:"1px solid rgba(255,255,255,.14)",background:"rgba(255,255,255,.06)",color:"rgba(255,255,255,.9)",fontWeight:600,fontSize:12,cursor:"pointer",fontFamily:"var(--font-ui)",display:"flex",alignItems:"center",justifyContent:"center",gap:7,transition:"all .18s"}} onMouseEnter={e=>{e.currentTarget.style.background="rgba(255,255,255,.1)";e.currentTarget.style.borderColor="rgba(255,255,255,.22)";}} onMouseLeave={e=>{e.currentTarget.style.background="rgba(255,255,255,.06)";e.currentTarget.style.borderColor="rgba(255,255,255,.14)";}}>
+                    <Icons.Measure/>Measure Distance
                   </button>
                 ):(
                   <div style={{display:"flex",flexDirection:"column",gap:6}}>
                     <div style={{background:"rgba(255,255,255,.03)",border:"1px solid rgba(255,255,255,.09)",borderRadius:10,padding:"12px 14px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-                      <div>
-                        <div style={{color:"rgba(255,255,255,.3)",fontSize:9,fontWeight:700,letterSpacing:".1em",fontFamily:"var(--font-ui)",marginBottom:3}}>DISTANCE</div>
-                        <div style={{color:"rgba(255,255,255,.88)",fontSize:18,fontWeight:700,fontFamily:"var(--font-mono)",letterSpacing:"-.01em",lineHeight:1}}>{measurePoints.length<2?"—":formatDist(totalDist,measureUnit)}</div>
-                      </div>
-                      <div style={{textAlign:"right"}}>
-                        <div style={{color:"rgba(255,255,255,.3)",fontSize:9,fontFamily:"var(--font-ui)",marginBottom:2}}>points</div>
-                        <div style={{color:"rgba(255,255,255,.5)",fontFamily:"var(--font-mono)",fontSize:14,fontWeight:600}}>{measurePoints.length}</div>
-                      </div>
+                      <div><div style={{color:"rgba(255,255,255,.3)",fontSize:9,fontWeight:700,letterSpacing:".1em",fontFamily:"var(--font-ui)",marginBottom:3}}>DISTANCE</div><div style={{color:"rgba(255,255,255,.88)",fontSize:18,fontWeight:700,fontFamily:"var(--font-mono)",letterSpacing:"-.01em",lineHeight:1}}>{measurePoints.length<2?"—":formatDist(totalDist,measureUnit)}</div></div>
+                      <div style={{textAlign:"right"}}><div style={{color:"rgba(255,255,255,.3)",fontSize:9,fontFamily:"var(--font-ui)",marginBottom:2}}>points</div><div style={{color:"rgba(255,255,255,.5)",fontFamily:"var(--font-mono)",fontSize:14,fontWeight:600}}>{measurePoints.length}</div></div>
                     </div>
-
                     <div style={{display:"flex",background:"rgba(0,0,0,.25)",borderRadius:7,border:"1px solid rgba(255,255,255,.07)",padding:2,gap:1}}>
-                      {[["auto","Auto"],["km","km"],["m","m"],["mi","mi"],["ft","ft"],["nmi","nmi"]].map(([u,lb])=>{
-                        const sel=measureUnit===u;
-                        return(
-                          <button key={u} onClick={()=>setMeasureUnit(u)}
-                            style={{flex:1,padding:"4px 2px",borderRadius:5,border:"none",cursor:"pointer",fontSize:9,fontWeight:sel?700:500,background:sel?"rgba(255,255,255,.12)":"transparent",color:sel?"rgba(255,255,255,.9)":"rgba(255,255,255,.3)",fontFamily:"var(--font-ui)",transition:"all .12s",boxShadow:sel?"inset 0 0 0 1px rgba(255,255,255,.12)":"none"}}>
-                            {lb}
-                          </button>
-                        );
-                      })}
+                      {[["auto","Auto"],["km","km"],["m","m"],["mi","mi"],["ft","ft"],["nmi","nmi"]].map(([u,lb])=>{const sel=measureUnit===u;return(<button key={u} onClick={()=>setMeasureUnit(u)} style={{flex:1,padding:"4px 2px",borderRadius:5,border:"none",cursor:"pointer",fontSize:9,fontWeight:sel?700:500,background:sel?"rgba(255,255,255,.12)":"transparent",color:sel?"rgba(255,255,255,.9)":"rgba(255,255,255,.3)",fontFamily:"var(--font-ui)",transition:"all .12s",boxShadow:sel?"inset 0 0 0 1px rgba(255,255,255,.12)":"none"}}>{lb}</button>);})}
                     </div>
-
                     <div style={{display:"flex",gap:5}}>
-                      <button onClick={resetMeasure}
-                        style={{flex:1,padding:"7px",borderRadius:8,border:"1px solid rgba(255,255,255,.1)",background:"transparent",color:"rgba(255,255,255,.45)",fontSize:11,cursor:"pointer",fontFamily:"var(--font-ui)",display:"flex",alignItems:"center",justifyContent:"center",gap:5,transition:"all .12s"}}
-                        onMouseEnter={e=>e.currentTarget.style.color="rgba(255,255,255,.75)"}
-                        onMouseLeave={e=>e.currentTarget.style.color="rgba(255,255,255,.45)"}>
-                        <Icons.Refresh/> Reset
-                      </button>
-                      <button onClick={clearMeasure}
-                        style={{flex:1,padding:"7px",borderRadius:8,border:"1px solid rgba(255,255,255,.1)",background:"rgba(255,255,255,.06)",color:"rgba(255,255,255,.7)",fontWeight:600,fontSize:11,cursor:"pointer",fontFamily:"var(--font-ui)",display:"flex",alignItems:"center",justifyContent:"center",gap:5,transition:"all .12s"}}
-                        onMouseEnter={e=>e.currentTarget.style.background="rgba(255,255,255,.1)"}
-                        onMouseLeave={e=>e.currentTarget.style.background="rgba(255,255,255,.06)"}>
-                        Done
-                      </button>
+                      <button onClick={resetMeasure} style={{flex:1,padding:"7px",borderRadius:8,border:"1px solid rgba(255,255,255,.1)",background:"transparent",color:"rgba(255,255,255,.45)",fontSize:11,cursor:"pointer",fontFamily:"var(--font-ui)",display:"flex",alignItems:"center",justifyContent:"center",gap:5,transition:"all .12s"}} onMouseEnter={e=>e.currentTarget.style.color="rgba(255,255,255,.75)"} onMouseLeave={e=>e.currentTarget.style.color="rgba(255,255,255,.45)"}><Icons.Refresh/> Reset</button>
+                      <button onClick={clearMeasure} style={{flex:1,padding:"7px",borderRadius:8,border:"1px solid rgba(255,255,255,.1)",background:"rgba(255,255,255,.06)",color:"rgba(255,255,255,.7)",fontWeight:600,fontSize:11,cursor:"pointer",fontFamily:"var(--font-ui)",display:"flex",alignItems:"center",justifyContent:"center",gap:5,transition:"all .12s"}} onMouseEnter={e=>e.currentTarget.style.background="rgba(255,255,255,.1)"} onMouseLeave={e=>e.currentTarget.style.background="rgba(255,255,255,.06)"}>Done</button>
                     </div>
                   </div>
                 )}
               </div>
-
-              {/* ── SURVEY ── */}
               <div>
-                <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:10}}>
-                  <div style={{flex:1,height:1,background:"rgba(255,255,255,.06)"}}/>
-                  <span style={{color:"rgba(255,255,255,.25)",fontSize:9,fontWeight:700,letterSpacing:".12em",fontFamily:"var(--font-ui)",flexShrink:0}}>SURVEY</span>
-                  <div style={{flex:1,height:1,background:"rgba(255,255,255,.06)"}}/>
-                </div>
-
+                <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:10}}><div style={{flex:1,height:1,background:"rgba(255,255,255,.06)"}}/><span style={{color:"rgba(255,255,255,.25)",fontSize:9,fontWeight:700,letterSpacing:".12em",fontFamily:"var(--font-ui)",flexShrink:0}}>SURVEY</span><div style={{flex:1,height:1,background:"rgba(255,255,255,.06)"}}/></div>
                 {!surveyMode?(
-                  <button onClick={()=>setSurveyMode(true)}
-                    style={{width:"100%",padding:"9px 14px",borderRadius:8,border:"1px solid rgba(255,255,255,.14)",background:"rgba(255,255,255,.06)",color:"rgba(255,255,255,.9)",fontWeight:600,fontSize:12,cursor:"pointer",fontFamily:"var(--font-ui)",display:"flex",alignItems:"center",justifyContent:"center",gap:7,transition:"all .18s"}}
-                    onMouseEnter={e=>{e.currentTarget.style.background="rgba(255,255,255,.1)";e.currentTarget.style.borderColor="rgba(255,255,255,.22)";}}
-                    onMouseLeave={e=>{e.currentTarget.style.background="rgba(255,255,255,.06)";e.currentTarget.style.borderColor="rgba(255,255,255,.14)";}}>
-                    <Icons.Survey/>
-                    Start Survey Route
+                  <button onClick={()=>setSurveyMode(true)} style={{width:"100%",padding:"9px 14px",borderRadius:8,border:"1px solid rgba(255,255,255,.14)",background:"rgba(255,255,255,.06)",color:"rgba(255,255,255,.9)",fontWeight:600,fontSize:12,cursor:"pointer",fontFamily:"var(--font-ui)",display:"flex",alignItems:"center",justifyContent:"center",gap:7,transition:"all .18s"}} onMouseEnter={e=>{e.currentTarget.style.background="rgba(255,255,255,.1)";e.currentTarget.style.borderColor="rgba(255,255,255,.22)";}} onMouseLeave={e=>{e.currentTarget.style.background="rgba(255,255,255,.06)";e.currentTarget.style.borderColor="rgba(255,255,255,.14)";}}>
+                    <Icons.Survey/>Start Survey Route
                   </button>
                 ):(
                   <div style={{display:"flex",flexDirection:"column",gap:6}}>
                     <div style={{background:"rgba(255,255,255,.03)",border:"1px solid rgba(255,255,255,.09)",borderRadius:8,padding:"10px 13px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
                       <div style={{display:"flex",alignItems:"center",gap:8}}>
-                        <div style={{position:"relative",width:10,height:10,flexShrink:0}}>
-                          <div style={{position:"absolute",inset:0,borderRadius:"50%",background:"rgba(255,255,255,.2)",animation:"glowPulse 1.4s ease infinite"}}/>
-                          <div style={{position:"absolute",inset:2,borderRadius:"50%",background:"rgba(255,255,255,.75)"}}/>
-                        </div>
+                        <div style={{position:"relative",width:10,height:10,flexShrink:0}}><div style={{position:"absolute",inset:0,borderRadius:"50%",background:"rgba(255,255,255,.2)",animation:"glowPulse 1.4s ease infinite"}}/><div style={{position:"absolute",inset:2,borderRadius:"50%",background:"rgba(255,255,255,.75)"}}/></div>
                         <span style={{color:"rgba(255,255,255,.65)",fontSize:11,fontFamily:"var(--font-ui)"}}>Recording route</span>
                       </div>
                       <span style={{color:"rgba(255,255,255,.55)",fontFamily:"var(--font-mono)",fontSize:12,fontWeight:600,background:"rgba(255,255,255,.07)",padding:"2px 8px",borderRadius:20}}>{surveyRoute.length} pts</span>
                     </div>
-                    <button onClick={clearSurvey}
-                      style={{width:"100%",padding:"9px 14px",borderRadius:8,border:"1px solid rgba(255,255,255,.14)",background:"rgba(255,255,255,.06)",color:"rgba(255,255,255,.8)",fontWeight:600,fontSize:12,cursor:"pointer",fontFamily:"var(--font-ui)",display:"flex",alignItems:"center",justifyContent:"center",gap:7,transition:"all .15s"}}
-                      onMouseEnter={e=>{e.currentTarget.style.background="rgba(255,255,255,.1)";}}
-                      onMouseLeave={e=>{e.currentTarget.style.background="rgba(255,255,255,.06)";}}>
-                      <Icons.Stop/> Stop & Save
-                    </button>
+                    <button onClick={clearSurvey} style={{width:"100%",padding:"9px 14px",borderRadius:8,border:"1px solid rgba(255,255,255,.14)",background:"rgba(255,255,255,.06)",color:"rgba(255,255,255,.8)",fontWeight:600,fontSize:12,cursor:"pointer",fontFamily:"var(--font-ui)",display:"flex",alignItems:"center",justifyContent:"center",gap:7,transition:"all .15s"}} onMouseEnter={e=>e.currentTarget.style.background="rgba(255,255,255,.1)"} onMouseLeave={e=>e.currentTarget.style.background="rgba(255,255,255,.06)"}><Icons.Stop/> Stop & Save</button>
                   </div>
                 )}
               </div>
-
             </div>
           )}
         </div>
-
-        {/* Bottom padding */}
         <div style={{height:16}}/>
       </div>
 
-      {/* ══════════════════════════════════════════════════════════════════
-          ZOOM CONTROLS
-      ══════════════════════════════════════════════════════════════════ */}
-      <div className="g3-zoom" style={{
-        position:"fixed",right:14,bottom:SB+160,zIndex:1002,
-        display:"flex",flexDirection:"column",
-        background:"rgba(8,13,25,0.88)",
-        border:"1px solid rgba(255,255,255,.1)",
-        borderRadius:10,
-        boxShadow:"0 4px 24px rgba(0,0,0,.6), inset 0 1px 0 rgba(255,255,255,.06)",
-        backdropFilter:"blur(16px)",
-        overflow:"hidden",
-      }}>
-        {[[<Icons.ZoomIn/>,zoomIn],[<Icons.ZoomOut/>,zoomOut]].map(([ icon,fn],i)=>(
-          <button key={i} onClick={fn}
-            style={{width:40,height:40,border:"none",borderBottom:i===0?"1px solid rgba(255,255,255,.07)":"none",background:"transparent",color:"var(--text-secondary)",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",transition:"all .12s"}}
-            onMouseEnter={e=>{e.currentTarget.style.background="rgba(255,255,255,.08)";e.currentTarget.style.color="var(--text-primary)";}}
-            onMouseLeave={e=>{e.currentTarget.style.background="transparent";e.currentTarget.style.color="var(--text-secondary)";}}>
+      {/* ══ ZOOM CONTROLS ══ */}
+      <div className="g3-zoom" style={{position:"fixed",right:14,bottom:SB+160,zIndex:1002,display:"flex",flexDirection:"column",background:"rgba(8,13,25,0.88)",border:"1px solid rgba(255,255,255,.1)",borderRadius:10,boxShadow:"0 4px 24px rgba(0,0,0,.6), inset 0 1px 0 rgba(255,255,255,.06)",backdropFilter:"blur(16px)",overflow:"hidden"}}>
+        {[[<Icons.ZoomIn/>,zoomIn],[<Icons.ZoomOut/>,zoomOut]].map(([icon,fn],i)=>(
+          <button key={i} onClick={fn} style={{width:40,height:40,border:"none",borderBottom:i===0?"1px solid rgba(255,255,255,.07)":"none",background:"transparent",color:"var(--text-secondary)",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",transition:"all .12s"}} onMouseEnter={e=>{e.currentTarget.style.background="rgba(255,255,255,.08)";e.currentTarget.style.color="var(--text-primary)";}} onMouseLeave={e=>{e.currentTarget.style.background="transparent";e.currentTarget.style.color="var(--text-secondary)";}}>
             {icon}
           </button>
         ))}
       </div>
 
-      {/* ══════════════════════════════════════════════════════════════════
-          COMPASS
-      ══════════════════════════════════════════════════════════════════ */}
+      {/* ══ COMPASS ══ */}
       <div className="g3-compass" style={{position:"fixed",bottom:SB+8,right:14,zIndex:1001,display:"flex",flexDirection:"column",alignItems:"center",gap:4}}>
-        <div style={{
-          background:"rgba(8,13,25,.88)",border:"1px solid rgba(255,255,255,.08)",
-          borderRadius:6,padding:"3px 8px",
-          display:"flex",gap:8,alignItems:"center",backdropFilter:"blur(12px)",
-        }}>
+        <div style={{background:"rgba(8,13,25,.88)",border:"1px solid rgba(255,255,255,.08)",borderRadius:6,padding:"3px 8px",display:"flex",gap:8,alignItems:"center",backdropFilter:"blur(12px)"}}>
           <span style={{color:"var(--text-dim)",fontSize:9,fontWeight:700,fontFamily:"var(--font-ui)",letterSpacing:".06em"}}>EYE</span>
           <span style={{color:"var(--text-secondary)",fontSize:10,fontFamily:"var(--font-mono)",fontWeight:500}}>{formatAlt(cameraAlt)}</span>
         </div>
         <div style={{width:50,height:50}}>
           <svg viewBox="0 0 100 100" style={{width:"100%",height:"100%",transform:`rotate(${compassHeading}deg)`,filter:"drop-shadow(0 2px 8px rgba(0,0,0,.7))"}}>
-            <defs>
-              <radialGradient id="compassBg" cx="50%" cy="50%" r="50%">
-                <stop offset="0%" stopColor="rgba(20,30,50,.95)"/>
-                <stop offset="100%" stopColor="rgba(8,13,25,.98)"/>
-              </radialGradient>
-            </defs>
+            <defs><radialGradient id="compassBg" cx="50%" cy="50%" r="50%"><stop offset="0%" stopColor="rgba(20,30,50,.95)"/><stop offset="100%" stopColor="rgba(8,13,25,.98)"/></radialGradient></defs>
             <circle cx="50" cy="50" r="47" fill="url(#compassBg)" stroke="rgba(255,255,255,.12)" strokeWidth="1.5"/>
             <circle cx="50" cy="50" r="38" fill="none" stroke="rgba(255,255,255,.04)" strokeWidth="1"/>
             <polygon points="50,10 54,48 50,44 46,48" fill="#ef4444"/>
@@ -1630,46 +1331,24 @@ export default function Globe3DView({savedDrawings=[],onClose}){
         </div>
       </div>
 
-      {/* ══════════════════════════════════════════════════════════════════
-          STATUS BAR — floating, pinned to bottom
-      ══════════════════════════════════════════════════════════════════ */}
+      {/* ══ STATUS BAR ══ */}
       <div className="g3-statusbar">
         {mousePos?(()=>{
           const utm=(coordDisplay==="UTM"||coordDisplay==="MGRS")?latLngToUTM(mousePos.lat,mousePos.lng):null;
           return<>
-            {coordDisplay==="LatLng"&&<>
-              <span style={{color:"var(--text-secondary)"}}>{toDMS(mousePos.lat,"N","S")}</span>
-              <span style={{color:"var(--text-dim)"}}>·</span>
-              <span style={{color:"var(--text-secondary)"}}>{toDMS(mousePos.lng,"E","W")}</span>
-            </>}
-            {coordDisplay==="UTM"&&utm&&<>
-              <span style={{color:"#34d399",fontWeight:700,fontSize:9,letterSpacing:".08em"}}>UTM</span>
-              <span style={{color:"var(--text-secondary)"}}>{utm.zone}{utm.band} {utm.easting}E {utm.northing}N</span>
-            </>}
-            {coordDisplay==="MGRS"&&utm&&<>
-              <span style={{color:"#fbbf24",fontWeight:700,fontSize:9,letterSpacing:".08em"}}>MGRS</span>
-              <span style={{color:"var(--text-secondary)"}}>{latLngToMGRS(mousePos.lat,mousePos.lng,5)}</span>
-            </>}
-            <button title="Cycle coordinate display"
-              onClick={()=>setCoordDisplay(d=>d==="LatLng"?"UTM":d==="UTM"?"MGRS":"LatLng")}
-              style={{padding:"2px 7px",borderRadius:4,border:"1px solid rgba(255,255,255,.08)",background:"rgba(255,255,255,.03)",color:"var(--text-dim)",fontSize:8,cursor:"pointer",fontFamily:"var(--font-ui)",fontWeight:600,letterSpacing:".04em",flexShrink:0,transition:"all .12s"}}
-              onMouseEnter={e=>e.currentTarget.style.background="rgba(255,255,255,.08)"}
-              onMouseLeave={e=>e.currentTarget.style.background="rgba(255,255,255,.03)"}>
-              {coordDisplay} ⇌
-            </button>
+            {coordDisplay==="LatLng"&&<><span style={{color:"var(--text-secondary)"}}>{toDMS(mousePos.lat,"N","S")}</span><span style={{color:"var(--text-dim)"}}>·</span><span style={{color:"var(--text-secondary)"}}>{toDMS(mousePos.lng,"E","W")}</span></>}
+            {coordDisplay==="UTM"&&utm&&<><span style={{color:"#34d399",fontWeight:700,fontSize:9,letterSpacing:".08em"}}>UTM</span><span style={{color:"var(--text-secondary)"}}>{utm.zone}{utm.band} {utm.easting}E {utm.northing}N</span></>}
+            {coordDisplay==="MGRS"&&utm&&<><span style={{color:"#fbbf24",fontWeight:700,fontSize:9,letterSpacing:".08em"}}>MGRS</span><span style={{color:"var(--text-secondary)"}}>{latLngToMGRS(mousePos.lat,mousePos.lng,5)}</span></>}
+            <button title="Cycle coordinate display" onClick={()=>setCoordDisplay(d=>d==="LatLng"?"UTM":d==="UTM"?"MGRS":"LatLng")} style={{padding:"2px 7px",borderRadius:4,border:"1px solid rgba(255,255,255,.08)",background:"rgba(255,255,255,.03)",color:"var(--text-dim)",fontSize:8,cursor:"pointer",fontFamily:"var(--font-ui)",fontWeight:600,letterSpacing:".04em",flexShrink:0,transition:"all .12s"}} onMouseEnter={e=>e.currentTarget.style.background="rgba(255,255,255,.08)"} onMouseLeave={e=>e.currentTarget.style.background="rgba(255,255,255,.03)"}>{coordDisplay} ⇌</button>
           </>;
         })():<span style={{color:"var(--text-dim)"}}>Move cursor over the globe</span>}
-
         <div style={{flex:1}}/>
-
-        {/* Active mode indicators */}
         {gridEnabled&&<span style={{color:gridMode==="MGRS"?"#fbbf24":gridMode==="UTM"?"#60a5fa":"#94a3b8",fontSize:9,fontWeight:700,background:"rgba(255,255,255,.04)",padding:"2px 7px",borderRadius:4,border:"1px solid rgba(255,255,255,.07)"}}>{gridMode}</span>}
         {drawMode&&<span style={{color:"#f97316",fontSize:9,fontWeight:700,background:"rgba(249,115,22,.08)",padding:"2px 7px",borderRadius:4,border:"1px solid rgba(249,115,22,.25)"}}>DRAW · {drawPoints.length}pts</span>}
         {measureMode&&<span style={{color:"#facc15",fontSize:9,fontWeight:700,background:"rgba(250,204,21,.06)",padding:"2px 7px",borderRadius:4,border:"1px solid rgba(250,204,21,.2)"}}>MEASURE · {measurePoints.length}pts</span>}
         {surveyMode&&<span style={{color:"#ef4444",fontSize:9,fontWeight:700,background:"rgba(239,68,68,.07)",padding:"2px 7px",borderRadius:4,border:"1px solid rgba(239,68,68,.25)"}}>● SURVEY · {surveyRoute.length}pts</span>}
         {elevMode&&<span style={{color:"#f59e0b",fontSize:9,fontWeight:700,background:"rgba(245,158,11,.07)",padding:"2px 7px",borderRadius:4,border:"1px solid rgba(245,158,11,.25)"}}>ELEVATION · {elevPoints.length}pts</span>}
         {nightAuto&&<span style={{color:"#818cf8",fontSize:9,fontWeight:700}}>{nightInfo?.isNight?"🌙":"☀"}</span>}
-
         <span style={{color:"var(--text-dim)",fontSize:9}}>{viewMode} · CesiumJS</span>
       </div>
 
@@ -1681,10 +1360,7 @@ export default function Globe3DView({savedDrawings=[],onClose}){
             <span style={{color:"rgba(255,255,255,0.75)",fontWeight:600}}>{mousePos.lat.toFixed(4)}°{mousePos.lat>=0?"N":"S"}</span>
             <span style={{color:"rgba(255,255,255,0.3)"}}>·</span>
             <span style={{color:"rgba(255,255,255,0.75)",fontWeight:600}}>{mousePos.lng.toFixed(4)}°{mousePos.lng>=0?"E":"W"}</span>
-            <button onClick={()=>setCoordDisplay(d=>d==="LatLng"?"UTM":d==="UTM"?"MGRS":"LatLng")}
-              style={{padding:"1px 6px",borderRadius:3,border:"1px solid rgba(255,255,255,.12)",background:"rgba(255,255,255,.04)",color:"rgba(255,255,255,0.45)",fontSize:8,cursor:"pointer",fontFamily:"var(--font-ui)",fontWeight:600,letterSpacing:".04em"}}>
-              {coordDisplay}
-            </button>
+            <button onClick={()=>setCoordDisplay(d=>d==="LatLng"?"UTM":d==="UTM"?"MGRS":"LatLng")} style={{padding:"1px 6px",borderRadius:3,border:"1px solid rgba(255,255,255,.12)",background:"rgba(255,255,255,.04)",color:"rgba(255,255,255,0.45)",fontSize:8,cursor:"pointer",fontFamily:"var(--font-ui)",fontWeight:600,letterSpacing:".04em"}}>{coordDisplay}</button>
           </>
         ):(
           <span style={{color:"rgba(255,255,255,0.3)"}}>Tap map for coordinates</span>
@@ -1693,49 +1369,63 @@ export default function Globe3DView({savedDrawings=[],onClose}){
 
       {/* ══════════════════════════════════════════════════════════════════
           MOBILE BOTTOM NAV BAR
+          FIX 2: </nav> closing tag was missing — added correctly below
+          FIX 3: className="g3-bnav-label" (was "bnav-label")
       ══════════════════════════════════════════════════════════════════ */}
       <nav className="g3-bottom-nav">
         {/* Layers */}
         <button className={`g3-bnav-item${panelOpen?" active":""}`} onClick={()=>setPanelOpen(p=>!p)}>
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
-          Layers
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+          <span className="g3-bnav-label">Layers</span>
         </button>
+
+        {/* Data Layers */}
+        <button className={`g3-bnav-item${dataLayersOpen?" active-green":""}`} onClick={()=>setDataLayersOpen(p=>!p)}>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
+            <rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>
+          </svg>
+          <span className="g3-bnav-label">Data</span>
+        </button>
+
         {/* Draw */}
-        <button className={`g3-bnav-item${drawMode?" active":""}`} onClick={()=>{if(drawMode){drawPtsRef.current=[];setDrawPoints([]);setDrawMode(false);}else{setDrawMode(true);setMeasureMode(false);setSurveyMode(false);setElevMode(false);drawPtsRef.current=[];setDrawPoints([]);}}}>
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
-          Draw
+        <button className={`g3-bnav-item${drawMode?" active":""}`}
+          onClick={()=>{if(drawMode){drawPtsRef.current=[];setDrawPoints([]);setDrawMode(false);}else{setDrawMode(true);setMeasureMode(false);setSurveyMode(false);setElevMode(false);drawPtsRef.current=[];setDrawPoints([]);}}}>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
+          <span className="g3-bnav-label">Draw</span>
           {drawPoints.length>0&&<span className="g3-bnav-badge">{drawPoints.length}</span>}
         </button>
+
         {/* Measure */}
-        <button className={`g3-bnav-item${measureMode?" active":""}`} onClick={()=>{if(measureMode){clearMeasure();}else{setMeasureMode(true);setDrawMode(false);setSurveyMode(false);setElevMode(false);}}}>
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M2 12h20M2 12l4-4M2 12l4 4M22 12l-4-4M22 12l-4 4"/></svg>
-          Measure
+        <button className={`g3-bnav-item${measureMode?" active":""}`}
+          onClick={()=>{if(measureMode){clearMeasure();}else{setMeasureMode(true);setDrawMode(false);setSurveyMode(false);setElevMode(false);}}}>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M2 12h20M2 12l4-4M2 12l4 4M22 12l-4-4M22 12l-4 4"/></svg>
+          <span className="g3-bnav-label">Measure</span>
           {measurePoints.length>0&&<span className="g3-bnav-badge">{measurePoints.length}</span>}
         </button>
-        {/* Elevation / Profile */}
-        <button className={`g3-bnav-item${elevMode?" active-warn":""}`} onClick={()=>{if(elevMode){setElevMode(false);setElevPoints([]);setElevProfile(null);elevPtsRef.current=[];const viewer=viewerRef.current;elevEntsRef.current.forEach(e=>{try{viewer.entities.remove(e);}catch(_){}});elevEntsRef.current=[];}else{setElevMode(true);setDrawMode(false);setMeasureMode(false);setSurveyMode(false);setElevPoints([]);setElevProfile(null);}}}>
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-          Elevation
+
+        {/* Elevation */}
+        <button className={`g3-bnav-item${elevMode?" active-warn":""}`}
+          onClick={()=>{if(elevMode){setElevMode(false);setElevPoints([]);setElevProfile(null);elevPtsRef.current=[];const viewer=viewerRef.current;elevEntsRef.current.forEach(e=>{try{viewer.entities.remove(e);}catch(_){}});elevEntsRef.current=[];}else{setElevMode(true);setDrawMode(false);setMeasureMode(false);setSurveyMode(false);setElevPoints([]);setElevProfile(null);}}}>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+          <span className="g3-bnav-label">Profile</span>
           {elevPoints.length>0&&<span className="g3-bnav-badge" style={{background:"#f59e0b"}}>{elevPoints.length}</span>}
         </button>
+
         {/* Survey */}
-        <button className={`g3-bnav-item${surveyMode?" active":""}`} onClick={()=>{if(surveyMode){setSurveyMode(false);}else{setSurveyMode(true);setDrawMode(false);setMeasureMode(false);setElevMode(false);}}}>
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="2" width="8" height="8"/><rect x="14" y="2" width="8" height="8"/><rect x="2" y="14" width="8" height="8"/><path d="M14 18h8M18 14v8"/></svg>
-          Survey
+        <button className={`g3-bnav-item${surveyMode?" active":""}`}
+          onClick={()=>{if(surveyMode){setSurveyMode(false);}else{setSurveyMode(true);setDrawMode(false);setMeasureMode(false);setElevMode(false);}}}>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="2" width="8" height="8"/><rect x="14" y="2" width="8" height="8"/><rect x="2" y="14" width="8" height="8"/><path d="M14 18h8M18 14v8"/></svg>
+          <span className="g3-bnav-label">Survey</span>
           {surveyRoute&&surveyRoute.length>0&&<span className="g3-bnav-badge">{surveyRoute.length}</span>}
         </button>
-      </nav>
+      </nav>{/* ← FIX 2: </nav> was missing in the previous version */}
 
-      {/* ══════════════════════════════════════════════════════════════════
-          ELEVATION MODE BANNER
-      ══════════════════════════════════════════════════════════════════ */}
+      {/* ══ ELEVATION MODE BANNER ══ */}
       {elevMode&&(
         <>
           <div className="g3-mode-banner" style={{position:"fixed",top:TB+12,left:"50%",transform:"translateX(-50%)",zIndex:1200,background:"rgba(8,13,25,0.92)",border:"1px solid rgba(245,158,11,.3)",borderRadius:10,padding:"8px 18px",display:"flex",alignItems:"center",gap:12,boxShadow:"0 4px 24px rgba(0,0,0,.6), 0 0 0 1px rgba(245,158,11,.1)",backdropFilter:"blur(16px)",fontFamily:"var(--font-ui)",whiteSpace:"nowrap",animation:"fadeSlideIn .2s ease"}}>
-            <div style={{display:"flex",alignItems:"center",gap:7}}>
-              <Icons.Elevation/>
-              <span style={{color:"#fbbf24",fontWeight:700,fontSize:12}}>Elevation Profile Mode</span>
-            </div>
+            <div style={{display:"flex",alignItems:"center",gap:7}}><Icons.Elevation/><span style={{color:"#fbbf24",fontWeight:700,fontSize:12}}>Elevation Profile Mode</span></div>
             <span style={{color:"var(--text-muted)",fontSize:11,borderLeft:"1px solid rgba(255,255,255,.08)",paddingLeft:12}}>Click to place profile points</span>
             {elevPoints.length>0&&<span style={{color:"var(--text-secondary)",fontSize:11,fontFamily:"var(--font-mono)",fontWeight:600}}>{elevPoints.length} pts</span>}
             {elevLoading&&<div style={{width:14,height:14,border:"2px solid rgba(245,158,11,.2)",borderTopColor:"#f59e0b",borderRadius:"50%",animation:"spin .7s linear infinite",flexShrink:0}}/>}
@@ -1745,7 +1435,6 @@ export default function Globe3DView({savedDrawings=[],onClose}){
             </div>
           </div>
 
-          {/* Elevation Profile Chart */}
           {elevProfile&&(()=>{
             const PANEL_H=228;const isMobile=window.innerWidth<=640;const W=isMobile?window.innerWidth:(window.innerWidth-PANEL);const PAD_L=58,PAD_R=20,PAD_T=12;const cH=PANEL_H-PAD_T-42-36;const cW=W-PAD_L-PAD_R;
             const samples=elevProfile.samples;const minH=elevProfile.stats.minH,maxH=elevProfile.stats.maxH;const hRange=(maxH-minH)||1;const maxD=samples[samples.length-1].d||1;const unit=elevProfile._unit||"m";
@@ -1765,9 +1454,7 @@ export default function Globe3DView({savedDrawings=[],onClose}){
                   <div style={{display:"flex",alignItems:"center",gap:12}}>
                     <span style={{color:"var(--text-secondary)",fontWeight:700,fontSize:11,letterSpacing:".07em"}}>ELEVATION PROFILE</span>
                     <div style={{display:"flex",borderRadius:6,overflow:"hidden",border:"1px solid rgba(255,255,255,.08)"}}>
-                      {["m","ft"].map(u=>(
-                        <button key={u} onClick={()=>setElevProfile(p=>({...p,_unit:u}))} style={{padding:"3px 10px",fontSize:10,fontWeight:700,cursor:"pointer",border:"none",background:unit===u?"rgba(59,130,246,.2)":"transparent",color:unit===u?"#60a5fa":"var(--text-dim)",fontFamily:"var(--font-ui)"}}>{u}</button>
-                      ))}
+                      {["m","ft"].map(u=>(<button key={u} onClick={()=>setElevProfile(p=>({...p,_unit:u}))} style={{padding:"3px 10px",fontSize:10,fontWeight:700,cursor:"pointer",border:"none",background:unit===u?"rgba(59,130,246,.2)":"transparent",color:unit===u?"#60a5fa":"var(--text-dim)",fontFamily:"var(--font-ui)"}}>{u}</button>))}
                     </div>
                   </div>
                   <div style={{display:"flex",alignItems:"center",gap:0,flex:1,justifyContent:"center",overflow:"hidden"}}>
@@ -1780,19 +1467,9 @@ export default function Globe3DView({savedDrawings=[],onClose}){
                   <button onClick={()=>setElevProfile(null)} style={{background:"none",border:"none",color:"var(--text-dim)",cursor:"pointer",fontSize:16,lineHeight:1,flexShrink:0}}><Icons.Close/></button>
                 </div>
                 <svg width={W} height={PANEL_H-42} style={{display:"block",cursor:"crosshair"}} onMouseMove={onSvgMove} onMouseLeave={onSvgLeave}>
-                  <defs>
-                    <linearGradient id="elvFill3" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.45"/>
-                      <stop offset="60%" stopColor="#3b82f6" stopOpacity="0.1"/>
-                      <stop offset="100%" stopColor="#3b82f6" stopOpacity="0.02"/>
-                    </linearGradient>
-                  </defs>
-                  {yTicks.map((v,i)=>(
-                    <g key={i}><line x1={PAD_L} y1={toY(v)} x2={PAD_L+cW} y2={toY(v)} stroke="rgba(255,255,255,.04)" strokeWidth="1"/><text x={PAD_L-5} y={toY(v)+4} fill="rgba(255,255,255,0.35)" fontSize="9" textAnchor="end" fontFamily="var(--font-mono)">{toUnit(v)}</text></g>
-                  ))}
-                  {xTicks.map((v,i)=>(
-                    <g key={i}><line x1={toX(v)} y1={PAD_T} x2={toX(v)} y2={PAD_T+cH} stroke="rgba(255,255,255,.04)" strokeWidth="1"/><text x={toX(v)} y={PAD_T+cH+16} fill="rgba(255,255,255,0.35)" fontSize="9" textAnchor="middle" fontFamily="var(--font-mono)">{v===0?"0":v>=1000?`${(v/1000).toFixed(1)}km`:`${(v/1000).toFixed(2)}km`}</text></g>
-                  ))}
+                  <defs><linearGradient id="elvFill3" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#3b82f6" stopOpacity="0.45"/><stop offset="60%" stopColor="#3b82f6" stopOpacity="0.1"/><stop offset="100%" stopColor="#3b82f6" stopOpacity="0.02"/></linearGradient></defs>
+                  {yTicks.map((v,i)=>(<g key={i}><line x1={PAD_L} y1={toY(v)} x2={PAD_L+cW} y2={toY(v)} stroke="rgba(255,255,255,.04)" strokeWidth="1"/><text x={PAD_L-5} y={toY(v)+4} fill="rgba(255,255,255,0.35)" fontSize="9" textAnchor="end" fontFamily="var(--font-mono)">{toUnit(v)}</text></g>))}
+                  {xTicks.map((v,i)=>(<g key={i}><line x1={toX(v)} y1={PAD_T} x2={toX(v)} y2={PAD_T+cH} stroke="rgba(255,255,255,.04)" strokeWidth="1"/><text x={toX(v)} y={PAD_T+cH+16} fill="rgba(255,255,255,0.35)" fontSize="9" textAnchor="middle" fontFamily="var(--font-mono)">{v===0?"0":v>=1000?`${(v/1000).toFixed(1)}km`:`${(v/1000).toFixed(2)}km`}</text></g>))}
                   <path d={areaD} fill="url(#elvFill3)"/>
                   <polyline points={linePts} fill="none" stroke="#3b82f6" strokeWidth="1.8" strokeLinejoin="round"/>
                   {elevPtsRef.current.map((_,i)=>{const wDists=elevProfile.waypointCumDists;const realDist=wDists&&wDists[i]!=null?wDists[i]:(i===0?0:maxD*(i/(elevPtsRef.current.length-1)));const s=samples.reduce((a,b)=>Math.abs(b.d-realDist)<Math.abs(a.d-realDist)?b:a);return(<g key={i}><line x1={toX(s.d)} y1={PAD_T} x2={toX(s.d)} y2={PAD_T+cH} stroke="#f59e0b" strokeWidth="1" strokeDasharray="3,3" opacity="0.5"/><circle cx={toX(s.d)} cy={toY(s.h)} r={5} fill="#f59e0b" stroke="#fff" strokeWidth="1.5"/><text x={toX(s.d)} y={toY(s.h)-9} fill="#fbbf24" fontSize="10" textAnchor="middle" fontWeight="bold" fontFamily="sans-serif">{i+1}</text></g>);})}
@@ -1812,9 +1489,6 @@ export default function Globe3DView({savedDrawings=[],onClose}){
         </>
       )}
 
-      {/* ══════════════════════════════════════════════════════════════════
-          DEM LEGEND
-      ══════════════════════════════════════════════════════════════════ */}
       {demEnabled&&(
         <div style={{position:"fixed",bottom:SB+16,right:64,zIndex:1050,background:"rgba(6,10,20,.9)",border:"1px solid rgba(16,185,129,.2)",borderRadius:12,padding:"12px 14px",minWidth:145,boxShadow:"0 4px 24px rgba(0,0,0,.6)",fontFamily:"var(--font-ui)",backdropFilter:"blur(16px)",animation:"fadeSlideIn .2s ease"}}>
           <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:10}}>
@@ -1825,9 +1499,7 @@ export default function Globe3DView({savedDrawings=[],onClose}){
             <div style={{display:"flex",gap:8,marginBottom:6}}>
               <div style={{width:12,borderRadius:3,flexShrink:0,background:"linear-gradient(to bottom,#4a148c,#b71c1c,#e65100,#f9a825,#558b2f,#2e7d32,#00838f,#0277bd,#1a237e)"}}/>
               <div style={{display:"flex",flexDirection:"column",justifyContent:"space-between"}}>
-                {[["2000+m","#c084fc"],["1000m","#fb923c"],["500m","#fbbf24"],["Sea","#60a5fa"],["−400m","#818cf8"]].map(([label,color])=>(
-                  <span key={label} style={{fontSize:9,color,fontFamily:"var(--font-mono)"}}>{label}</span>
-                ))}
+                {[["2000+m","#c084fc"],["1000m","#fb923c"],["500m","#fbbf24"],["Sea","#60a5fa"],["−400m","#818cf8"]].map(([label,color])=>(<span key={label} style={{fontSize:9,color,fontFamily:"var(--font-mono)"}}>{label}</span>))}
               </div>
             </div>
           )}
@@ -1839,9 +1511,6 @@ export default function Globe3DView({savedDrawings=[],onClose}){
         </div>
       )}
 
-      {/* ══════════════════════════════════════════════════════════════════
-          LOCATION INFO
-      ══════════════════════════════════════════════════════════════════ */}
       {locationInfo&&(
         <div style={{position:"fixed",top:TB+14,right:60,width:Math.min(288,window.innerWidth-24),zIndex:1050,background:"rgba(8,13,25,.92)",borderRadius:12,overflow:"hidden",boxShadow:"0 8px 36px rgba(0,0,0,.6)",border:"1px solid rgba(255,255,255,.08)",backdropFilter:"blur(20px)",animation:"fadeSlideIn .2s ease",fontFamily:"var(--font-ui)"}}>
           <div style={{padding:"12px 14px"}}>
@@ -1855,9 +1524,6 @@ export default function Globe3DView({savedDrawings=[],onClose}){
         </div>
       )}
 
-      {/* ══════════════════════════════════════════════════════════════════
-          BUILDING INFO
-      ══════════════════════════════════════════════════════════════════ */}
       {buildingInfo&&(
         <div style={{position:"fixed",left:Math.min(buildingInfo.x,window.innerWidth-255),top:Math.max(buildingInfo.y,TB+8),zIndex:1100,width:248,background:"rgba(8,13,25,.95)",borderRadius:12,border:"1px solid rgba(99,102,241,.25)",boxShadow:"0 8px 32px rgba(0,0,0,.7)",fontFamily:"var(--font-ui)",overflow:"hidden",backdropFilter:"blur(20px)",animation:"fadeSlideIn .15s ease"}}>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"9px 12px",background:"rgba(99,102,241,.08)",borderBottom:"1px solid rgba(99,102,241,.15)"}}>
@@ -1874,16 +1540,11 @@ export default function Globe3DView({savedDrawings=[],onClose}){
                 <span style={{fontSize:11,color:c,background:"rgba(255,255,255,.04)",padding:"2px 8px",borderRadius:5,textTransform:"capitalize"}}>{v}</span>
               </div>
             ))}
-            {buildingInfo.untagged&&(
-              <div style={{marginTop:2,padding:"7px 9px",background:"rgba(251,191,36,.05)",border:"1px solid rgba(251,191,36,.15)",borderRadius:7,fontSize:10,color:"#78716c",lineHeight:1.5}}>
-                OSM data for this area may be incomplete
-              </div>
-            )}
+            {buildingInfo.untagged&&(<div style={{marginTop:2,padding:"7px 9px",background:"rgba(251,191,36,.05)",border:"1px solid rgba(251,191,36,.15)",borderRadius:7,fontSize:10,color:"#78716c",lineHeight:1.5}}>OSM data for this area may be incomplete</div>)}
           </div>
         </div>
       )}
 
-      {/* CSV Point Info */}
       {csvInfo&&(
         <div style={{position:"fixed",left:Math.min(csvInfo.x,window.innerWidth-290),top:Math.max(csvInfo.y,TB+8),zIndex:1100,width:275,background:"rgba(8,13,25,.95)",borderRadius:12,border:"1px solid rgba(34,197,94,.25)",boxShadow:"0 8px 32px rgba(0,0,0,.65)",fontFamily:"var(--font-ui)",overflow:"hidden",backdropFilter:"blur(20px)"}}>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 12px",background:"rgba(34,197,94,.07)",borderBottom:"1px solid rgba(34,197,94,.15)"}}>
@@ -1909,9 +1570,6 @@ export default function Globe3DView({savedDrawings=[],onClose}){
         </div>
       )}
 
-      {/* ══════════════════════════════════════════════════════════════════
-          DRAW NAME MODAL
-      ══════════════════════════════════════════════════════════════════ */}
       {showModal&&(
         <div style={{position:"fixed",inset:0,zIndex:2000,background:"rgba(0,0,0,.7)",display:"flex",alignItems:"center",justifyContent:"center",padding:"0 16px",backdropFilter:"blur(8px)"}}>
           <div style={{background:"rgba(8,13,25,.96)",borderRadius:14,padding:24,width:"100%",maxWidth:295,boxShadow:"0 12px 48px rgba(0,0,0,.8)",border:"1px solid rgba(255,255,255,.08)",fontFamily:"var(--font-ui)",animation:"fadeSlideIn .2s ease"}}>
@@ -1919,8 +1577,7 @@ export default function Globe3DView({savedDrawings=[],onClose}){
               <div style={{color:"var(--text-primary)",fontWeight:700,fontSize:16,marginBottom:4}}>Name this {pendingType}</div>
               <div style={{color:"var(--text-muted)",fontSize:11}}>{pendingPts.length} point{pendingPts.length!==1?"s":""} recorded</div>
             </div>
-            <input autoFocus value={pendingName} onChange={e=>setPendingName(e.target.value)} onKeyDown={e=>e.key==="Enter"&&confirmDrawing()} placeholder={`e.g. ${pendingType==="marker"?"Survey Point A":"Route Alpha"}`}
-              className="g3-input" style={{marginBottom:14,fontSize:13}}/>
+            <input autoFocus value={pendingName} onChange={e=>setPendingName(e.target.value)} onKeyDown={e=>e.key==="Enter"&&confirmDrawing()} placeholder={`e.g. ${pendingType==="marker"?"Survey Point A":"Route Alpha"}`} className="g3-input" style={{marginBottom:14,fontSize:13}}/>
             <div style={{display:"flex",gap:8}}>
               <button onClick={confirmDrawing} style={{flex:1,padding:"10px",borderRadius:9,border:"none",background:"linear-gradient(135deg,#1d4ed8,#0891b2)",color:"#fff",fontWeight:700,fontSize:13,cursor:"pointer",fontFamily:"var(--font-ui)"}}>Save Drawing</button>
               <button onClick={cancelDrawing} style={{padding:"10px 16px",borderRadius:9,border:"1px solid rgba(255,255,255,.1)",background:"transparent",color:"var(--text-muted)",fontWeight:500,fontSize:13,cursor:"pointer",fontFamily:"var(--font-ui)"}}>Cancel</button>
@@ -1929,14 +1586,9 @@ export default function Globe3DView({savedDrawings=[],onClose}){
         </div>
       )}
 
-      {/* ══════════════════════════════════════════════════════════════════
-          KML FLY-IN
-      ══════════════════════════════════════════════════════════════════ */}
       {kmlFlyIn&&(
         <div style={{position:"fixed",zIndex:1500,bottom:SB+10,left:PANEL+16,right:80,pointerEvents:"none",animation:"fadeSlideIn .3s ease"}}>
-          <div style={{height:2,background:"rgba(255,255,255,.06)",borderRadius:2,overflow:"hidden"}}>
-            <div style={{height:"100%",background:"linear-gradient(90deg,#3b82f6,#06b6d4)",borderRadius:2,animation:"progressBar 4.5s cubic-bezier(.4,0,.6,1) forwards"}}/>
-          </div>
+          <div style={{height:2,background:"rgba(255,255,255,.06)",borderRadius:2,overflow:"hidden"}}><div style={{height:"100%",background:"linear-gradient(90deg,#3b82f6,#06b6d4)",borderRadius:2,animation:"progressBar 4.5s cubic-bezier(.4,0,.6,1) forwards"}}/></div>
           <div style={{marginTop:6,display:"flex",alignItems:"center",gap:7}}>
             <div style={{width:6,height:6,borderRadius:"50%",background:"#3b82f6",boxShadow:"0 0 6px #3b82f6"}}/>
             <span style={{color:"var(--text-dim)",fontSize:10,fontFamily:"var(--font-ui)"}}>Navigating to <span style={{color:"var(--text-secondary)"}}>{kmlName}</span></span>
@@ -1944,7 +1596,6 @@ export default function Globe3DView({savedDrawings=[],onClose}){
         </div>
       )}
 
-      {/* KML Camera Stats */}
       {kmlStats&&!kmlFlyIn&&(
         <div className="g3-kml-stats" style={{position:"fixed",top:TB+8,right:10,zIndex:1002,width:200,background:"rgba(6,10,20,.9)",border:"1px solid rgba(255,255,255,.08)",backdropFilter:"blur(16px)",fontFamily:"var(--font-mono)",fontSize:10,userSelect:"none",borderRadius:10,overflow:"hidden",animation:"slideLeft .3s ease"}}>
           <div style={{padding:"7px 12px",borderBottom:"1px solid rgba(255,255,255,.06)",display:"flex",alignItems:"center",justifyContent:"space-between",background:"rgba(255,255,255,.02)"}}>
@@ -1969,11 +1620,10 @@ export default function Globe3DView({savedDrawings=[],onClose}){
         </div>
       )}
 
-      {/* ══════════════════════════════════════════════════════════════════
-          COORDINATE CONVERTER PANEL
-      ══════════════════════════════════════════════════════════════════ */}
+      {/* ══ COORDINATE CONVERTER PANEL ══
+          FIX 4: className="g3-coord-conv-panel" added so mobile CSS applies */}
       {coordConvOpen&&(
-        <div style={{position:"fixed",top:TB,right:0,width:320,bottom:SB,zIndex:1080,background:"rgba(6,10,20,.94)",borderLeft:"1px solid rgba(255,255,255,.07)",display:"flex",flexDirection:"column",fontFamily:"var(--font-ui)",backdropFilter:"blur(24px)",boxShadow:"-8px 0 40px rgba(0,0,0,.5)",animation:"slideLeft .2s ease"}}>
+        <div className="g3-coord-conv-panel" style={{position:"fixed",top:TB,right:0,width:320,bottom:SB,zIndex:1080,background:"rgba(6,10,20,.94)",borderLeft:"1px solid rgba(255,255,255,.07)",display:"flex",flexDirection:"column",fontFamily:"var(--font-ui)",backdropFilter:"blur(24px)",boxShadow:"-8px 0 40px rgba(0,0,0,.5)",animation:"slideLeft .2s ease"}}>
           <div style={{padding:"14px 16px",borderBottom:"1px solid rgba(255,255,255,.07)",background:"rgba(255,255,255,.02)",display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0}}>
             <div style={{display:"flex",alignItems:"center",gap:10}}>
               <div style={{width:30,height:30,borderRadius:8,background:"linear-gradient(135deg,rgba(124,58,237,.4),rgba(167,139,250,.2))",border:"1px solid rgba(167,139,250,.3)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14}}>🔄</div>
@@ -1984,105 +1634,64 @@ export default function Globe3DView({savedDrawings=[],onClose}){
             </div>
             <button onClick={()=>{setCoordConvOpen(false);setConvPickMode(false);}} style={{background:"none",border:"none",color:"var(--text-dim)",cursor:"pointer"}}><Icons.Close/></button>
           </div>
-
           <div style={{flex:1,overflowY:"auto",padding:"14px 16px",display:"flex",flexDirection:"column",gap:12}}>
-
-            {/* Input */}
             <div style={{background:"rgba(124,58,237,.06)",border:"1px solid rgba(124,58,237,.2)",borderRadius:10,padding:"12px"}}>
               <div style={{color:"#a78bfa",fontSize:10,fontWeight:700,letterSpacing:".08em",marginBottom:8}}>INPUT COORDINATE</div>
               <textarea value={convInput} onChange={e=>{setConvInput(e.target.value);setConvError("");}} onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();handleConvSubmit();}}} placeholder={"Any format:\n20.296198, 85.824597\n44N 400000E 2200000N\n43C MU 23450 45678\n20°17'46\"N, 85°49'28\"E"} rows={4}
                 style={{width:"100%",padding:"9px 11px",borderRadius:8,border:"1px solid rgba(255,255,255,.09)",background:"rgba(255,255,255,.03)",color:"var(--text-primary)",fontSize:11,outline:"none",resize:"vertical",fontFamily:"var(--font-mono)",lineHeight:1.5,boxSizing:"border-box",transition:"border-color .15s"}}
-                onFocus={e=>e.target.style.borderColor="rgba(124,58,237,.4)"}
-                onBlur={e=>e.target.style.borderColor="rgba(255,255,255,.09)"}/>
-              {convError&&(
-                <div style={{color:"#f87171",fontSize:10,lineHeight:1.5,padding:"6px 9px",background:"rgba(239,68,68,.07)",borderRadius:7,border:"1px solid rgba(239,68,68,.2)",marginTop:7}}>⚠ {convError}</div>
-              )}
+                onFocus={e=>e.target.style.borderColor="rgba(124,58,237,.4)"} onBlur={e=>e.target.style.borderColor="rgba(255,255,255,.09)"}/>
+              {convError&&(<div style={{color:"#f87171",fontSize:10,lineHeight:1.5,padding:"6px 9px",background:"rgba(239,68,68,.07)",borderRadius:7,border:"1px solid rgba(239,68,68,.2)",marginTop:7}}>⚠ {convError}</div>)}
               <div style={{display:"flex",gap:6,marginTop:8}}>
-                <button onClick={handleConvSubmit} style={{flex:1,padding:"9px",borderRadius:8,border:"none",background:"linear-gradient(135deg,#6d28d9,#7c3aed)",color:"#fff",fontWeight:700,fontSize:12,cursor:"pointer",fontFamily:"var(--font-ui)",display:"flex",alignItems:"center",justifyContent:"center",gap:5}}
-                  onMouseEnter={e=>e.currentTarget.style.filter="brightness(1.15)"}
-                  onMouseLeave={e=>e.currentTarget.style.filter="brightness(1)"}>
-                  <Icons.Coords/> Convert
-                </button>
+                <button onClick={handleConvSubmit} style={{flex:1,padding:"9px",borderRadius:8,border:"none",background:"linear-gradient(135deg,#6d28d9,#7c3aed)",color:"#fff",fontWeight:700,fontSize:12,cursor:"pointer",fontFamily:"var(--font-ui)",display:"flex",alignItems:"center",justifyContent:"center",gap:5}} onMouseEnter={e=>e.currentTarget.style.filter="brightness(1.15)"} onMouseLeave={e=>e.currentTarget.style.filter="brightness(1)"}><Icons.Coords/> Convert</button>
                 <button onClick={()=>{setConvInput("");setConvResult(null);setConvError("");}} style={{padding:"9px 12px",borderRadius:8,border:"1px solid rgba(255,255,255,.08)",background:"transparent",color:"var(--text-muted)",fontSize:12,cursor:"pointer",fontFamily:"var(--font-ui)"}}>Clear</button>
               </div>
             </div>
-
-            {/* Pick from map */}
-            <button onClick={()=>setConvPickMode(p=>!p)}
-              style={{width:"100%",padding:"11px",borderRadius:9,border:`2px solid ${convPickMode?"rgba(167,139,250,.6)":"rgba(124,58,237,.2)"}`,background:convPickMode?"rgba(124,58,237,.15)":"rgba(124,58,237,.04)",color:convPickMode?"#c4b5fd":"#7c6fa0",fontWeight:700,fontSize:12,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:8,transition:"all .15s",fontFamily:"var(--font-ui)"}}>
+            <button onClick={()=>setConvPickMode(p=>!p)} style={{width:"100%",padding:"11px",borderRadius:9,border:`2px solid ${convPickMode?"rgba(167,139,250,.6)":"rgba(124,58,237,.2)"}`,background:convPickMode?"rgba(124,58,237,.15)":"rgba(124,58,237,.04)",color:convPickMode?"#c4b5fd":"#7c6fa0",fontWeight:700,fontSize:12,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:8,transition:"all .15s",fontFamily:"var(--font-ui)"}}>
               <span style={{fontSize:16}}>🖱️</span>
               {convPickMode?"Click map to pick location…":"Pick from Map"}
               {convPickMode&&<span style={{fontSize:10,background:"rgba(167,139,250,.25)",padding:"2px 8px",borderRadius:20,color:"#ddd6fe"}}>Active</span>}
             </button>
-
-            {/* Format reference */}
             {!convResult&&(
               <div style={{background:"rgba(255,255,255,.02)",border:"1px solid rgba(255,255,255,.06)",borderRadius:10,padding:"12px"}}>
                 <div style={{color:"var(--text-dim)",fontSize:10,fontWeight:700,letterSpacing:".08em",marginBottom:10}}>SUPPORTED FORMATS</div>
                 {[["Decimal Degrees","20.2962, 85.8246","#60a5fa"],["Signed DD","+20.2962, +85.8246","#60a5fa"],["DMS","20°17'46\"N, 85°49'28\"E","#34d399"],["UTM","44N 452000E 2243000N","#fbbf24"],["MGRS","44QKM 52000 43000","#f97316"]].map(([fmt,ex,col])=>(
                   <div key={fmt} style={{marginBottom:8}}>
                     <div style={{color:col,fontSize:9,fontWeight:700,letterSpacing:".06em",marginBottom:2}}>{fmt}</div>
-                    <div onClick={()=>setConvInput(ex)} style={{color:"var(--text-secondary)",fontSize:10,fontFamily:"var(--font-mono)",cursor:"pointer",padding:"4px 8px",borderRadius:6,background:"rgba(255,255,255,.03)",userSelect:"all",transition:"background .12s"}}
-                      onMouseEnter={e=>e.currentTarget.style.background="rgba(255,255,255,.07)"}
-                      onMouseLeave={e=>e.currentTarget.style.background="rgba(255,255,255,.03)"}
-                      title="Click to use this example">{ex}</div>
+                    <div onClick={()=>setConvInput(ex)} style={{color:"var(--text-secondary)",fontSize:10,fontFamily:"var(--font-mono)",cursor:"pointer",padding:"4px 8px",borderRadius:6,background:"rgba(255,255,255,.03)",userSelect:"all",transition:"background .12s"}} onMouseEnter={e=>e.currentTarget.style.background="rgba(255,255,255,.07)"} onMouseLeave={e=>e.currentTarget.style.background="rgba(255,255,255,.03)"} title="Click to use this example">{ex}</div>
                   </div>
                 ))}
               </div>
             )}
-
-            {/* Results */}
             {convResult&&(()=>{
               const rows=[{label:"Decimal Degrees",key:"dd",value:convResult.dd,color:"#60a5fa",icon:"🌐"},{label:"DD Simple",key:"ddSimple",value:convResult.ddSimple,color:"#60a5fa",icon:"📍"},{label:"DMS",key:"dmsStr",value:convResult.dmsStr,color:"#34d399",icon:"📐"},{label:"UTM",key:"utmStr",value:convResult.utmStr,color:"#fbbf24",icon:"🗺"},{label:"MGRS",key:"mgrsStr",value:convResult.mgrsStr,color:"#f97316",icon:"⊞"},{label:"Geohash",key:"geohash",value:convResult.geohash,color:"#e879f9",icon:"#"}];
               return(
                 <>
                   <div style={{background:"rgba(124,58,237,.1)",border:"1px solid rgba(124,58,237,.25)",borderRadius:10,padding:"11px 13px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-                    <div>
-                      <div style={{color:"#c4b5fd",fontSize:10,fontWeight:700,letterSpacing:".06em",marginBottom:4}}>RESULT</div>
-                      <div style={{color:"var(--text-primary)",fontFamily:"var(--font-mono)",fontSize:11}}>{convResult.lat.toFixed(5)}°, {convResult.lng.toFixed(5)}°</div>
-                    </div>
-                    <button onClick={convFlyTo}
-                      style={{padding:"8px 14px",borderRadius:8,border:"none",background:"linear-gradient(135deg,#6d28d9,#7c3aed)",color:"#fff",fontWeight:700,fontSize:11,cursor:"pointer",display:"flex",alignItems:"center",gap:5,fontFamily:"var(--font-ui)"}}>
-                      <Icons.Fly/> Fly To
-                    </button>
+                    <div><div style={{color:"#c4b5fd",fontSize:10,fontWeight:700,letterSpacing:".06em",marginBottom:4}}>RESULT</div><div style={{color:"var(--text-primary)",fontFamily:"var(--font-mono)",fontSize:11}}>{convResult.lat.toFixed(5)}°, {convResult.lng.toFixed(5)}°</div></div>
+                    <button onClick={convFlyTo} style={{padding:"8px 14px",borderRadius:8,border:"none",background:"linear-gradient(135deg,#6d28d9,#7c3aed)",color:"#fff",fontWeight:700,fontSize:11,cursor:"pointer",display:"flex",alignItems:"center",gap:5,fontFamily:"var(--font-ui)"}}><Icons.Fly/> Fly To</button>
                   </div>
-
                   <div style={{display:"flex",flexDirection:"column",gap:5}}>
                     {rows.filter(r=>r.value).map(row=>(
                       <div key={row.key} style={{background:"rgba(255,255,255,.025)",border:"1px solid rgba(255,255,255,.06)",borderRadius:9,padding:"9px 11px"}}>
                         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:5}}>
-                          <div style={{display:"flex",alignItems:"center",gap:5}}>
-                            <span style={{fontSize:11}}>{row.icon}</span>
-                            <span style={{color:row.color,fontSize:9,fontWeight:700,letterSpacing:".07em"}}>{row.label.toUpperCase()}</span>
-                          </div>
-                          <button onClick={()=>copyConv(row.value,row.key)}
-                            style={{padding:"2px 9px",borderRadius:5,border:`1px solid ${convCopied===row.key?"rgba(74,222,128,.5)":"rgba(255,255,255,.09)"}`,background:convCopied===row.key?"rgba(74,222,128,.1)":"transparent",color:convCopied===row.key?"#4ade80":"var(--text-dim)",fontSize:9,cursor:"pointer",fontWeight:600,transition:"all .15s",fontFamily:"var(--font-ui)",display:"flex",alignItems:"center",gap:3}}>
-                            <Icons.Copy/> {convCopied===row.key?"Copied!":"Copy"}
-                          </button>
+                          <div style={{display:"flex",alignItems:"center",gap:5}}><span style={{fontSize:11}}>{row.icon}</span><span style={{color:row.color,fontSize:9,fontWeight:700,letterSpacing:".07em"}}>{row.label.toUpperCase()}</span></div>
+                          <button onClick={()=>copyConv(row.value,row.key)} style={{padding:"2px 9px",borderRadius:5,border:`1px solid ${convCopied===row.key?"rgba(74,222,128,.5)":"rgba(255,255,255,.09)"}`,background:convCopied===row.key?"rgba(74,222,128,.1)":"transparent",color:convCopied===row.key?"#4ade80":"var(--text-dim)",fontSize:9,cursor:"pointer",fontWeight:600,transition:"all .15s",fontFamily:"var(--font-ui)",display:"flex",alignItems:"center",gap:3}}><Icons.Copy/> {convCopied===row.key?"Copied!":"Copy"}</button>
                         </div>
                         <div style={{color:"var(--text-secondary)",fontFamily:"var(--font-mono)",fontSize:11,wordBreak:"break-all",lineHeight:1.4,userSelect:"all"}}>{row.value}</div>
                       </div>
                     ))}
                   </div>
-
                   {convResult.utm&&(
                     <div style={{background:"rgba(251,191,36,.04)",border:"1px solid rgba(251,191,36,.15)",borderRadius:9,padding:"11px 13px"}}>
                       <div style={{color:"#fbbf24",fontSize:10,fontWeight:700,letterSpacing:".08em",marginBottom:8}}>UTM ZONE DETAILS</div>
                       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"6px 10px"}}>
                         {[["Zone",`${convResult.utm.zone}${convResult.utm.band}`],["Easting",`${convResult.utm.easting} m`],["Northing",`${convResult.utm.northing} m`],["Hemisphere",convResult.lat>=0?"Northern":"Southern"]].map(([k,v])=>(
-                          <div key={k}>
-                            <div style={{color:"var(--text-dim)",fontSize:9,fontWeight:700}}>{k}</div>
-                            <div style={{color:"#fde68a",fontFamily:"var(--font-mono)",fontSize:10}}>{v}</div>
-                          </div>
+                          <div key={k}><div style={{color:"var(--text-dim)",fontSize:9,fontWeight:700}}>{k}</div><div style={{color:"#fde68a",fontFamily:"var(--font-mono)",fontSize:10}}>{v}</div></div>
                         ))}
                       </div>
                     </div>
                   )}
-
-                  <button onClick={()=>{const all=rows.filter(r=>r.value).map(r=>`${r.label}: ${r.value}`).join("\n");copyConv(all,"all");}}
-                    style={{width:"100%",padding:"10px",borderRadius:8,border:`1px solid ${convCopied==="all"?"rgba(74,222,128,.4)":"rgba(255,255,255,.08)"}`,background:convCopied==="all"?"rgba(74,222,128,.08)":"rgba(255,255,255,.03)",color:convCopied==="all"?"#4ade80":"var(--text-muted)",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"var(--font-ui)",display:"flex",alignItems:"center",justifyContent:"center",gap:6}}>
-                    <Icons.Copy/> {convCopied==="all"?"✓ Copied All!":"Copy All Formats"}
-                  </button>
+                  <button onClick={()=>{const all=rows.filter(r=>r.value).map(r=>`${r.label}: ${r.value}`).join("\n");copyConv(all,"all");}} style={{width:"100%",padding:"10px",borderRadius:8,border:`1px solid ${convCopied==="all"?"rgba(74,222,128,.4)":"rgba(255,255,255,.08)"}`,background:convCopied==="all"?"rgba(74,222,128,.08)":"rgba(255,255,255,.03)",color:convCopied==="all"?"#4ade80":"var(--text-muted)",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"var(--font-ui)",display:"flex",alignItems:"center",justifyContent:"center",gap:6}}><Icons.Copy/> {convCopied==="all"?"✓ Copied All!":"Copy All Formats"}</button>
                 </>
               );
             })()}
@@ -2090,9 +1699,6 @@ export default function Globe3DView({savedDrawings=[],onClose}){
         </div>
       )}
 
-      {/* ══════════════════════════════════════════════════════════════════
-          FEATURE PANELS
-      ══════════════════════════════════════════════════════════════════ */}
       <HeatmapLayer viewer={viewerRef.current} Cesium={CesiumRef.current} visible={heatmapOpen} onClose={()=>setHeatmapOpen(false)}/>
       <SatelliteTimeSlider viewer={viewerRef.current} Cesium={CesiumRef.current} visible={sliderOpen} onClose={()=>setSliderOpen(false)}/>
       <DroneFlightPath viewer={viewerRef.current} Cesium={CesiumRef.current} visible={droneOpen} onClose={()=>setDroneOpen(false)}/>

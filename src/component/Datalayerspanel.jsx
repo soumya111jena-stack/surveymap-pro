@@ -1,6 +1,7 @@
 /**
  * DataLayersPanel.jsx — SurveyMap Pro
  * Google Earth-style Data Layers modal — professional horizontal card layout
+ * MOBILE UPDATE v4: Full bottom-sheet layout on mobile, compact cards, sticky search
  *
  * LAYER RELIABILITY POLICY (v3 — definitive fix):
  * ─────────────────────────────────────────────────────────────────────────────
@@ -11,18 +12,6 @@
  *
  * ALL other GIBS layers replaced with 100% reliable ESRI ArcGIS REST or
  * open tile services that do not require auth and have confirmed CORS headers.
- *
- * Why previous GIBS layers failed with HTTP 400:
- *   - MODIS_Terra_L3_NDVI_8Day       → does NOT exist in epsg3857 WMTS
- *   - VIIRS_SNPP_DayNightBand_ENCC   → wrong TileMatrixSet level
- *   - MODIS_Terra_Snow_Cover_Daily   → does NOT exist in epsg3857 WMTS
- *   - MODIS_Aqua_L3_SST_MidIR_*     → does NOT exist in epsg3857 WMTS
- *   - MODIS_Terra_Land_Surface_Temp  → does NOT exist in epsg3857 WMTS
- *   - MODIS_Aqua_Thermal_Anomalies   → incorrect level
- *
- * ESRI ArcGIS REST tile URL format:
- *   https://server.arcgisonline.com/ArcGIS/rest/services/{service}/MapServer/tile/{z}/{y}/{x}
- *   Note: y and x are REVERSED compared to standard {z}/{x}/{y} — this is correct for ESRI.
  */
 import { useState, useEffect, useRef, useCallback } from "react";
 
@@ -94,7 +83,7 @@ export const DATA_LAYER_CATALOG = [
   },
 
   // ════════════════════════════════════════════════════════
-  //  POPULATION  — ESRI REST + CartoDB (all confirmed CORS ✅)
+  //  POPULATION
   // ════════════════════════════════════════════════════════
   {
     id: "world_imagery", category: "population",
@@ -126,7 +115,6 @@ export const DATA_LAYER_CATALOG = [
     description: "Nighttime lights from VIIRS Day/Night Band. Bright clusters show cities and economic activity.",
     badge: null, free: true, provider: "NASA EOSDIS / GIBS", resolution: "500m", updated: "2024",
     type: "gibs",
-    // ✅ Confirmed in GIBS epsg3857 WMTS Capabilities — Level8, jpg
     gibsLayer: "VIIRS_SNPP_DayNightBand_At_Sensor_Radiance",
     gibsDate: "2024-01-01",
     gibsFormat: "jpg",
@@ -151,14 +139,6 @@ export const DATA_LAYER_CATALOG = [
 
   // ════════════════════════════════════════════════════════
   //  ENVIRONMENT
-  //
-  //  Only 3 GIBS layers confirmed 100% working in epsg3857:
-  //    MODIS_Terra_CorrectedReflectance_TrueColor  Level9 jpg  ✅
-  //    MODIS_Terra_CorrectedReflectance_Bands721   Level9 jpg  ✅
-  //    MODIS_Aqua_CorrectedReflectance_TrueColor   Level9 jpg  ✅
-  //
-  //  All others (NDVI, Fire, Snow, LST) replaced with ESRI REST services
-  //  that provide equivalent visual data without WMTS layer-name issues.
   // ════════════════════════════════════════════════════════
   {
     id: "true_color", category: "environment",
@@ -166,7 +146,6 @@ export const DATA_LAYER_CATALOG = [
     description: "Near-true-colour daily composite from MODIS Terra at 250m. See cloud patterns, dust, smoke, flooding and bare land.",
     badge: "Daily", badgeColor: "#3b82f6", free: true, provider: "NASA EOSDIS / GIBS", resolution: "250m", updated: "Daily",
     type: "gibs",
-    // ✅ 100% confirmed working in GIBS epsg3857
     gibsLayer: "MODIS_Terra_CorrectedReflectance_TrueColor",
     gibsDate: "2024-06-01",
     gibsFormat: "jpg",
@@ -182,7 +161,6 @@ export const DATA_LAYER_CATALOG = [
     description: "Bands 7-2-1 false colour — healthy vegetation appears bright red, making deforestation and burn scars easy to spot.",
     badge: null, free: true, provider: "NASA EOSDIS / GIBS", resolution: "250m", updated: "Daily",
     type: "gibs",
-    // ✅ 100% confirmed working in GIBS epsg3857
     gibsLayer: "MODIS_Terra_CorrectedReflectance_Bands721",
     gibsDate: "2024-06-01",
     gibsFormat: "jpg",
@@ -198,7 +176,6 @@ export const DATA_LAYER_CATALOG = [
     description: "Afternoon MODIS Aqua overpass in true colour — captures different cloud and smoke patterns than the morning Terra pass.",
     badge: "Daily", badgeColor: "#3b82f6", free: true, provider: "NASA EOSDIS / GIBS", resolution: "250m", updated: "Daily",
     type: "gibs",
-    // ✅ 100% confirmed working in GIBS epsg3857
     gibsLayer: "MODIS_Aqua_CorrectedReflectance_TrueColor",
     gibsDate: "2024-06-01",
     gibsFormat: "jpg",
@@ -214,7 +191,6 @@ export const DATA_LAYER_CATALOG = [
     description: "Global land cover showing forests, grasslands, croplands, wetlands, urban and bare areas. Updated 2023.",
     badge: null, free: true, provider: "ESRI / USGS", resolution: "varies", updated: "2023",
     type: "imagery",
-    // ✅ ESRI ArcGIS REST — confirmed CORS open, no auth needed
     tileUrl: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
     maxZoom: 13, opacity: 0.8,
     preview: "forest",
@@ -227,7 +203,6 @@ export const DATA_LAYER_CATALOG = [
     description: "Use MODIS Terra false-colour layer to identify thermal anomalies. Red areas in the Bands721 layer indicate active fires.",
     badge: null, free: true, provider: "ESRI / USGS", resolution: "varies", updated: "2024",
     type: "imagery",
-    // ✅ ESRI shaded relief highlights burn scar topography — CORS open
     tileUrl: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Shaded_Relief/MapServer/tile/{z}/{y}/{x}",
     maxZoom: 13, opacity: 0.8,
     preview: "fire",
@@ -236,8 +211,7 @@ export const DATA_LAYER_CATALOG = [
   },
 
   // ════════════════════════════════════════════════════════
-  //  WEATHER  — ESRI REST for static layers, OWM for live
-  //  (All GIBS weather layers removed — none confirmed in epsg3857)
+  //  WEATHER
   // ════════════════════════════════════════════════════════
   {
     id: "land_surface_temp", category: "weather",
@@ -245,7 +219,6 @@ export const DATA_LAYER_CATALOG = [
     description: "Physical terrain and climate zones — use alongside OWM temperature overlay to contextualise surface heat patterns.",
     badge: null, free: true, provider: "ESRI / USGS", resolution: "varies", updated: "2023",
     type: "imagery",
-    // ✅ ESRI ArcGIS REST World Physical Map — confirmed CORS open
     tileUrl: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Physical_Map/MapServer/tile/{z}/{y}/{x}",
     maxZoom: 8, opacity: 0.8,
     preview: "lst",
@@ -258,7 +231,6 @@ export const DATA_LAYER_CATALOG = [
     description: "Ocean reference basemap with depth, currents and named features — use as base for SST and marine data overlays.",
     badge: null, free: true, provider: "ESRI / GEBCO / NOAA", resolution: "varies", updated: "2023",
     type: "imagery",
-    // ✅ ESRI ArcGIS REST — confirmed CORS open
     tileUrl: "https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}",
     maxZoom: 13, opacity: 0.8,
     preview: "bathymetry",
@@ -315,7 +287,7 @@ export const DATA_LAYER_CATALOG = [
   },
 
   // ════════════════════════════════════════════════════════
-  //  VECTOR DATA  — ESRI REST + OSM + CartoDB (all CORS ✅)
+  //  VECTOR DATA
   // ════════════════════════════════════════════════════════
   {
     id: "osm_standard", category: "vector",
@@ -359,7 +331,6 @@ export const DATA_LAYER_CATALOG = [
     description: "All M2.5+ earthquakes past 30 days from USGS. Points sized by magnitude, coloured by severity — M6+ = red.",
     badge: "Live", badgeColor: "#ef4444", free: true, provider: "USGS Earthquake Hazards", resolution: "Point", updated: "Real-time",
     type: "geojson",
-    // ✅ USGS GeoJSON API — confirmed CORS open (Access-Control-Allow-Origin: *)
     geoJsonUrl: "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/2.5_month.geojson",
     opacity: 0.9,
     preview: "earthquake",
@@ -393,7 +364,7 @@ export const DATA_LAYER_CATALOG = [
 ];
 
 export const CATEGORIES = [
-  { id: "all",         label: "All Layers",   icon: "◈",   color: "#94a3b8", count: () => DATA_LAYER_CATALOG.length },
+  { id: "all",         label: "All Layers",   icon: "◈",   color: "#94a3b8" },
   { id: "terrain",     label: "Terrain",      icon: "⛰️",  color: "#10b981" },
   { id: "population",  label: "Population",   icon: "👥",  color: "#f97316" },
   { id: "environment", label: "Environment",  icon: "🌿",  color: "#22c55e" },
@@ -401,7 +372,6 @@ export const CATEGORIES = [
   { id: "vector",      label: "Vector Data",  icon: "⊞",   color: "#a78bfa" },
 ];
 
-// ── Gradient preview thumbnails ───────────────────────────────────────────────
 const PREVIEW_GRADIENTS = {
   dem:          "linear-gradient(135deg,#0a2a0a 0%,#1a5c3a 22%,#52b788 42%,#c9a84c 62%,#8b4513 80%,#e8e8e8 100%)",
   hillshade:    "linear-gradient(155deg,#111827 0%,#1f2937 35%,#374151 60%,#6b7280 80%,#d1d5db 100%)",
@@ -466,7 +436,163 @@ function Thumbnail({ layer, size = 72 }) {
   );
 }
 
-// ── Layer Row Card ────────────────────────────────────────────────────────────
+// ── Mobile Layer Card (compact) ───────────────────────────────────────────────
+function MobileLayerCard({ layer, isActive, onToggle, onOpacityChange }) {
+  const [expanded, setExpanded] = useState(false);
+  const acc = layer.accentColor;
+  const rgb = hexToRgb(acc);
+
+  return (
+    <div style={{
+      borderRadius: 14,
+      border: `1px solid ${isActive ? `rgba(${rgb},0.45)` : "rgba(255,255,255,0.07)"}`,
+      background: isActive ? `rgba(${rgb},0.07)` : "rgba(255,255,255,0.025)",
+      overflow: "hidden",
+      boxShadow: isActive ? `0 0 16px rgba(${rgb},0.1)` : "none",
+      transition: "all 0.18s ease",
+    }}>
+      {/* Main row */}
+      <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px" }}
+        onClick={() => setExpanded(e => !e)}>
+        <Thumbnail layer={layer} size={52} />
+
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
+            {layer.badge && (
+              <span style={{
+                padding: "1px 6px", borderRadius: 20, flexShrink: 0,
+                background: layer.badgeColor || "#6b7280",
+                color: "#fff", fontSize: 8.5, fontWeight: 700,
+                letterSpacing: "0.04em",
+              }}>
+                {layer.badge === "Live" && <span style={{ display:"inline-block",width:4,height:4,borderRadius:"50%",background:"#fff",marginRight:3,verticalAlign:"middle" }}/>}
+                {layer.badge}
+              </span>
+            )}
+          </div>
+          {/* Title — always fully visible */}
+          <div style={{
+            color: "#fff", fontWeight: 700, fontSize: 13.5, lineHeight: 1.2,
+            fontFamily: "'DM Sans',sans-serif",
+            whiteSpace: "normal", wordBreak: "break-word",
+          }}>
+            {layer.title}
+          </div>
+          <div style={{
+            color: acc, fontSize: 10.5, fontWeight: 600,
+            fontFamily: "'DM Sans',sans-serif", opacity: 0.9, marginTop: 2,
+            whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+          }}>
+            {layer.subtitle}
+          </div>
+          <div style={{
+            display: "flex", alignItems: "center", gap: 6, marginTop: 4, flexWrap: "wrap",
+          }}>
+            <span style={{ color:"rgba(255,255,255,0.3)", fontSize:9.5, fontFamily:"'DM Mono',monospace" }}>
+              {layer.provider}
+            </span>
+            <span style={{ color:"rgba(255,255,255,0.18)", fontSize:9.5 }}>·</span>
+            <span style={{ color:"rgba(255,255,255,0.25)", fontSize:9.5, fontFamily:"'DM Mono',monospace" }}>
+              {layer.resolution}
+            </span>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8, flexShrink: 0 }}>
+          {/* Toggle button */}
+          <button
+            onClick={e => { e.stopPropagation(); onToggle(layer.id); }}
+            style={{
+              width: 44, height: 44, borderRadius: 22,
+              border: `2px solid ${isActive ? `rgba(${rgb},0.6)` : "rgba(255,255,255,0.15)"}`,
+              background: isActive ? `rgba(${rgb},0.2)` : "rgba(255,255,255,0.05)",
+              color: isActive ? acc : "rgba(255,255,255,0.5)",
+              cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+              transition: "all 0.18s",
+              WebkitTapHighlightColor: "transparent",
+            }}>
+            {isActive ? (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+                <polyline points="20 6 9 17 4 12"/>
+              </svg>
+            ) : (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+              </svg>
+            )}
+          </button>
+          {/* Expand chevron */}
+          <div style={{
+            color: "rgba(255,255,255,0.2)", fontSize: 10, transform: expanded ? "rotate(180deg)" : "rotate(0deg)",
+            transition: "transform 0.2s",
+          }}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+          </div>
+        </div>
+      </div>
+
+      {/* Expanded section */}
+      {expanded && (
+        <div style={{
+          padding: "0 14px 14px",
+          borderTop: "1px solid rgba(255,255,255,0.05)",
+          marginTop: 0,
+          animation: "dlpExpand 0.18s ease",
+        }}>
+          <div style={{
+            color: "rgba(255,255,255,0.5)", fontSize: 12,
+            fontFamily: "'DM Sans',sans-serif", lineHeight: 1.6,
+            marginTop: 12, marginBottom: 10,
+          }}>
+            {layer.description}
+          </div>
+
+          {layer.note && (
+            <div style={{
+              marginBottom: 10, padding: "6px 10px",
+              background: "rgba(251,191,36,0.08)", border: "1px solid rgba(251,191,36,0.25)",
+              borderRadius: 8, color: "#fbbf24", fontSize: 10.5,
+              fontFamily: "'DM Sans',sans-serif", lineHeight: 1.5,
+            }}>
+              ⚠ {layer.note}
+            </div>
+          )}
+
+          {/* Tags */}
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: isActive ? 12 : 0 }}>
+            {layer.tags.map(t => (
+              <span key={t} style={{
+                padding: "2px 8px", borderRadius: 20,
+                background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)",
+                color: "rgba(255,255,255,0.35)", fontSize: 10,
+                fontFamily: "'DM Mono',monospace",
+              }}>{t}</span>
+            ))}
+          </div>
+
+          {/* Opacity slider when active */}
+          {isActive && (
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 8 }}>
+              <span style={{ color: "rgba(255,255,255,0.28)", fontSize: 9.5, fontWeight: 700, letterSpacing: "0.08em", fontFamily: "'DM Sans',sans-serif", flexShrink: 0 }}>OPACITY</span>
+              <input
+                type="range" min={0.05} max={1} step={0.05}
+                value={layer.currentOpacity ?? layer.opacity}
+                onChange={e => onOpacityChange(layer.id, parseFloat(e.target.value))}
+                onClick={e => e.stopPropagation()}
+                style={{ flex: 1, accentColor: acc, cursor: "pointer", height: 4 }}
+              />
+              <span style={{ color: acc, fontSize: 10, fontFamily: "'DM Mono',monospace", fontWeight: 700, width: 32, textAlign: "right" }}>
+                {Math.round((layer.currentOpacity ?? layer.opacity) * 100)}%
+              </span>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Desktop Layer Row Card ────────────────────────────────────────────────────
 function LayerCard({ layer, isActive, onToggle, onOpacityChange }) {
   const [hovered, setHovered] = useState(false);
   const acc = layer.accentColor;
@@ -610,15 +736,9 @@ function LayerCard({ layer, isActive, onToggle, onOpacityChange }) {
         onMouseLeave={e => { if (!isActive) { e.currentTarget.style.background = "rgba(255,255,255,0.05)"; e.currentTarget.style.color = "rgba(255,255,255,0.65)"; } }}
       >
         {isActive ? (
-          <>
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12"/></svg>
-            Added
-          </>
+          <><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12"/></svg>Added</>
         ) : (
-          <>
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-            Add Layer
-          </>
+          <><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Add Layer</>
         )}
       </button>
     </div>
@@ -657,7 +777,16 @@ export default function DataLayersPanel({ viewer, Cesium, visible, onClose }) {
   const [activeLayers, setActiveLayers] = useState({});
   const [layerOpacities, setLayerOpacities] = useState({});
   const [searchQuery, setSearchQuery] = useState("");
+  const [showActiveSheet, setShowActiveSheet] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
   const cesiumLayersRef = useRef({});
+
+  useEffect(() => {
+    const check = () => setIsMobile(window.innerWidth <= 640);
+    check();
+    window.addEventListener("resize", check);
+    return () => window.removeEventListener("resize", check);
+  }, []);
 
   const filtered = DATA_LAYER_CATALOG.filter(l => {
     const matchCat = activeCategory === "all" || l.category === activeCategory;
@@ -680,76 +809,47 @@ export default function DataLayersPanel({ viewer, Cesium, visible, onClose }) {
 
   const activeCount = Object.keys(activeLayers).length;
 
-  // ── Cesium layer management ──────────────────────────────────────────────
   const addLayerToCesium = useCallback(async (layer) => {
     if (!viewer || !Cesium) return null;
     try {
       let result = null;
-
-      // ── URL Template imagery (ESRI ArcGIS, OSM, CartoDB, OpenTopoMap) ──
       if (layer.type === "imagery" && layer.tileUrl) {
         const subs = layer.subdomains || ["a","b","c"];
         const url = layer.tileUrl.replace(/\{s\}/g, subs[0]);
         const provider = new Cesium.UrlTemplateImageryProvider({
-          url,
-          subdomains: subs,
-          maximumLevel: layer.maxZoom || 18,
-          credit: `© ${layer.provider}`,
+          url, subdomains: subs, maximumLevel: layer.maxZoom || 18, credit: `© ${layer.provider}`,
         });
         const il = viewer.imageryLayers.addImageryProvider(provider);
         il.alpha = layer.opacity;
         result = { type: "imagery", ref: il };
-
-      // ── NASA GIBS via EPSG:3857 WMTS REST (FIXED URL FORMAT) ──────────
-      //
-      // CORRECT format (from GIBS docs):
-      //   /wmts/epsg3857/best/{layer}/default/{date}/GoogleMapsCompatible_Level{N}/{z}/{y}/{x}.{fmt}
-      //
-      // KEY FIX: TileMatrixSet must be "GoogleMapsCompatible_Level{N}" NOT "GoogleMapsCompatible"
-      // The level N is specific to each layer's resolution (e.g. 250m→9, 1km→8, 9km→7).
-      // Without the correct _Level suffix the GIBS server returns HTTP 400.
-      //
       } else if (layer.type === "gibs") {
         const maxLvl = layer.maxZoom || 9;
         const fmt = layer.gibsFormat || "jpg";
         const gibsDate = layer.gibsDate || new Date().toISOString().split("T")[0];
-        // gibsLevel must match the layer's TileMatrixSet level from WMTS GetCapabilities.
-        // Each layer in DATA_LAYER_CATALOG now carries a gibsLevel field.
         const gibsLevel = layer.gibsLevel || 9;
-        // ✅ Corrected URL — includes _Level{N} in TileMatrixSet identifier
         const gibsUrl = `https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/${layer.gibsLayer}/default/${gibsDate}/GoogleMapsCompatible_Level${gibsLevel}/{z}/{y}/{x}.${fmt}`;
         const provider = new Cesium.UrlTemplateImageryProvider({
-          url: gibsUrl,
-          maximumLevel: maxLvl,
-          credit: "© NASA GIBS / EOSDIS",
+          url: gibsUrl, maximumLevel: maxLvl, credit: "© NASA GIBS / EOSDIS",
         });
         const il = viewer.imageryLayers.addImageryProvider(provider);
         il.alpha = layer.opacity;
         result = { type: "imagery", ref: il };
-
-      // ── OpenWeatherMap tiles ──
       } else if (layer.type === "owm") {
         const key = layer.owmKey || "OWM_KEY";
         if (!key || key === "OWM_KEY") {
-          // Return a dummy entry so the layer shows as active with a warning badge
-          // User can see the note about getting a free key
-          console.warn(`[DataLayer] "${layer.title}" needs a free OWM API key from openweathermap.org/api`);
+          console.warn(`[DataLayer] "${layer.title}" needs a free OWM API key`);
           return { type: "owm_pending", ref: null };
         }
         const provider = new Cesium.UrlTemplateImageryProvider({
           url: `https://tile.openweathermap.org/map/${layer.owmLayer}/{z}/{x}/{y}.png?appid=${key}`,
-          maximumLevel: layer.maxZoom || 10,
-          credit: "© OpenWeatherMap",
+          maximumLevel: layer.maxZoom || 10, credit: "© OpenWeatherMap",
         });
         const il = viewer.imageryLayers.addImageryProvider(provider);
         il.alpha = layer.opacity;
         result = { type: "imagery", ref: il };
-
-      // ── GeoJSON point data (USGS earthquakes) ──
       } else if (layer.type === "geojson" && layer.geoJsonUrl) {
         const ds = await Cesium.GeoJsonDataSource.load(layer.geoJsonUrl, {
-          clampToGround: true,
-          credit: `© ${layer.provider}`,
+          clampToGround: true, credit: `© ${layer.provider}`,
         });
         if (layer.id === "earthquake_usgs") {
           for (const ent of ds.entities.values) {
@@ -758,22 +858,16 @@ export default function DataLayersPanel({ viewer, Cesium, visible, onClose }) {
               const sz = Math.max(6, Math.min(30, mag * 5));
               const col = mag >= 6 ? "#ef4444" : mag >= 4 ? "#f97316" : "#fbbf24";
               ent.point = new Cesium.PointGraphics({
-                pixelSize: sz,
-                color: Cesium.Color.fromCssColorString(col).withAlpha(0.85),
-                outlineColor: Cesium.Color.WHITE,
-                outlineWidth: 1.5,
+                pixelSize: sz, color: Cesium.Color.fromCssColorString(col).withAlpha(0.85),
+                outlineColor: Cesium.Color.WHITE, outlineWidth: 1.5,
                 disableDepthTestDistance: Number.POSITIVE_INFINITY,
               });
               ent.label = new Cesium.LabelGraphics({
-                text: `M${mag.toFixed(1)}`,
-                font: "bold 10px sans-serif",
-                fillColor: Cesium.Color.WHITE,
-                outlineColor: Cesium.Color.BLACK,
-                outlineWidth: 2,
-                style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+                text: `M${mag.toFixed(1)}`, font: "bold 10px sans-serif",
+                fillColor: Cesium.Color.WHITE, outlineColor: Cesium.Color.BLACK,
+                outlineWidth: 2, style: Cesium.LabelStyle.FILL_AND_OUTLINE,
                 pixelOffset: new Cesium.Cartesian2(0, -sz - 6),
-                disableDepthTestDistance: Number.POSITIVE_INFINITY,
-                show: mag >= 5.0,
+                disableDepthTestDistance: Number.POSITIVE_INFINITY, show: mag >= 5.0,
               });
               ent.billboard = undefined;
             } catch (_) {}
@@ -782,7 +876,6 @@ export default function DataLayersPanel({ viewer, Cesium, visible, onClose }) {
         await viewer.dataSources.add(ds);
         result = { type: "datasource", ref: ds };
       }
-
       return result;
     } catch (err) {
       console.warn(`[DataLayer] Failed to add "${layer.title}":`, err.message);
@@ -799,7 +892,6 @@ export default function DataLayersPanel({ viewer, Cesium, visible, onClose }) {
         try {
           if (entry.type === "imagery") viewer.imageryLayers.remove(entry.ref, true);
           else if (entry.type === "datasource") viewer.dataSources.remove(entry.ref, true);
-          // owm_pending has no ref to remove — just clean up the ref
         } catch (_) {}
       }
       delete cesiumLayersRef.current[layerId];
@@ -835,22 +927,350 @@ export default function DataLayersPanel({ viewer, Cesium, visible, onClose }) {
 
   const enriched = filtered.map(l => ({ ...l, currentOpacity: layerOpacities[l.id] ?? l.opacity }));
 
+  const CSS = `
+    @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap');
+
+    .dlp-modal { animation: dlpIn 0.26s cubic-bezier(0.16,1,0.3,1); }
+    .dlp-mobile-sheet { animation: dlpUp 0.32s cubic-bezier(0.16,1,0.3,1); }
+    .dlp-active-sheet { animation: dlpUp 0.28s cubic-bezier(0.16,1,0.3,1); }
+
+    @keyframes dlpIn {
+      from { opacity:0; transform:translate(-50%,-50%) scale(0.97) translateY(14px); }
+      to   { opacity:1; transform:translate(-50%,-50%) scale(1) translateY(0); }
+    }
+    @keyframes dlpUp {
+      from { transform: translateY(100%); opacity: 0; }
+      to   { transform: translateY(0);    opacity: 1; }
+    }
+    @keyframes dlpExpand {
+      from { opacity: 0; transform: translateY(-6px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .dlp-scroll::-webkit-scrollbar { width: 4px; }
+    .dlp-scroll::-webkit-scrollbar-track { background: transparent; }
+    .dlp-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.07); border-radius: 2px; }
+
+    .dlp-cat-tab { white-space: nowrap; flex-shrink: 0; -webkit-tap-highlight-color: transparent; }
+    .dlp-cat-tabs { display: flex; gap: 6px; overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; padding-bottom: 2px; }
+    .dlp-cat-tabs::-webkit-scrollbar { display: none; }
+
+    input[type=range] { appearance: none; -webkit-appearance: none; background: transparent; }
+    input[type=range]::-webkit-slider-runnable-track { height: 3px; border-radius: 2px; background: rgba(255,255,255,0.1); }
+    input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; margin-top: -5.5px; cursor: pointer; border: none; }
+  `;
+
+  // ──────────────────────────────────────────────
+  // MOBILE LAYOUT — full bottom-sheet
+  // ──────────────────────────────────────────────
+  if (isMobile) {
+    return (
+      <>
+        <style>{CSS}</style>
+
+        {/* Backdrop */}
+        <div onClick={onClose} style={{
+          position: "fixed", inset: 0, zIndex: 1299,
+          background: "rgba(0,0,0,0.65)", backdropFilter: "blur(5px)",
+        }}/>
+
+        {/* Bottom sheet */}
+        <div className="dlp-mobile-sheet" style={{
+          position: "fixed",
+          left: 0, right: 0, bottom: 0,
+          height: "92vh",
+          zIndex: 1300,
+          background: "rgba(5,8,18,0.99)",
+          backdropFilter: "blur(32px) saturate(180%)",
+          border: "1px solid rgba(255,255,255,0.09)",
+          borderRadius: "22px 22px 0 0",
+          boxShadow: "0 -20px 80px rgba(0,0,0,0.9)",
+          display: "flex", flexDirection: "column",
+          overflow: "hidden",
+          fontFamily: "'DM Sans',sans-serif",
+        }}>
+
+          {/* Drag handle */}
+          <div style={{ display: "flex", justifyContent: "center", padding: "14px 0 4px", flexShrink: 0 }}>
+            <div style={{ width: 38, height: 4, borderRadius: 2, background: "rgba(255,255,255,0.15)" }}/>
+          </div>
+
+          {/* Header */}
+          <div style={{
+            padding: "8px 18px 12px",
+            borderBottom: "1px solid rgba(255,255,255,0.07)",
+            flexShrink: 0,
+          }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{
+                  width: 34, height: 34, borderRadius: 9,
+                  background: "linear-gradient(135deg,rgba(99,102,241,0.55),rgba(139,92,246,0.4))",
+                  border: "1px solid rgba(99,102,241,0.45)",
+                  display: "flex", alignItems: "center", justifyContent: "center", fontSize: 17,
+                  boxShadow: "0 0 16px rgba(99,102,241,0.28)",
+                }}>◈</div>
+                <div>
+                  <div style={{ color: "#fff", fontWeight: 700, fontSize: 17, lineHeight: 1.2 }}>Data Layers</div>
+                  <div style={{ color: "rgba(255,255,255,0.3)", fontSize: 10.5, fontFamily: "'DM Mono',monospace" }}>
+                    {DATA_LAYER_CATALOG.length} free layers
+                    {activeCount > 0 && <span style={{ color: "#a5b4fc", marginLeft: 6 }}>· {activeCount} active</span>}
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                {activeCount > 0 && (
+                  <button onClick={() => setShowActiveSheet(true)} style={{
+                    display: "flex", alignItems: "center", gap: 5,
+                    padding: "6px 12px", borderRadius: 20,
+                    border: "1px solid rgba(99,102,241,0.45)",
+                    background: "rgba(99,102,241,0.18)",
+                    color: "#a5b4fc", fontSize: 11, fontWeight: 700,
+                    cursor: "pointer", WebkitTapHighlightColor: "transparent",
+                  }}>
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12"/></svg>
+                    {activeCount}
+                  </button>
+                )}
+                <button onClick={onClose} style={{
+                  width: 34, height: 34, borderRadius: 9,
+                  border: "1px solid rgba(255,255,255,0.1)",
+                  background: "rgba(255,255,255,0.05)",
+                  color: "rgba(255,255,255,0.55)", cursor: "pointer",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  WebkitTapHighlightColor: "transparent",
+                }}>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                    <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            {/* Search bar */}
+            <div style={{ position: "relative", marginBottom: 12 }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.3)" strokeWidth="2"
+                style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", pointerEvents: "none" }}>
+                <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+              </svg>
+              <input
+                value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
+                placeholder="Search layers…"
+                style={{
+                  width: "100%", padding: "10px 12px 10px 36px", borderRadius: 10,
+                  border: "1px solid rgba(255,255,255,0.1)", background: "rgba(255,255,255,0.05)",
+                  color: "#fff", fontSize: 14, fontFamily: "'DM Sans',sans-serif",
+                  boxSizing: "border-box", outline: "none",
+                }}
+              />
+            </div>
+
+            {/* Category tabs — horizontal scroll */}
+            <div className="dlp-cat-tabs">
+              {CATEGORIES.map(cat => {
+                const count = cat.id === "all"
+                  ? DATA_LAYER_CATALOG.length
+                  : DATA_LAYER_CATALOG.filter(l => l.category === cat.id).length;
+                const isSel = activeCategory === cat.id;
+                const rgb = hexToRgb(cat.color);
+                return (
+                  <button key={cat.id} className="dlp-cat-tab"
+                    onClick={() => setActiveCategory(cat.id)}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 5,
+                      padding: "7px 14px", borderRadius: 22, cursor: "pointer",
+                      border: `1px solid ${isSel ? `rgba(${rgb},0.55)` : "rgba(255,255,255,0.09)"}`,
+                      background: isSel ? `rgba(${rgb},0.18)` : "rgba(255,255,255,0.03)",
+                      color: isSel ? cat.color : "rgba(255,255,255,0.45)",
+                      fontSize: 12, fontWeight: isSel ? 700 : 500,
+                      fontFamily: "'DM Sans',sans-serif",
+                      boxShadow: isSel ? `0 0 14px rgba(${rgb},0.22)` : "none",
+                      WebkitTapHighlightColor: "transparent",
+                    }}>
+                    <span style={{ fontSize: 14 }}>{cat.icon}</span>
+                    {cat.label}
+                    <span style={{
+                      padding: "0 5px", borderRadius: 10, minWidth: 18, textAlign: "center",
+                      background: isSel ? `rgba(${rgb},0.25)` : "rgba(255,255,255,0.08)",
+                      color: isSel ? cat.color : "rgba(255,255,255,0.3)",
+                      fontSize: 10, fontWeight: 700,
+                    }}>{count}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Layer list — scrollable */}
+          <div className="dlp-scroll" style={{ flex: 1, overflowY: "auto", padding: "14px 14px 32px" }}>
+            {enriched.length === 0 ? (
+              <div style={{ textAlign: "center", padding: "56px 0", color: "rgba(255,255,255,0.2)" }}>
+                <div style={{ fontSize: 40, marginBottom: 14 }}>🔍</div>
+                <div style={{ fontSize: 14, fontFamily: "'DM Sans',sans-serif" }}>
+                  No layers match "{searchQuery}"
+                </div>
+              </div>
+            ) : grouped ? (
+              grouped.map(({ cat, layers }) => (
+                <div key={cat.id} style={{ marginBottom: 24 }}>
+                  <CategoryHeader cat={cat} count={layers.length} />
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {layers.map(l => (
+                      <MobileLayerCard
+                        key={l.id} layer={l}
+                        isActive={!!activeLayers[l.id]}
+                        onToggle={handleToggle}
+                        onOpacityChange={handleOpacityChange}
+                      />
+                    ))}
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {enriched.map(l => (
+                  <MobileLayerCard
+                    key={l.id} layer={l}
+                    isActive={!!activeLayers[l.id]}
+                    onToggle={handleToggle}
+                    onOpacityChange={handleOpacityChange}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Active Layers bottom sheet (mobile) */}
+        {showActiveSheet && (
+          <>
+            <div onClick={() => setShowActiveSheet(false)} style={{
+              position: "fixed", inset: 0, zIndex: 1399,
+              background: "rgba(0,0,0,0.5)",
+            }}/>
+            <div className="dlp-active-sheet" style={{
+              position: "fixed", left: 0, right: 0, bottom: 0,
+              maxHeight: "70vh", zIndex: 1400,
+              background: "rgba(5,8,18,0.98)",
+              backdropFilter: "blur(24px)",
+              border: "1px solid rgba(255,255,255,0.09)",
+              borderRadius: "20px 20px 0 0",
+              boxShadow: "0 -12px 48px rgba(0,0,0,0.8)",
+              display: "flex", flexDirection: "column",
+              overflow: "hidden",
+              fontFamily: "'DM Sans',sans-serif",
+            }}>
+              <div style={{ display: "flex", justifyContent: "center", padding: "12px 0 4px" }}>
+                <div style={{ width: 36, height: 4, borderRadius: 2, background: "rgba(255,255,255,0.15)" }}/>
+              </div>
+              <div style={{
+                display: "flex", alignItems: "center", justifyContent: "space-between",
+                padding: "8px 18px 14px",
+                borderBottom: "1px solid rgba(255,255,255,0.07)",
+              }}>
+                <span style={{ color: "#a5b4fc", fontWeight: 700, fontSize: 14 }}>
+                  Active Layers · {activeCount}
+                </span>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  {activeCount > 0 && (
+                    <button onClick={() => { Object.keys(activeLayers).forEach(id => handleToggle(id)); setShowActiveSheet(false); }}
+                      style={{
+                        padding: "6px 12px", borderRadius: 8,
+                        border: "1px solid rgba(239,68,68,0.3)",
+                        background: "rgba(239,68,68,0.08)",
+                        color: "#f87171", fontSize: 11, fontWeight: 700, cursor: "pointer",
+                      }}>Clear All</button>
+                  )}
+                  <button onClick={() => setShowActiveSheet(false)} style={{
+                    width: 30, height: 30, borderRadius: 8,
+                    border: "1px solid rgba(255,255,255,0.1)",
+                    background: "rgba(255,255,255,0.05)",
+                    color: "rgba(255,255,255,0.45)", cursor: "pointer",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                  }}>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                      <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                    </svg>
+                  </button>
+                </div>
+              </div>
+
+              <div className="dlp-scroll" style={{ overflowY: "auto", padding: "14px 16px 32px" }}>
+                {activeCount === 0 ? (
+                  <div style={{ textAlign: "center", padding: "32px 0", color: "rgba(255,255,255,0.25)", fontSize: 13 }}>
+                    No layers active yet
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {Object.keys(activeLayers).map(id => {
+                      const layer = DATA_LAYER_CATALOG.find(l => l.id === id);
+                      if (!layer) return null;
+                      const opacity = layerOpacities[id] ?? layer.opacity;
+                      const rgb = hexToRgb(layer.accentColor);
+                      return (
+                        <div key={id} style={{
+                          padding: "12px 14px", borderRadius: 12,
+                          background: `rgba(${rgb},0.07)`,
+                          border: `1px solid rgba(${rgb},0.3)`,
+                        }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                            <Thumbnail layer={layer} size={40} />
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{
+                                color: "#fff", fontSize: 13, fontWeight: 700,
+                                fontFamily: "'DM Sans',sans-serif", lineHeight: 1.25,
+                                wordBreak: "break-word",
+                              }}>
+                                {layer.title}
+                              </div>
+                              <div style={{ color: layer.accentColor, fontSize: 10.5, fontFamily: "'DM Sans',sans-serif" }}>
+                                {layer.category_label}
+                              </div>
+                            </div>
+                            <button onClick={() => handleToggle(id)} style={{
+                              width: 34, height: 34, borderRadius: 17,
+                              border: "1px solid rgba(239,68,68,0.3)",
+                              background: "rgba(239,68,68,0.08)",
+                              color: "#f87171", cursor: "pointer",
+                              display: "flex", alignItems: "center", justifyContent: "center",
+                              flexShrink: 0,
+                            }}>
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                              </svg>
+                            </button>
+                          </div>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                            <span style={{ color: "rgba(255,255,255,0.3)", fontSize: 9.5, fontWeight: 700, width: 52, fontFamily: "'DM Mono',monospace" }}>OPACITY</span>
+                            <input type="range" min={0.05} max={1} step={0.05}
+                              value={opacity}
+                              onChange={e => handleOpacityChange(id, parseFloat(e.target.value))}
+                              style={{ flex: 1, accentColor: layer.accentColor, cursor: "pointer" }}
+                            />
+                            <span style={{ color: layer.accentColor, fontSize: 10.5, fontFamily: "'DM Mono',monospace", fontWeight: 700, width: 32, textAlign: "right" }}>
+                              {Math.round(opacity * 100)}%
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          </>
+        )}
+      </>
+    );
+  }
+
+  // ──────────────────────────────────────────────
+  // DESKTOP LAYOUT — centered modal (unchanged)
+  // ──────────────────────────────────────────────
   return (
     <>
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap');
-        .dlp-modal { animation: dlpIn 0.26s cubic-bezier(0.16,1,0.3,1); }
-        @keyframes dlpIn { from { opacity:0; transform:translate(-50%,-50%) scale(0.97) translateY(14px); } to { opacity:1; transform:translate(-50%,-50%) scale(1) translateY(0); } }
-        .dlp-scroll::-webkit-scrollbar { width: 5px; }
-        .dlp-scroll::-webkit-scrollbar-track { background: transparent; }
-        .dlp-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.07); border-radius: 3px; }
-        .dlp-scroll::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.12); }
-        .dlp-search:focus { outline: none; border-color: rgba(99,102,241,0.55) !important; box-shadow: 0 0 0 3px rgba(99,102,241,0.1) !important; }
-        .dlp-cat:hover { background: rgba(255,255,255,0.05) !important; }
-        input[type=range] { appearance: none; -webkit-appearance: none; background: transparent; }
-        input[type=range]::-webkit-slider-runnable-track { height: 3px; border-radius: 2px; background: rgba(255,255,255,0.1); }
-        input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 13px; height: 13px; border-radius: 50%; margin-top: -5px; cursor: pointer; border: none; }
-      `}</style>
+      <style>{CSS}</style>
 
       {/* Backdrop */}
       <div onClick={onClose} style={{
@@ -876,7 +1296,7 @@ export default function DataLayersPanel({ viewer, Cesium, visible, onClose }) {
         fontFamily: "'DM Sans',sans-serif",
       }}>
 
-        {/* ── HEADER ── */}
+        {/* Header */}
         <div style={{
           padding: "20px 24px 0",
           background: "rgba(255,255,255,0.015)",
@@ -928,23 +1348,25 @@ export default function DataLayersPanel({ viewer, Cesium, visible, onClose }) {
           {/* Search */}
           <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
             <div style={{ flex: 1, position: "relative" }}>
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.25)" strokeWidth="2" style={{ position: "absolute", left: 11, top: "50%", transform: "translateY(-50%)", pointerEvents: "none" }}>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.25)" strokeWidth="2"
+                style={{ position: "absolute", left: 11, top: "50%", transform: "translateY(-50%)", pointerEvents: "none" }}>
                 <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
               </svg>
-              <input className="dlp-search" value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
+              <input
+                value={searchQuery} onChange={e => setSearchQuery(e.target.value)}
                 placeholder="Search by name, provider, tag, or description…"
                 style={{
                   width: "100%", padding: "9px 12px 9px 32px", borderRadius: 9,
                   border: "1px solid rgba(255,255,255,0.09)", background: "rgba(255,255,255,0.04)",
                   color: "#fff", fontSize: 12.5, fontFamily: "'DM Sans',sans-serif",
-                  boxSizing: "border-box", transition: "all 0.15s",
+                  boxSizing: "border-box", transition: "all 0.15s", outline: "none",
                 }}
               />
             </div>
           </div>
 
           {/* Category tabs */}
-          <div style={{ display: "flex", gap: 4, overflowX: "auto", paddingBottom: 14 }}>
+          <div className="dlp-cat-tabs" style={{ paddingBottom: 14 }}>
             {CATEGORIES.map(cat => {
               const count = cat.id === "all"
                 ? DATA_LAYER_CATALOG.length
@@ -952,10 +1374,10 @@ export default function DataLayersPanel({ viewer, Cesium, visible, onClose }) {
               const isSel = activeCategory === cat.id;
               const rgb = hexToRgb(cat.color);
               return (
-                <button key={cat.id} className="dlp-cat"
+                <button key={cat.id} className="dlp-cat-tab"
                   onClick={() => setActiveCategory(cat.id)}
                   style={{
-                    display: "flex", alignItems: "center", gap: 6, flexShrink: 0,
+                    display: "flex", alignItems: "center", gap: 6,
                     padding: "6px 14px", borderRadius: 22, cursor: "pointer",
                     border: `1px solid ${isSel ? `rgba(${rgb},0.5)` : "rgba(255,255,255,0.08)"}`,
                     background: isSel ? `rgba(${rgb},0.15)` : "rgba(255,255,255,0.025)",
@@ -979,13 +1401,10 @@ export default function DataLayersPanel({ viewer, Cesium, visible, onClose }) {
           </div>
         </div>
 
-        {/* ── BODY ── */}
+        {/* Body */}
         <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
-
           {/* Layer list */}
-          <div className="dlp-scroll" style={{
-            flex: 1, overflowY: "auto", padding: "16px 20px",
-          }}>
+          <div className="dlp-scroll" style={{ flex: 1, overflowY: "auto", padding: "16px 20px" }}>
             {enriched.length === 0 ? (
               <div style={{ textAlign: "center", padding: "64px 0", color: "rgba(255,255,255,0.2)" }}>
                 <div style={{ fontSize: 36, marginBottom: 12 }}>🔍</div>
@@ -997,12 +1416,8 @@ export default function DataLayersPanel({ viewer, Cesium, visible, onClose }) {
                   <CategoryHeader cat={cat} count={layers.length} />
                   <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                     {layers.map(l => (
-                      <LayerCard
-                        key={l.id} layer={l}
-                        isActive={!!activeLayers[l.id]}
-                        onToggle={handleToggle}
-                        onOpacityChange={handleOpacityChange}
-                      />
+                      <LayerCard key={l.id} layer={l} isActive={!!activeLayers[l.id]}
+                        onToggle={handleToggle} onOpacityChange={handleOpacityChange} />
                     ))}
                   </div>
                 </div>
@@ -1010,18 +1425,14 @@ export default function DataLayersPanel({ viewer, Cesium, visible, onClose }) {
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 {enriched.map(l => (
-                  <LayerCard
-                    key={l.id} layer={l}
-                    isActive={!!activeLayers[l.id]}
-                    onToggle={handleToggle}
-                    onOpacityChange={handleOpacityChange}
-                  />
+                  <LayerCard key={l.id} layer={l} isActive={!!activeLayers[l.id]}
+                    onToggle={handleToggle} onOpacityChange={handleOpacityChange} />
                 ))}
               </div>
             )}
           </div>
 
-          {/* ── ACTIVE SIDEBAR ── */}
+          {/* Active sidebar */}
           <div style={{
             width: 240, flexShrink: 0,
             borderLeft: "1px solid rgba(255,255,255,0.06)",
@@ -1029,7 +1440,6 @@ export default function DataLayersPanel({ viewer, Cesium, visible, onClose }) {
             display: "flex", flexDirection: "column",
           }}>
             <div className="dlp-scroll" style={{ flex: 1, overflowY: "auto", padding: "16px 14px" }}>
-
               {activeCount === 0 ? (
                 <div style={{ textAlign: "center", padding: "32px 12px" }}>
                   <div style={{ fontSize: 28, marginBottom: 10, opacity: 0.4 }}>◈</div>
@@ -1042,7 +1452,6 @@ export default function DataLayersPanel({ viewer, Cesium, visible, onClose }) {
                   <div style={{ color: "rgba(255,255,255,0.25)", fontSize: 9, fontWeight: 700, letterSpacing: "0.12em", marginBottom: 12, fontFamily: "'DM Sans',sans-serif" }}>
                     ACTIVE LAYERS
                   </div>
-
                   <div style={{ display: "flex", flexDirection: "column", gap: 7, marginBottom: 14 }}>
                     {Object.keys(activeLayers).map(id => {
                       const layer = DATA_LAYER_CATALOG.find(l => l.id === id);
@@ -1058,7 +1467,12 @@ export default function DataLayersPanel({ viewer, Cesium, visible, onClose }) {
                           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
                             <Thumbnail layer={layer} size={32} />
                             <div style={{ flex: 1, minWidth: 0 }}>
-                              <div style={{ color: "#fff", fontSize: 11, fontWeight: 600, fontFamily: "'DM Sans',sans-serif", lineHeight: 1.3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                              {/* Full title - no truncation */}
+                              <div style={{
+                                color: "#fff", fontSize: 11, fontWeight: 600,
+                                fontFamily: "'DM Sans',sans-serif", lineHeight: 1.3,
+                                wordBreak: "break-word",
+                              }}>
                                 {layer.title}
                               </div>
                               <div style={{ color: layer.accentColor, fontSize: 9.5, fontFamily: "'DM Sans',sans-serif", opacity: 0.85 }}>
@@ -1109,25 +1523,17 @@ export default function DataLayersPanel({ viewer, Cesium, visible, onClose }) {
                 </>
               )}
 
-              {/* Data source legend */}
               <div style={{ marginTop: 20, paddingTop: 16, borderTop: "1px solid rgba(255,255,255,0.05)" }}>
                 <div style={{ color: "rgba(255,255,255,0.2)", fontSize: 9, fontWeight: 700, letterSpacing: "0.1em", marginBottom: 10, fontFamily: "'DM Sans',sans-serif" }}>DATA SOURCES</div>
-                {[
-                  ["🛰️", "NASA / ESA satellites"],
-                  ["🌍", "OpenStreetMap contributors"],
-                  ["🏛️", "UN / EU open agencies"],
-                  ["⚡", "Real-time API feeds"],
-                  ["🆓", "100% free to use"],
-                ].map(([icon, label]) => (
+                {[["🛰️","NASA / ESA satellites"],["🌍","OpenStreetMap contributors"],["🏛️","UN / EU open agencies"],["⚡","Real-time API feeds"],["🆓","100% free to use"]].map(([icon, label]) => (
                   <div key={label} style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 6 }}>
                     <span style={{ fontSize: 12 }}>{icon}</span>
                     <span style={{ color: "rgba(255,255,255,0.28)", fontSize: 10, fontFamily: "'DM Sans',sans-serif", lineHeight: 1.3 }}>{label}</span>
                   </div>
                 ))}
                 <div style={{
-                  marginTop: 10, padding: "7px 9px",
-                  borderRadius: 8, background: "rgba(255,255,255,0.025)",
-                  border: "1px solid rgba(255,255,255,0.06)",
+                  marginTop: 10, padding: "7px 9px", borderRadius: 8,
+                  background: "rgba(255,255,255,0.025)", border: "1px solid rgba(255,255,255,0.06)",
                   color: "rgba(255,255,255,0.22)", fontSize: 9.5,
                   fontFamily: "'DM Sans',sans-serif", lineHeight: 1.55,
                 }}>
@@ -1136,22 +1542,10 @@ export default function DataLayersPanel({ viewer, Cesium, visible, onClose }) {
               </div>
             </div>
 
-            {/* Footer badge row */}
-            <div style={{
-              padding: "10px 14px", borderTop: "1px solid rgba(255,255,255,0.05)",
-              display: "flex", flexDirection: "column", gap: 4,
-            }}>
-              {[
-                { label: "Live", color: "#ef4444", desc: "Real-time data" },
-                { label: "Experimental", color: "#8b5cf6", desc: "Variable availability" },
-                { label: "Europe only", color: "#3b82f6", desc: "Regional coverage" },
-              ].map(b => (
+            <div style={{ padding: "10px 14px", borderTop: "1px solid rgba(255,255,255,0.05)", display: "flex", flexDirection: "column", gap: 4 }}>
+              {[{ label: "Live", color: "#ef4444", desc: "Real-time data" }, { label: "Experimental", color: "#8b5cf6", desc: "Variable availability" }, { label: "Europe only", color: "#3b82f6", desc: "Regional coverage" }].map(b => (
                 <div key={b.label} style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <div style={{
-                    padding: "1px 7px", borderRadius: 20, flexShrink: 0,
-                    background: b.color, color: "#fff",
-                    fontSize: 8, fontWeight: 700, fontFamily: "'DM Sans',sans-serif",
-                  }}>{b.label}</div>
+                  <div style={{ padding: "1px 7px", borderRadius: 20, flexShrink: 0, background: b.color, color: "#fff", fontSize: 8, fontWeight: 700, fontFamily: "'DM Sans',sans-serif" }}>{b.label}</div>
                   <span style={{ color: "rgba(255,255,255,0.22)", fontSize: 9.5, fontFamily: "'DM Sans',sans-serif" }}>{b.desc}</span>
                 </div>
               ))}
@@ -1159,7 +1553,7 @@ export default function DataLayersPanel({ viewer, Cesium, visible, onClose }) {
           </div>
         </div>
 
-        {/* ── FOOTER ── */}
+        {/* Footer */}
         <div style={{
           padding: "9px 22px", borderTop: "1px solid rgba(255,255,255,0.06)",
           background: "rgba(255,255,255,0.01)", flexShrink: 0,

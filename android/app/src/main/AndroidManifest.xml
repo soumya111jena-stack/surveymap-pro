@@ -77,6 +77,20 @@
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
 
     <!-- ═══════════════════════════════════════════════
+         SHARE  (@capacitor/share — KML / KMZ / CSV export)
+         ─────────────────────────────────────────────
+         ADD THESE TWO LINES after READ_MEDIA_IMAGES
+         (line above this comment block).
+         Required so the native share sheet can open
+         any installed app (Files, Drive, WhatsApp…).
+         Without these, Share.share() silently fails
+         on Android 11+ due to package visibility rules.
+    ════════════════════════════════════════════════ -->
+    <uses-permission android:name="android.permission.READ_MEDIA_DOCUMENTS" />  <!-- ← NEW LINE 1 -->
+    <uses-permission android:name="android.permission.MANAGE_DOCUMENTS"
+        android:maxSdkVersion="32" />                                            <!-- ← NEW LINE 2 -->
+
+    <!-- ═══════════════════════════════════════════════
          QUERIES — required on Android 11+ (API 30+)
          so @capacitor/camera can launch the camera app
          WITHOUT this block, camera silently fails on
@@ -97,6 +111,18 @@
             <action android:name="android.intent.action.PICK" />
             <data android:mimeType="image/*" />
         </intent>
+
+        <!-- ─────────────────────────────────────────
+             ADD THESE THREE LINES inside <queries>
+             Required so Share sheet can see installed
+             apps that can receive files (Drive, Files,
+             WhatsApp, Gmail, etc.) on Android 11+
+        ──────────────────────────────────────────── -->
+        <intent>                                                <!-- ← NEW LINE 3 -->
+            <action android:name="android.intent.action.SEND" /><!-- ← NEW LINE 4 -->
+            <data android:mimeType="*/*" />                     <!-- ← NEW LINE 5 -->
+        </intent>                                               <!-- ← NEW LINE 6 (closing tag) -->
+
     </queries>
 
 </manifest>
