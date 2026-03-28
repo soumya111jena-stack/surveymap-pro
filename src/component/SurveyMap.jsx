@@ -1,24 +1,22 @@
 /**
- * SurveyMap.jsx — SurveyMap Pro v5.4.0
+ * SurveyMap.jsx — SurveyMap Pro v5.9.1
  * ─────────────────────────────────────────────────────────────────────────────
- * WHAT'S COMPLETE IN THIS VERSION:
+ * CHANGES FROM v5.9 → v5.9.1:
  *
- *  ✅ ZoomControl — +/− buttons on desktop (below compass), keyboard shortcuts
- *  ✅ File Folder — unified import/export panel for KML, KMZ, CSV, GeoJSON
- *                   accessible from: desktop sidebar, mobile Files sheet,
- *                   mobile More sheet, desktop toolbar
- *  ✅ Export buttons — GeoJSON / KML / CSV / KMZ in every relevant panel
- *  ✅ Draw tool — mobile HUD pill (sheet dismissed so map is accessible)
- *  ✅ Draw points stored as {lat,lng} objects — exports work correctly
- *  ✅ Capacitor file saving — real Android phone + emulator + web browser
- *  ✅ All existing features preserved: survey, measure, elevation, compass,
- *     offline, tracker, 3D globe, night mode, GeoJSON layers
+ *  1. DEMElevationDrape added — QGIS-style 2D elevation draping
+ *     - KML / KMZ / SHP features are recoloured by DEM elevation
+ *     - Uses same colour ramp + min/max as the DEM raster overlay
+ *     - Tooltips show sampled elevation per feature
+ *  2. demRasterData state added — stores raw Float32Array from DEMLoader
+ *  3. kmlLayerRef / shpLayerRef refs added — expose Leaflet layers to drape
+ *  4. KMLLoader & ShapefileLoader now accept onLayer callback
+ *  5. DEMLoader onStats now receives (stats, rasterData) — second arg stored
  *
- * PLATFORMS:
- *  ✅ Desktop browser (Chrome, Firefox, Edge, Safari)
- *  ✅ Mobile browser (iOS Safari, Android Chrome)
- *  ✅ Android Studio emulator
- *  ✅ Real Android phone (Capacitor APK)
+ * PATCH v5.9.1-p1: KML → DEM clipping
+ *  6. kmlMask state added — polygon rings extracted from KML for DEM clip
+ *  7. removeKML clears kmlMask on unload
+ *  8. KMLLoader onLayer extracts polygon rings into kmlMask
+ *  9. DEMLoader receives kmlMask prop for raster clipping
  */
 
 import React, { useState, useRef, useCallback, useEffect } from "react";
@@ -35,6 +33,10 @@ import SurveyClick        from "./tools/SurveyClick";
 import KMLLoader          from "./loaders/KMLLoader";
 import KMZLoader          from "./loaders/KMZLoader";
 import CSVLoader          from "./loaders/CSVLoader";
+import ShapefileLoader    from "./loaders/ShapefileLoader";
+import DEMLoader          from "./loaders/Demloader";
+import DEMElevationDrape  from "./loaders/Demelevationdrape";   // ← NEW v5.9.1
+import { exportShapefile } from "../utils/exportShapefile";
 import GeoJSONLoader      from "./loaders/GeoJSONLoader";
 import Globe3DView        from "./Globe3DView";
 import LiveTrackRecorder  from "./tools/LiveTrackRecorder";
@@ -46,7 +48,10 @@ import { useElevation }           from "./map/useElevation";
 import ElevationProfile           from "./map/ElevationProfile";
 import { useNightModeAutoSwitch } from "./map/useNightModeAutoSwitch";
 import { haversine, formatDist }  from "./map/measureUtils";
-import { exportKML, exportCSV, exportKMZ } from "../utils/exportUtils.js";
+import { exportKML, exportCSV, exportKMZ, exportGeoJSON } from "../utils/exportUtils.js";
+import { exportDEM } from "../utils/exportDem";
+import { useDEM }                 from "../hooks/Usedem";
+import DEMPanel                   from "../components/Dempanel";
 
 import { Ico }                    from "../constants/icons.jsx";
 import { MAP_LAYERS, MENU_DEFS }  from "../constants/mapLayers.js";
@@ -74,7 +79,7 @@ const SB_W   = 264;
 const TOP_H  = MENU_H + TB_H;
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   MapSizeInvalidator — keeps map tiles correct on resize
+   MapSizeInvalidator
 ───────────────────────────────────────────────────────────────────────────── */
 function MapSizeInvalidator() {
   const map = useMap();
@@ -88,13 +93,9 @@ function MapSizeInvalidator() {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   ZoomControl — rendered OUTSIDE MapContainer, uses leafletMapRef directly.
-   Uses position:fixed so it stays anchored even when Leaflet repaints panes.
-   Works on desktop (mobile uses MobileCompassWidget which already has zoom).
-   Robust: wraps zoomIn/Out in try/catch so KML fitBounds() never breaks it.
+   ZoomControl
 ───────────────────────────────────────────────────────────────────────────── */
 function ZoomControl({ isMobile, leafletMapRef }) {
-
   const doZoom = useCallback((direction) => {
     try {
       const m = leafletMapRef?.current;
@@ -104,7 +105,6 @@ function ZoomControl({ isMobile, leafletMapRef }) {
     } catch (_) {}
   }, [leafletMapRef]);
 
-  // Keyboard shortcuts
   useEffect(() => {
     const handler = (e) => {
       if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
@@ -128,47 +128,16 @@ function ZoomControl({ isMobile, leafletMapRef }) {
     transition: "background 0.12s, color 0.12s",
     outline: "none", padding: 0,
   };
-
   const hov  = e => { e.currentTarget.style.background="rgba(74,158,255,0.22)"; e.currentTarget.style.color="#90c8ff"; };
   const uhov = e => { e.currentTarget.style.background="rgba(5,12,24,0.92)";    e.currentTarget.style.color="rgba(200,225,255,0.75)"; };
 
   return (
-    <div style={{
-      // position:fixed — stays anchored regardless of Leaflet pane repaints or KML fitBounds()
-      position: "fixed",
-      // Sit below compass (compass is at top:10 inside map area, ~80px tall)
-      // Map area starts at TOP_H = 78px from viewport top on desktop
-      top: TOP_H + 100,
-      right: 10,
-      zIndex: 1050,
-      display: "flex",
-      flexDirection: "column",
-      borderRadius: 9,
-      overflow: "hidden",
-      border: "1px solid rgba(255,255,255,0.10)",
-      boxShadow: "0 4px 20px rgba(0,0,0,0.55)",
-      pointerEvents: "all",
-    }}>
-      <button
-        onClick={() => doZoom(1)}
-        onMouseEnter={hov} onMouseLeave={uhov}
-        title="Zoom in  ( + )"
-        style={{ ...btn, borderBottom:"1px solid rgba(255,255,255,0.07)" }}
-      >
-        <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
-          <line x1="6.5" y1="1.5" x2="6.5" y2="11.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
-          <line x1="1.5" y1="6.5" x2="11.5" y2="6.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
-        </svg>
+    <div style={{ position:"fixed", top:TOP_H+100, right:10, zIndex:1050, display:"flex", flexDirection:"column", borderRadius:9, overflow:"hidden", border:"1px solid rgba(255,255,255,0.10)", boxShadow:"0 4px 20px rgba(0,0,0,0.55)", pointerEvents:"all" }}>
+      <button onClick={() => doZoom(1)} onMouseEnter={hov} onMouseLeave={uhov} title="Zoom in  ( + )" style={{ ...btn, borderBottom:"1px solid rgba(255,255,255,0.07)" }}>
+        <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><line x1="6.5" y1="1.5" x2="6.5" y2="11.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/><line x1="1.5" y1="6.5" x2="11.5" y2="6.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
       </button>
-      <button
-        onClick={() => doZoom(-1)}
-        onMouseEnter={hov} onMouseLeave={uhov}
-        title="Zoom out ( − )"
-        style={btn}
-      >
-        <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
-          <line x1="1.5" y1="6.5" x2="11.5" y2="6.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
-        </svg>
+      <button onClick={() => doZoom(-1)} onMouseEnter={hov} onMouseLeave={uhov} title="Zoom out ( − )" style={btn}>
+        <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><line x1="1.5" y1="6.5" x2="11.5" y2="6.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
       </button>
     </div>
   );
@@ -183,12 +152,18 @@ export default function SurveyMap() {
   const kmlInputRef      = useRef(null);
   const extraInputRef    = useRef(null);
   const geojsonInputRef  = useRef(null);
+  const shpInputRef      = useRef(null);
   const polylineRef      = useRef(null);
   const previewLayerRef  = useRef(null);
   const drawLayersRef    = useRef([]);
   const measureLayersRef = useRef([]);
   const measureLineRef   = useRef(null);
   const leafletMapRef    = useRef(null);
+
+  // ── NEW v5.9.1: layer refs for DEM draping ──────────────────────────────
+  const kmlLayerRef      = useRef(null);   // populated by KMLLoader onLayer
+  const shpLayerRef      = useRef(null);   // populated by ShapefileLoader onLayer
+  const kmzLayerRef      = useRef(null);   // populated by KMZLoader onLayer
 
   /* ── Responsive ────────────────────────────────────────────────────────── */
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 640);
@@ -242,11 +217,19 @@ export default function SurveyMap() {
   const [kmlName,       setKmlName]       = useState(null);
   const [extraFile,     setExtraFile]     = useState(null);
   const [extraFileType, setExtraFileType] = useState(null);
-  // GeoJSON file — fed directly into GeoJSONLoader (inside MapContainer)
-  const [geojsonFile,    setGeojsonFile]    = useState(null);
-  const [geojsonLoading, setGeojsonLoading] = useState(false);
-  const [geojsonFileName,setGeojsonFileName]= useState(null);
-  const [geojsonTrigger, setGeojsonTrigger] = useState(null); // unique key per upload
+  const [csvValidCount, setCsvValidCount] = useState(0);
+  const [csvTotalCount, setCsvTotalCount] = useState(0);
+  // GeoJSON
+  const [geojsonFile,     setGeojsonFile]     = useState(null);
+  const [geojsonLoading,  setGeojsonLoading]  = useState(false);
+  const [geojsonFileName, setGeojsonFileName] = useState(null);
+  const [geojsonTrigger,  setGeojsonTrigger]  = useState(null);
+  // Shapefile
+  const [shpFile,     setShpFile]     = useState(null);
+  const [shpTrigger,  setShpTrigger]  = useState(null);
+  const [shpLoading,  setShpLoading]  = useState(false);
+  const [shpFileName, setShpFileName] = useState(null);
+  const [shpCount,    setShpCount]    = useState(0);
   const [fileVisibility, setFileVisibility] = useState({});
 
   /* ── 3D / Tracker ──────────────────────────────────────────────────────── */
@@ -284,6 +267,42 @@ export default function SurveyMap() {
   const compass = useCompassNav(leafletMapRef);
   const geoJSON = useGeoJSON(leafletMapRef);
 
+  /* ── DEM hook ──────────────────────────────────────────────────────────── */
+  const {
+    demFile,
+    demFileName,
+    demLoading,
+    demStats,
+    demOpacity,
+    demColorRamp,
+    demError,
+    handleDEMUpload,
+    handleDEMRemove,
+    handleDEMOpacity,
+    handleDEMColorRamp,
+    handleDEMDone,
+    handleDEMError,
+    handleDEMStats,
+  } = useDEM();
+
+  // ── NEW v5.9.1: raw raster data for elevation draping ───────────────────
+  const [demRasterData, setDemRasterData] = useState(null);
+
+  // ── PATCH v5.9.1-p1 CHANGE 1: KML mask state for DEM clipping ──────────
+  const [kmlMask, setKmlMask] = useState(null);
+
+  // Combined onStats handler — stores stats + raw raster Float32Array
+  const handleDEMStatsAndRaster = useCallback((stats, rasterData) => {
+    handleDEMStats(stats);
+    setDemRasterData(rasterData || null);
+  }, [handleDEMStats]);
+
+  // Clear raster data when DEM is removed
+  const handleDEMRemoveWithClear = useCallback(() => {
+    handleDEMRemove();
+    setDemRasterData(null);
+  }, [handleDEMRemove]);
+
   useEffect(() => {
     geoJSON.importedGeoJSONLayers.forEach(l => {
       setFileVisibility(p => p[l.id] !== undefined ? p : { ...p, [l.id]: true });
@@ -291,10 +310,16 @@ export default function SurveyMap() {
   }, [geoJSON.importedGeoJSONLayers]);
 
   /* ── Derived ───────────────────────────────────────────────────────────── */
-  const totalDistance  = measurePoints.length >= 2
+  const totalDistance = measurePoints.length >= 2
     ? measurePoints.reduce((sum,p,i) => i===0 ? 0 : sum + haversine(measurePoints[i-1], p), 0) : 0;
-  const hasExportData  = savedDrawings.length > 0 || route.length >= 2 || measurePoints.length >= 2;
-  const importedCount  = (kmlName ? 1 : 0) + (extraFile ? 1 : 0) + (geojsonFileName ? 1 : 0) + geoJSON.importedGeoJSONLayers.length;
+  const hasExportData = savedDrawings.length > 0 || route.length >= 2 || measurePoints.length >= 2;
+
+  const importedCount = (kmlName        ? 1 : 0)
+    + (extraFile       ? 1 : 0)
+    + (geojsonFileName ? 1 : 0)
+    + (shpFileName     ? 1 : 0)
+    + (demFileName     ? 1 : 0)
+    + geoJSON.importedGeoJSONLayers.length;
 
   /* ── Callbacks ─────────────────────────────────────────────────────────── */
   const onMouseMove  = useCallback(p => { setMousePos(p); if (p) getCursorElevation(p.lat, p.lng); }, [getCursorElevation]);
@@ -303,10 +328,10 @@ export default function SurveyMap() {
   const handleElevModeRequest = useCallback(async (mode) => {
     setElevMode(mode); setElevOpen(true); setElevProfileData([]); setElevSourceLabel("");
     let pts = [], label = "";
-    if      (mode==="survey"  && route.length>=2)          { pts=route.map(p=>({lat:p[0],lng:p[1]}));         label=`Survey Route · ${route.length} pts`; }
-    else if (mode==="measure" && measurePoints.length>=2)  { pts=measurePoints.map(p=>({lat:p.lat,lng:p.lng})); label=`Measure · ${measurePoints.length} pts`; }
-    else if (mode==="draw"    && drawPoints.length>=2)     { pts=drawPoints.map(p=>({lat:p.lat,lng:p.lng}));   label=`Draw · ${drawPoints.length} pts`; }
-    else if (mode==="custom")                              { setCustomElevPts([]); setElevProfileData([]); setElevSourceLabel("Click map points"); return; }
+    if      (mode==="survey"  && route.length>=2)         { pts=route.map(p=>({lat:p[0],lng:p[1]}));          label=`Survey Route · ${route.length} pts`; }
+    else if (mode==="measure" && measurePoints.length>=2) { pts=measurePoints.map(p=>({lat:p.lat,lng:p.lng})); label=`Measure · ${measurePoints.length} pts`; }
+    else if (mode==="draw"    && drawPoints.length>=2)    { pts=drawPoints.map(p=>({lat:p.lat,lng:p.lng}));    label=`Draw · ${drawPoints.length} pts`; }
+    else if (mode==="custom")                             { setCustomElevPts([]); setElevProfileData([]); setElevSourceLabel("Click map points"); return; }
     if (pts.length < 2) { setElevSourceLabel("Not enough points"); return; }
     setElevSourceLabel(label);
     setElevProfileData(await getElevationProfile(pts));
@@ -322,41 +347,74 @@ export default function SurveyMap() {
   /* ── File handlers ─────────────────────────────────────────────────────── */
   const handleKMLUpload = (e) => {
     const f = e.target.files[0]; if (!f) return;
+    const ext = f.name.split(".").pop().toLowerCase();
+    if (ext !== "kml") { alert("Please select a .kml file."); e.target.value = ""; return; }
     setKmlLoading(true); setKmlName(f.name); setKmlFile(f);
     setFileVisibility(p => ({ ...p, __kml__: true }));
     e.target.value = "";
   };
+
   const handleExtraUpload = (e) => {
     const f = e.target.files[0]; if (!f) return;
     const ext = f.name.split(".").pop().toLowerCase();
     if (ext !== "kmz" && ext !== "csv") { alert("Please upload a KMZ or CSV file."); e.target.value = ""; return; }
-    setExtraFile(f); setExtraFileType(ext);
-    setFileVisibility(p => ({ ...p, [`__${ext}__`]: true }));
+    setExtraFile(null); setCsvValidCount(0); setCsvTotalCount(0);
+    setTimeout(() => {
+      setExtraFile(f); setExtraFileType(ext);
+      setFileVisibility(p => ({ ...p, [`__${ext}__`]: true }));
+    }, 0);
     e.target.value = "";
   };
-  // GeoJSON file upload — feeds GeoJSONLoader inside MapContainer
+
   const handleGeoJSONFileUpload = (e) => {
     const f = e.target.files[0]; if (!f) return;
     const ext = f.name.split(".").pop().toLowerCase();
-    if (ext !== "geojson" && ext !== "json") {
-      alert("Please upload a .geojson or .json file.");
-      e.target.value = "";
-      return;
-    }
-    console.log(`[SurveyMap] GeoJSON selected: "${f.name}" ${f.size} bytes`);
-    // Set file + loading state first, THEN trigger (order matters for fileRef sync)
-    setGeojsonFile(f);
-    setGeojsonFileName(f.name);
-    setGeojsonLoading(true);
+    if (ext !== "geojson" && ext !== "json") { alert("Please upload a .geojson or .json file."); e.target.value = ""; return; }
+    setGeojsonFile(f); setGeojsonFileName(f.name); setGeojsonLoading(true);
     setFileVisibility(p => ({ ...p, __geojson__: true }));
-    // Trigger LAST — GeoJSONLoader reads fileRef.current which is updated each render
-    // By setting trigger last, file state is guaranteed to be in the next render batch
     setGeojsonTrigger(Date.now());
     e.target.value = "";
   };
-  const removeKML      = () => { setKmlFile(null); setKmlName(null); setKmlLoading(false); setFileVisibility(p => { const n={...p}; delete n.__kml__; return n; }); };
-  const removeExtra    = () => { setExtraFile(null); setExtraFileType(null); setFileVisibility(p => { const n={...p}; delete n.__kmz__; delete n.__csv__; return n; }); };
-  const removeGeojson  = () => { setGeojsonFile(null); setGeojsonFileName(null); setGeojsonLoading(false); setGeojsonTrigger(null); setFileVisibility(p => { const n={...p}; delete n.__geojson__; return n; }); };
+
+  const handleShapefileUpload = (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    const ext = f.name.split(".").pop().toLowerCase();
+    if (ext !== "zip" && ext !== "shp") { alert("Please upload a .zip (recommended) or .shp file."); e.target.value = ""; return; }
+    setShpFile(f); setShpFileName(f.name); setShpLoading(true); setShpCount(0);
+    setFileVisibility(p => ({ ...p, __shp__: true }));
+    setShpTrigger(Date.now());
+    e.target.value = "";
+  };
+
+  const handleDEMFileInput = (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    handleDEMUpload(f);
+    e.target.value = "";
+  };
+
+  /* ── Removal handlers ──────────────────────────────────────────────────── */
+  // PATCH v5.9.1-p1 CHANGE 2: setKmlMask(null) added to removeKML
+  const removeKML = () => {
+    setKmlFile(null); setKmlName(null); setKmlLoading(false);
+    kmlLayerRef.current = null;
+    setKmlMask(null);                                              // ← PATCH
+    setFileVisibility(p => { const n={...p}; delete n.__kml__; return n; });
+  };
+
+  const removeExtra = () => {
+    setExtraFile(null); setExtraFileType(null); setCsvValidCount(0); setCsvTotalCount(0);
+    kmzLayerRef.current = null;
+    setFileVisibility(p => { const n={...p}; delete n.__kmz__; delete n.__csv__; return n; });
+  };
+  const removeGeojson = () => {
+    setGeojsonFile(null); setGeojsonFileName(null); setGeojsonLoading(false); setGeojsonTrigger(null);
+    setFileVisibility(p => { const n={...p}; delete n.__geojson__; return n; });
+  };
+  const removeShapefile = () => {
+    setShpFile(null); setShpFileName(null); setShpLoading(false); setShpTrigger(null); setShpCount(0);
+    shpLayerRef.current = null;
+    setFileVisibility(p => { const n={...p}; delete n.__shp__; return n; });
+  };
 
   /* ── Draw handlers ─────────────────────────────────────────────────────── */
   const handleToggleSurvey = () => {
@@ -454,11 +512,13 @@ export default function SurveyMap() {
     if (A==="openKML")           { kmlInputRef.current?.click(); return; }
     if (A==="openExtra")         { extraInputRef.current?.click(); return; }
     if (A==="openGeoJSON")       { geojsonInputRef.current?.click(); return; }
-    if (A==="exportGeoJSON")     { geoJSON.handleExportGeoJSON({savedDrawings,route,measurePoints}); return; }
-    if (A==="exportKML")         { exportKML(savedDrawings,route,measurePoints); return; }
-    if (A==="exportCSV")         { exportCSV(savedDrawings,route,measurePoints); return; }
-    if (A==="exportKMZ")         { exportKMZ(savedDrawings,route,measurePoints); return; }
-    if (A==="resetAll")          { if(!window.confirm("Reset everything?")) return; setSavedDrawings([]); cancelDrawing(); clearMeasure(); setRoute([]); setSurveyMode(false); geoJSON.clearAllGeoJSONLayers(); return; }
+    if (A==="openShapefile")     { shpInputRef.current?.click(); return; }
+    if (A==="exportGeoJSON")     { exportGeoJSON(savedDrawings, route, measurePoints); return; }
+    if (A==="exportKML")         { exportKML(savedDrawings, route, measurePoints); return; }
+    if (A==="exportCSV")         { exportCSV(savedDrawings, route, measurePoints); return; }
+    if (A==="exportKMZ")         { exportKMZ(savedDrawings, route, measurePoints); return; }
+    if (A==="exportSHP")         { exportShapefile(savedDrawings, route, measurePoints); return; }
+    if (A==="resetAll")          { if(!window.confirm("Reset everything?")) return; setSavedDrawings([]); cancelDrawing(); clearMeasure(); setRoute([]); setSurveyMode(false); geoJSON.clearAllGeoJSONLayers(); handleDEMRemoveWithClear(); return; }
     if (A==="startDraw")         { setDrawMode(true); setDrawPoints([]); setActiveSheet(null); return; }
     if (A==="cancelDraw")        { cancelDrawing(); return; }
     if (A==="startMeasure")      { setMeasureMode(true); return; }
@@ -491,44 +551,65 @@ export default function SurveyMap() {
 
   const cfg = MAP_LAYERS[activeLayer] || {};
 
-  /* ── Export buttons (reusable across all panels) ───────────────────────── */
+  /* ── Export buttons ────────────────────────────────────────────────────── */
   const ExportButtons = ({ compact = false }) => !hasExportData ? null : (
-    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap: compact ? 4 : 6 }}>
+    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap: compact ? 4 : 6 }}>
       {[
-        ["GeoJSON", ()=>geoJSON.handleExportGeoJSON({savedDrawings,route,measurePoints}), "rgba(34,197,94,0.12)",  "rgba(34,197,94,0.3)",  "#4ade80"],
-        ["KML",     ()=>exportKML(savedDrawings,route,measurePoints),                     "rgba(251,191,36,0.12)", "rgba(251,191,36,0.3)", "#fbbf24"],
-        ["CSV",     ()=>exportCSV(savedDrawings,route,measurePoints),                     "rgba(56,189,248,0.12)", "rgba(56,189,248,0.3)", "#38bdf8"],
-        ["KMZ",     ()=>exportKMZ(savedDrawings,route,measurePoints),                     "rgba(167,139,250,0.12)","rgba(167,139,250,0.3)","#c4b5fd"],
+        ["GeoJSON", () => exportGeoJSON(savedDrawings, route, measurePoints),   "rgba(34,197,94,0.12)",  "rgba(34,197,94,0.3)",  "#4ade80"],
+        ["KML",     () => exportKML(savedDrawings, route, measurePoints),       "rgba(251,191,36,0.12)", "rgba(251,191,36,0.3)", "#fbbf24"],
+        ["CSV",     () => exportCSV(savedDrawings, route, measurePoints),       "rgba(56,189,248,0.12)", "rgba(56,189,248,0.3)", "#38bdf8"],
+        ["KMZ",     () => exportKMZ(savedDrawings, route, measurePoints),       "rgba(167,139,250,0.12)","rgba(167,139,250,0.3)","#c4b5fd"],
+        ["SHP/ZIP", () => exportShapefile(savedDrawings, route, measurePoints), "rgba(167,139,250,0.12)","rgba(167,139,250,0.3)","#a78bfa"],
+
+
+         // 🔥 NEW DEM EXPORT BUTTON
+  ["DEM (.tif)", () => exportDEM({
+    raster: demRasterData,
+    kmlMask: kmlMask,
+    filename: "survey_dem.tif"
+  }), "rgba(244,63,94,0.12)", "rgba(244,63,94,0.3)", "#fb7185"],
+
       ].map(([label, fn, bg, border, color]) => (
-        <button key={label} onClick={fn} style={{ padding: compact?"7px 4px":"9px 6px", borderRadius:8, cursor:"pointer", background:bg, border:`1px solid ${border}`, color, fontSize: compact?10:11, fontWeight:700, fontFamily:"'DM Sans',sans-serif", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}>
-          <span style={{ fontSize: compact?11:13 }}>↓</span>{label}
+        <button key={label} onClick={fn}
+          style={{ padding: compact ? "7px 4px" : "9px 6px", borderRadius:8, cursor:"pointer",
+            background:bg, border:`1px solid ${border}`, color,
+            fontSize: compact ? 10 : 11, fontWeight:700, fontFamily:"'DM Sans',sans-serif",
+            display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}>
+          <span style={{ fontSize: compact ? 11 : 13 }}>↓</span>{label}
         </button>
       ))}
     </div>
   );
 
-  /* ── File Folder panel (reusable in desktop sidebar + mobile sheets) ───── */
+  /* ── File Folder panel ─────────────────────────────────────────────────── */
   const FileFolderPanel = ({ onClose }) => (
     <div>
-      {/* Import section */}
       <div style={{ marginBottom:14 }}>
         <div style={{ fontSize:9.5, fontWeight:700, color:"rgba(255,255,255,0.25)", letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:8, fontFamily:"'DM Mono',monospace" }}>Import Files</div>
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6, marginBottom:10 }}>
-          <label style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:5, padding:"10px 6px", borderRadius:10, cursor:"pointer", background:"rgba(74,158,255,0.08)", border:"1px solid rgba(74,158,255,0.2)", color:"#60a5fa", fontSize:10.5, fontWeight:600, textAlign:"center" }}>
-            <span style={{ fontSize:18 }}>📍</span> KML
+
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr 1fr 1fr", gap:5, marginBottom:10 }}>
+          <label style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:4, padding:"9px 4px", borderRadius:10, cursor:"pointer", background:"rgba(74,158,255,0.08)", border:"1px solid rgba(74,158,255,0.2)", color:"#60a5fa", fontSize:10, fontWeight:600, textAlign:"center" }}>
+            <span style={{ fontSize:16 }}>📍</span>KML
             <input type="file" accept=".kml" onChange={handleKMLUpload} style={{ display:"none" }}/>
           </label>
-          <label style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:5, padding:"10px 6px", borderRadius:10, cursor:"pointer", background:"rgba(251,191,36,0.08)", border:"1px solid rgba(251,191,36,0.2)", color:"#fbbf24", fontSize:10.5, fontWeight:600, textAlign:"center" }}>
-            <span style={{ fontSize:18 }}>🗜</span> KMZ/CSV
+          <label style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:4, padding:"9px 4px", borderRadius:10, cursor:"pointer", background:"rgba(251,191,36,0.08)", border:"1px solid rgba(251,191,36,0.2)", color:"#fbbf24", fontSize:10, fontWeight:600, textAlign:"center" }}>
+            <span style={{ fontSize:16 }}>🗜</span>KMZ/CSV
             <input type="file" accept=".kmz,.csv" onChange={handleExtraUpload} style={{ display:"none" }}/>
           </label>
-          <label style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:5, padding:"10px 6px", borderRadius:10, cursor:"pointer", background:"rgba(20,184,166,0.08)", border:"1px solid rgba(20,184,166,0.2)", color:"#2dd4bf", fontSize:10.5, fontWeight:600, textAlign:"center" }}>
-            <span style={{ fontSize:18 }}>🌐</span> GeoJSON
+          <label style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:4, padding:"9px 4px", borderRadius:10, cursor:"pointer", background:"rgba(20,184,166,0.08)", border:"1px solid rgba(20,184,166,0.2)", color:"#2dd4bf", fontSize:10, fontWeight:600, textAlign:"center" }}>
+            <span style={{ fontSize:16 }}>🌐</span>GeoJSON
             <input type="file" accept=".geojson,.json" onChange={handleGeoJSONFileUpload} style={{ display:"none" }}/>
+          </label>
+          <label style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:4, padding:"9px 4px", borderRadius:10, cursor:"pointer", background:"rgba(167,139,250,0.08)", border:"1px solid rgba(167,139,250,0.2)", color:"#a78bfa", fontSize:10, fontWeight:600, textAlign:"center" }}>
+            <span style={{ fontSize:16 }}>🗺</span>SHP
+            <input type="file" accept=".zip,.shp" onChange={handleShapefileUpload} style={{ display:"none" }}/>
+          </label>
+          <label style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:4, padding:"9px 4px", borderRadius:10, cursor:"pointer", background:"rgba(251,113,133,0.08)", border:`1.5px ${demFileName?"solid":"dashed"} rgba(251,113,133,${demFileName?"0.45":"0.3"})`, color:"#fb7185", fontSize:10, fontWeight:600, textAlign:"center" }}>
+            <span style={{ fontSize:16 }}>🏔</span>DEM
+            <input type="file" accept=".tif,.tiff,.asc,.dem,.img" onChange={handleDEMFileInput} style={{ display:"none" }}/>
           </label>
         </div>
 
-        {/* Loaded files list */}
         {importedCount === 0 ? (
           <div style={{ textAlign:"center", color:"rgba(255,255,255,0.18)", fontSize:11, fontStyle:"italic", padding:"8px 0" }}>No files imported yet</div>
         ) : (
@@ -538,7 +619,9 @@ export default function SurveyMap() {
                 <span style={{ fontSize:14 }}>📍</span>
                 <div style={{ flex:1, minWidth:0 }}>
                   <div style={{ color:"#90c8ff", fontSize:11, fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{kmlName}</div>
-                  <div style={{ color:"rgba(74,158,255,0.4)", fontSize:9.5, fontFamily:"'DM Mono',monospace" }}>KML</div>
+                  <div style={{ color:"rgba(74,158,255,0.4)", fontSize:9.5, fontFamily:"'DM Mono',monospace" }}>
+                    KML{kmlMask ? " · clip mask active 🎯" : ""}{demRasterData ? " · draped by DEM 🏔" : ""}
+                  </div>
                 </div>
                 <button onClick={removeKML} style={{ background:"none", border:"none", color:"rgba(239,68,68,0.45)", cursor:"pointer", fontSize:16, padding:0, flexShrink:0 }}>×</button>
               </div>
@@ -548,7 +631,11 @@ export default function SurveyMap() {
                 <span style={{ fontSize:14 }}>{extraFileType==="kmz"?"🗜":"📊"}</span>
                 <div style={{ flex:1, minWidth:0 }}>
                   <div style={{ color:"#fcd34d", fontSize:11, fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{extraFile.name}</div>
-                  <div style={{ color:"rgba(251,191,36,0.4)", fontSize:9.5, fontFamily:"'DM Mono',monospace" }}>{extraFileType?.toUpperCase()}</div>
+                  <div style={{ color:"rgba(251,191,36,0.4)", fontSize:9.5, fontFamily:"'DM Mono',monospace" }}>
+                    {extraFileType?.toUpperCase()}
+                    {extraFileType === "csv" && csvTotalCount > 0 ? ` · ${csvValidCount}/${csvTotalCount} valid rows` : ""}
+                    {extraFileType === "kmz" && demRasterData ? " · draped by DEM 🏔" : ""}
+                  </div>
                 </div>
                 <button onClick={removeExtra} style={{ background:"none", border:"none", color:"rgba(239,68,68,0.45)", cursor:"pointer", fontSize:16, padding:0, flexShrink:0 }}>×</button>
               </div>
@@ -563,6 +650,18 @@ export default function SurveyMap() {
                 <button onClick={removeGeojson} style={{ background:"none", border:"none", color:"rgba(239,68,68,0.45)", cursor:"pointer", fontSize:16, padding:0, flexShrink:0 }}>×</button>
               </div>
             )}
+            {shpFileName && (
+              <div style={{ display:"flex", alignItems:"center", gap:8, padding:"8px 10px", background:"rgba(167,139,250,0.06)", border:"1px solid rgba(167,139,250,0.15)", borderRadius:8 }}>
+                <span style={{ fontSize:14 }}>🗺</span>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ color:"#c4b5fd", fontSize:11, fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{shpFileName}</div>
+                  <div style={{ color:"rgba(167,139,250,0.4)", fontSize:9.5, fontFamily:"'DM Mono',monospace" }}>
+                    Shapefile · {shpCount} features{demRasterData ? " · draped by DEM 🏔" : ""}
+                  </div>
+                </div>
+                <button onClick={removeShapefile} style={{ background:"none", border:"none", color:"rgba(239,68,68,0.45)", cursor:"pointer", fontSize:16, padding:0, flexShrink:0 }}>×</button>
+              </div>
+            )}
             {geoJSON.importedGeoJSONLayers.map(layer => (
               <div key={layer.id} style={{ display:"flex", alignItems:"center", gap:8, padding:"8px 10px", background:"rgba(20,184,166,0.06)", border:"1px solid rgba(20,184,166,0.15)", borderRadius:8 }}>
                 <span style={{ fontSize:14 }}>🌐</span>
@@ -575,18 +674,31 @@ export default function SurveyMap() {
             ))}
           </div>
         )}
+
+        <div style={{ borderTop:"1px solid rgba(255,255,255,0.06)", marginTop:12, paddingTop:12 }}>
+          <DEMPanel
+            demFileName={demFileName}
+            demLoading={demLoading}
+            demStats={demStats}
+            demOpacity={demOpacity}
+            demColorRamp={demColorRamp}
+            demError={demError}
+            onUpload={handleDEMUpload}
+            onRemove={handleDEMRemoveWithClear}
+            onOpacity={handleDEMOpacity}
+            onColorRamp={handleDEMColorRamp}
+          />
+        </div>
       </div>
 
-      {/* Export section */}
       <div style={{ borderTop:"1px solid rgba(255,255,255,0.06)", paddingTop:14 }}>
         <div style={{ fontSize:9.5, fontWeight:700, color:"rgba(255,255,255,0.25)", letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:8, fontFamily:"'DM Mono',monospace" }}>
           Export {!hasExportData && <span style={{ color:"rgba(255,255,255,0.15)", fontWeight:400, textTransform:"none", letterSpacing:0 }}>— draw or survey first</span>}
         </div>
-        {hasExportData ? (
-          <ExportButtons/>
-        ) : (
-          <div style={{ textAlign:"center", color:"rgba(255,255,255,0.18)", fontSize:11, fontStyle:"italic", padding:"8px 0" }}>No data to export yet</div>
-        )}
+        {hasExportData
+          ? <ExportButtons/>
+          : <div style={{ textAlign:"center", color:"rgba(255,255,255,0.18)", fontSize:11, fontStyle:"italic", padding:"8px 0" }}>No data to export yet</div>
+        }
       </div>
     </div>
   );
@@ -610,9 +722,10 @@ export default function SurveyMap() {
       <div style={{ position:"fixed", inset:0, background:"#060e1a", fontFamily:"'DM Sans',sans-serif" }}>
 
         {/* Hidden file inputs */}
-        <input ref={kmlInputRef}     type="file" accept=".kml"                onChange={handleKMLUpload}             style={{ display:"none" }}/>
-        <input ref={extraInputRef}   type="file" accept=".kmz,.csv"           onChange={handleExtraUpload}           style={{ display:"none" }}/>
-        <input ref={geojsonInputRef} type="file" accept=".geojson,.json"      onChange={handleGeoJSONFileUpload}     style={{ display:"none" }}/>
+        <input ref={kmlInputRef}     type="file" accept=".kml"           onChange={handleKMLUpload}         style={{ display:"none" }}/>
+        <input ref={extraInputRef}   type="file" accept=".kmz,.csv"      onChange={handleExtraUpload}       style={{ display:"none" }}/>
+        <input ref={geojsonInputRef} type="file" accept=".geojson,.json" onChange={handleGeoJSONFileUpload} style={{ display:"none" }}/>
+        <input ref={shpInputRef}     type="file" accept=".zip,.shp"      onChange={handleShapefileUpload}   style={{ display:"none" }}/>
 
         {/* ══ DESKTOP MENU BAR ═══════════════════════════════════════════ */}
         <div style={{ position:"absolute", top:0, left:0, right:0, height:MENU_H, zIndex:1200, background:"rgba(5,12,24,0.97)", backdropFilter:"blur(20px)", borderBottom:"1px solid rgba(255,255,255,0.055)", display:"flex", alignItems:"center", paddingLeft:12, gap:0 }}>
@@ -672,16 +785,22 @@ export default function SurveyMap() {
             {isTracking && <span style={{ position:"absolute", top:4, right:4, width:6, height:6, borderRadius:"50%", background:"#ef4444", animation:"blink 1s infinite" }}/>}
           </button>
           <div style={{ width:1, height:22, background:"rgba(255,255,255,0.08)", margin:"0 3px", flexShrink:0 }}/>
-          {/* Import buttons */}
           <label className="tb-btn inactive" style={{ cursor:"pointer" }}><Ico name="Upload" size={14}/><span>KML</span><input type="file" accept=".kml" onChange={handleKMLUpload} style={{ display:"none" }}/></label>
           <label className="tb-btn inactive" style={{ cursor:"pointer" }}><Ico name="CSV" size={14}/><span>KMZ/CSV</span><input type="file" accept=".kmz,.csv" onChange={handleExtraUpload} style={{ display:"none" }}/></label>
           <label className={`tb-btn ${(geoJSON.importedGeoJSONLayers.length||geojsonFileName)?"geojson-active":"inactive"}`} style={{ cursor:"pointer" }}><Ico name="GeoJSON" size={14}/><span>GeoJSON</span><input type="file" accept=".geojson,.json" onChange={handleGeoJSONFileUpload} style={{ display:"none" }}/></label>
+          <label className="tb-btn inactive" style={{ cursor:"pointer" }}><Ico name="GeoJSON" size={14}/><span>SHP/ZIP</span><input type="file" accept=".zip,.shp" onChange={handleShapefileUpload} style={{ display:"none" }}/></label>
+          {/* DEM button — glows pink when loaded */}
+          <label className={`tb-btn ${demFileName?"active":"inactive"}`} style={{ cursor:"pointer", background:demFileName?"rgba(251,113,133,0.18)":"", borderColor:demFileName?"rgba(251,113,133,0.4)":"", color:demFileName?"#fb7185":"" }}>
+            <span style={{ fontSize:13 }}>🏔</span><span>DEM</span>
+            <input type="file" accept=".tif,.tiff,.asc,.dem,.img" onChange={handleDEMFileInput} style={{ display:"none" }}/>
+          </label>
           {/* Export buttons */}
-          <button className="tb-btn inactive" onClick={() => geoJSON.handleExportGeoJSON({savedDrawings,route,measurePoints})} style={{ background:"rgba(34,197,94,0.12)", borderColor:"rgba(34,197,94,0.3)", color:"#4ade80" }}><Ico name="Export" size={14}/><span>GeoJSON</span></button>
+          <button className="tb-btn inactive" onClick={() => exportGeoJSON(savedDrawings, route, measurePoints)} style={{ background:"rgba(34,197,94,0.12)", borderColor:"rgba(34,197,94,0.3)", color:"#4ade80" }}><Ico name="Export" size={14}/><span>GeoJSON</span></button>
           {hasExportData && <>
-            <button className="tb-btn inactive" onClick={() => exportKML(savedDrawings,route,measurePoints)}  style={{ background:"rgba(251,191,36,0.12)", borderColor:"rgba(251,191,36,0.3)", color:"#fbbf24" }}><Ico name="Export" size={14}/><span>KML</span></button>
-            <button className="tb-btn inactive" onClick={() => exportCSV(savedDrawings,route,measurePoints)}  style={{ background:"rgba(56,189,248,0.12)", borderColor:"rgba(56,189,248,0.3)", color:"#38bdf8" }}><Ico name="Export" size={14}/><span>CSV</span></button>
-            <button className="tb-btn inactive" onClick={() => exportKMZ(savedDrawings,route,measurePoints)}  style={{ background:"rgba(167,139,250,0.12)", borderColor:"rgba(167,139,250,0.3)", color:"#c4b5fd" }}><Ico name="Export" size={14}/><span>KMZ</span></button>
+            <button className="tb-btn inactive" onClick={() => exportKML(savedDrawings,route,measurePoints)}       style={{ background:"rgba(251,191,36,0.12)", borderColor:"rgba(251,191,36,0.3)", color:"#fbbf24" }}><Ico name="Export" size={14}/><span>KML</span></button>
+            <button className="tb-btn inactive" onClick={() => exportCSV(savedDrawings,route,measurePoints)}       style={{ background:"rgba(56,189,248,0.12)", borderColor:"rgba(56,189,248,0.3)", color:"#38bdf8" }}><Ico name="Export" size={14}/><span>CSV</span></button>
+            <button className="tb-btn inactive" onClick={() => exportKMZ(savedDrawings,route,measurePoints)}       style={{ background:"rgba(167,139,250,0.12)", borderColor:"rgba(167,139,250,0.3)", color:"#c4b5fd" }}><Ico name="Export" size={14}/><span>KMZ</span></button>
+            <button className="tb-btn inactive" onClick={() => exportShapefile(savedDrawings,route,measurePoints)} style={{ background:"rgba(167,139,250,0.12)", borderColor:"rgba(167,139,250,0.3)", color:"#a78bfa" }}><Ico name="Export" size={14}/><span>SHP</span></button>
           </>}
           <div style={{ width:1, height:22, background:"rgba(255,255,255,0.08)", margin:"0 3px", flexShrink:0 }}/>
           <button className={`tb-btn ${!isOnline?"tracker-active":"inactive"}`} onClick={() => setOfflineOpen(p=>!p)}><Ico name="Offline" size={14}/><span>Offline</span></button>
@@ -695,9 +814,16 @@ export default function SurveyMap() {
           <button className="tb-btn" onClick={() => setShow3D(true)} style={{ background:"rgba(167,139,250,0.15)", borderColor:"rgba(167,139,250,0.4)", color:"#c4b5fd" }}><Ico name="Globe" size={14}/><span>3D</span></button>
           <button className={`tb-btn ${nightModeAuto?"active":"inactive"}`} onClick={() => setNightModeAuto(p=>!p)}><Ico name={nightSwitchInfo?.isNight?"Night":"Day"} size={14}/><span>Night</span></button>
           <div style={{ flex:1 }}/>
+          {/* Loading badges */}
           {geoJSON.geojsonLoading && <span style={{ fontSize:11, color:"#2dd4bf", background:"rgba(20,184,166,0.12)", padding:"4px 10px", borderRadius:16, border:"1px solid rgba(20,184,166,0.25)", display:"flex", alignItems:"center", gap:5 }}><span style={{ animation:"blink 1s infinite" }}>●</span>Loading…</span>}
           {geojsonLoading && <span style={{ fontSize:11, color:"#4ade80", background:"rgba(34,197,94,0.12)", padding:"4px 10px", borderRadius:16, border:"1px solid rgba(34,197,94,0.25)", display:"flex", alignItems:"center", gap:5 }}><span style={{ animation:"blink 1s infinite" }}>●</span>{geojsonFileName?.slice(0,14)}…</span>}
           {kmlLoading && <span style={{ fontSize:11, color:"#60a0e8", background:"rgba(74,158,255,0.12)", padding:"4px 10px", borderRadius:16, border:"1px solid rgba(74,158,255,0.25)", display:"flex", alignItems:"center", gap:5 }}><span style={{ animation:"blink 1s infinite" }}>●</span>{kmlName?.slice(0,14)}…</span>}
+          {shpLoading && <span style={{ fontSize:11, color:"#a78bfa", background:"rgba(167,139,250,0.12)", padding:"4px 10px", borderRadius:16, border:"1px solid rgba(167,139,250,0.25)", display:"flex", alignItems:"center", gap:5 }}><span style={{ animation:"blink 1s infinite" }}>●</span>{shpFileName?.slice(0,14)}…</span>}
+          {demLoading && (
+            <span style={{ fontSize:11, color:"#fb7185", background:"rgba(251,113,133,0.12)", padding:"4px 10px", borderRadius:16, border:"1px solid rgba(251,113,133,0.25)", display:"flex", alignItems:"center", gap:5 }}>
+              <span style={{ animation:"blink 1s infinite" }}>●</span>{demFileName?.slice(0,12)}… DEM
+            </span>
+          )}
         </div>
 
         {/* ══ MOBILE CHROME ══════════════════════════════════════════════ */}
@@ -748,10 +874,96 @@ export default function SurveyMap() {
             <MapFlyController flyTarget={flyTarget}/>
             <AddSearch onLocationFound={handleLocationFound} searchRef={searchFnRef}/>
             <LiveGPS/>
-            <KMLLoader file={kmlFile} onDone={() => setKmlLoading(false)}/>
-            {extraFileType==="kmz"&&<KMZLoader file={extraFile} onDone={()=>{}}/>}
-            {extraFileType==="csv"&&<CSVLoader file={extraFile} onDone={()=>{}}/>}
-            <GeoJSONLoader file={geojsonFile} triggerKey={geojsonTrigger} onDone={() => setGeojsonLoading(false)}/>
+
+            {/*
+             * PATCH v5.9.1-p1 CHANGE 3:
+             * KML onLayer now extracts polygon rings into kmlMask for DEM clipping
+             */}
+            <KMLLoader
+              file={kmlFile}
+              onDone={() => setKmlLoading(false)}
+              onLayer={(lyr) => {
+                kmlLayerRef.current = lyr;
+
+                // Extract polygon rings for DEM clip mask
+                const rings = [];
+                lyr.eachLayer(layer => {
+                  if (layer.getLatLngs) {
+                    const lls = layer.getLatLngs();
+                    // getLatLngs returns nested arrays for polygons
+                    const flat = Array.isArray(lls[0]) ? lls : [lls];
+                    rings.push(...flat);
+                  }
+                });
+                // Use rings if found, otherwise fall back to full GeoJSON
+                setKmlMask(rings.length > 0 ? rings : lyr.toGeoJSON());
+              }}
+            />
+
+            {/* KMZ — onLayer stores ref for DEM draping */}
+            {extraFileType === "kmz" && (
+              <KMZLoader
+                file={extraFile}
+                onDone={() => {}}
+                onLayer={(lyr) => { kmzLayerRef.current = lyr; }}
+              />
+            )}
+            {extraFileType === "csv" && (
+              <CSVLoader
+                file={extraFile}
+                onDone={() => {}}
+                onCount={(valid, total) => { setCsvValidCount(valid); setCsvTotalCount(total); }}
+              />
+            )}
+
+            <GeoJSONLoader
+              file={geojsonFile}
+              triggerKey={geojsonTrigger}
+              onDone={() => { setGeojsonLoading(false); setGeojsonFile(null); }}
+            />
+
+            {/* Shapefile — onLayer stores ref for DEM draping */}
+            <ShapefileLoader
+              file={shpFile}
+              triggerKey={shpTrigger}
+              onDone={() => setShpLoading(false)}
+              onCount={(n) => setShpCount(n)}
+              onLayer={(lyr) => { shpLayerRef.current = lyr; }}
+            />
+
+            {/*
+             * PATCH v5.9.1-p1 CHANGE 4:
+             * DEMLoader now receives kmlMask prop for raster clipping
+             */}
+            <DEMLoader
+              file={demFile}
+              opacity={demOpacity}
+              colorRamp={demColorRamp}
+              kmlMask={kmlMask}                                             // ← PATCH
+              onDone={handleDEMDone}
+              onError={handleDEMError}
+              onStats={(stats, rasterData) => handleDEMStatsAndRaster(stats, rasterData)}
+            />
+
+            {/*
+             * ── NEW v5.9.1: QGIS-style 2D elevation draping ──────────────
+             * When a DEM is loaded alongside KML / KMZ / SHP vector layers,
+             * this redraws every feature coloured by its sampled DEM elevation,
+             * using the same colour ramp and min/max as the raster overlay.
+             * Each feature gets a tooltip showing its elevation in metres.
+             */}
+            <DEMElevationDrape
+              enabled={!!(demFileName && demRasterData)}
+              demRasterData={demRasterData}
+              colorRamp={demColorRamp}
+              minElev={demStats?.min}
+              maxElev={demStats?.max}
+              opacity={demOpacity}
+              kmlLayerRef={kmlLayerRef}
+              shpLayerRef={shpLayerRef}
+              kmzLayerRef={kmzLayerRef}
+            />
+
             <SurveyClick surveyMode={surveyMode} route={route} setRoute={setRoute} setStart={()=>{}} setEnd={()=>{}} polylineRef={polylineRef}/>
             <DrawTool drawMode={drawMode} drawType={drawType} drawPoints={drawPoints} setDrawPoints={setDrawPoints} previewLayerRef={previewLayerRef} drawLayersRef={drawLayersRef}/>
             <BoundaryLayer geojson={boundaryGeojson}/>
@@ -763,12 +975,8 @@ export default function SurveyMap() {
           </MapContainer>
         </div>
 
-        {/* ══ ZOOM CONTROL — outside MapContainer so KML fitBounds() never
-            swallows clicks. Uses leafletMapRef directly via plain React DOM.
-            Desktop only — mobile has zoom inside MobileCompassWidget. ══════ */}
-        {!isMobile && (
-          <ZoomControl isMobile={isMobile} leafletMapRef={leafletMapRef}/>
-        )}
+        {/* ══ ZOOM CONTROL ═══════════════════════════════════════════════ */}
+        {!isMobile && <ZoomControl isMobile={isMobile} leafletMapRef={leafletMapRef}/>}
 
         {/* ══ MOBILE BOTTOM NAV ══════════════════════════════════════════ */}
         {isMobile && (
@@ -776,15 +984,8 @@ export default function SurveyMap() {
             <MobileBottomNav
               activeSheet={activeSheet}
               onOpen={(key) => {
-                if (key==="draw") {
-                  if (drawMode) return; // HUD pill handles active drawing
-                  setActiveSheet(activeSheet==="draw"?null:"draw");
-                  return;
-                }
-                if (key==="measure") {
-                  if (activeSheet==="measure") { clearMeasure(); setActiveSheet(null); return; }
-                  setMeasureMode(true); setActiveSheet("measure"); return;
-                }
+                if (key==="draw") { if (drawMode) return; setActiveSheet(activeSheet==="draw"?null:"draw"); return; }
+                if (key==="measure") { if (activeSheet==="measure") { clearMeasure(); setActiveSheet(null); return; } setMeasureMode(true); setActiveSheet("measure"); return; }
                 setActiveSheet(activeSheet===key?null:key);
               }}
               onCompassToggle={() => compass.compassNavActive?compass.stopCompassNav():compass.startCompassNav()}
@@ -798,7 +999,6 @@ export default function SurveyMap() {
         {/* ══ MOBILE BOTTOM SHEETS ═══════════════════════════════════════ */}
         <MobileBottomSheet activeSheet={activeSheet} onClose={() => setActiveSheet(null)}>
 
-          {/* Draw sheet — type picker only, sheet closes when drawing starts */}
           {activeSheet==="draw" && !drawMode && (
             <div style={{ padding:"0 16px 28px" }}>
               <SheetHeader title="Draw Tool" sub="Choose type, then tap Start" onClose={() => setActiveSheet(null)} iconColor="#f59e0b"
@@ -836,7 +1036,6 @@ export default function SurveyMap() {
             </div>
           )}
 
-          {/* Measure sheet */}
           {activeSheet==="measure" && (
             <div style={{ padding:"0 16px 28px" }}>
               <SheetHeader title="Measure" sub={measureMode?`${measurePoints.length} pts · tap map`:"Tap points to measure"} onClose={() => setActiveSheet(null)} iconColor="#10b981"
@@ -862,7 +1061,6 @@ export default function SurveyMap() {
             </div>
           )}
 
-          {/* Layers sheet */}
           {activeSheet==="layers" && (
             <div style={{ paddingBottom:28 }}>
               <SheetHeader title="Map Layers" sub="Choose basemap" onClose={() => setActiveSheet(null)} iconColor="#3b82f6"
@@ -885,7 +1083,6 @@ export default function SurveyMap() {
             </div>
           )}
 
-          {/* ── FILES SHEET — full import/export folder ── */}
           {activeSheet==="files" && (
             <div style={{ padding:"0 16px 28px" }}>
               <SheetHeader
@@ -902,7 +1099,6 @@ export default function SurveyMap() {
             </div>
           )}
 
-          {/* Elevation sheet */}
           {activeSheet==="elevation" && (
             <MobileElevationSheet
               elevMode={elevMode} elevProfileData={elevProfileData} elevLoading={elevLoading}
@@ -914,7 +1110,6 @@ export default function SurveyMap() {
             />
           )}
 
-          {/* More sheet */}
           {activeSheet==="more" && (
             <div style={{ paddingBottom:28 }}>
               <SheetHeader title="More Tools" sub="Advanced features" onClose={() => setActiveSheet(null)} iconColor="#8b5cf6"
@@ -922,6 +1117,7 @@ export default function SurveyMap() {
               <SheetDivider/>
               {[
                 { label:"File Folder",         sub:`${importedCount} file(s) · import & export`,           color:"#60a5fa", action:()=>setActiveSheet("files") },
+                { label:"DEM Elevation Layer", sub:demFileName?`${demFileName} · ${demRasterData?"draping active":"loading…"}`:"Import .tif / .asc / .dem", color:"#fb7185", active:!!demFileName, action:()=>setActiveSheet("files") },
                 { label:"Elevation Profile",   sub:"Terrain elevation chart",   color:"#38bdf8", action:()=>{handleElevModeRequest(elevMode||"survey");setActiveSheet("elevation");} },
                 { label:"Compass Navigation",  sub:compass.compassNavActive?`Active · ${Math.round(((compass.compassHeading??0)%360+360)%360)}°`:"Map stays north-up", color:"#0ea5e9", active:compass.compassNavActive, action:()=>{setActiveSheet(null);compass.compassNavActive?compass.stopCompassNav():compass.startCompassNav();} },
                 { label:"Survey Route",        sub:surveyMode?`${route.length} pts · recording`:"Tap points for route", color:"#3b82f6", active:surveyMode, action:()=>{handleToggleSurvey();setActiveSheet(null);} },
@@ -950,7 +1146,6 @@ export default function SurveyMap() {
         {/* ══ DESKTOP SIDEBAR ════════════════════════════════════════════ */}
         <div className="sm-sidebar" style={{ position:"absolute", top:TOP_H, left:0, width:SB_W, bottom:STAT_H, zIndex:1100, background:"rgba(4,10,22,0.99)", borderRight:"1px solid rgba(255,255,255,0.07)", display:"flex", flexDirection:"column", overflowY:"auto", overflowX:"hidden" }}>
 
-          {/* Search */}
           <SectionHeader icon="Search" title="Search Location" collapsed={!searchOpen} onToggle={() => setSearchOpen(p=>!p)}/>
           {searchOpen && (
             <div style={{ padding:"12px 12px 10px", borderBottom:"1px solid rgba(255,255,255,0.05)", flexShrink:0 }}>
@@ -971,7 +1166,6 @@ export default function SurveyMap() {
             </div>
           )}
 
-          {/* Layers */}
           <SectionHeader icon="Layers" title="Map Layers" collapsed={!layersOpen} onToggle={() => setLayersOpen(p=>!p)}/>
           {layersOpen && (
             <div style={{ flexShrink:0 }}>
@@ -985,7 +1179,6 @@ export default function SurveyMap() {
             </div>
           )}
 
-          {/* My Places */}
           <SectionHeader icon="Star" title="My Places" collapsed={!placesOpen} onToggle={() => setPlacesOpen(p=>!p)}/>
           {placesOpen && (
             <div style={{ flexShrink:0 }}>
@@ -1003,7 +1196,6 @@ export default function SurveyMap() {
             </div>
           )}
 
-          {/* GeoJSON Layers */}
           <SectionHeader icon="GeoJSON" title="GeoJSON Layers" collapsed={!geojsonOpen} onToggle={() => setGeojsonOpen(p=>!p)}/>
           {geojsonOpen && (
             <div style={{ flexShrink:0, borderBottom:"1px solid rgba(255,255,255,0.05)" }}>
@@ -1012,7 +1204,7 @@ export default function SurveyMap() {
                   <label style={{ flex:1, display:"flex", alignItems:"center", justifyContent:"center", gap:6, padding:"7px 10px", borderRadius:8, cursor:"pointer", background:"rgba(20,184,166,0.12)", border:"1px solid rgba(20,184,166,0.3)", color:"#2dd4bf", fontSize:11.5, fontWeight:600 }}>
                     <Ico name="Upload" size={12}/>Import<input type="file" accept=".geojson,.json" onChange={handleGeoJSONFileUpload} style={{ display:"none" }}/>
                   </label>
-                  <button onClick={() => geoJSON.handleExportGeoJSON({savedDrawings,route,measurePoints})} style={{ flex:1, display:"flex", alignItems:"center", justifyContent:"center", gap:6, padding:"7px 10px", borderRadius:8, cursor:"pointer", background:"rgba(34,197,94,0.12)", border:"1px solid rgba(34,197,94,0.3)", color:"#4ade80", fontSize:11.5, fontWeight:600 }}>
+                  <button onClick={() => exportGeoJSON(savedDrawings, route, measurePoints)} style={{ flex:1, display:"flex", alignItems:"center", justifyContent:"center", gap:6, padding:"7px 10px", borderRadius:8, cursor:"pointer", background:"rgba(34,197,94,0.12)", border:"1px solid rgba(34,197,94,0.3)", color:"#4ade80", fontSize:11.5, fontWeight:600 }}>
                     <Ico name="Export" size={12}/>Export
                   </button>
                 </div>
@@ -1033,12 +1225,9 @@ export default function SurveyMap() {
             </div>
           )}
 
-          {/* Tools */}
           <SectionHeader icon="Eye" title="Tools" collapsed={!toolsOpen} onToggle={() => setToolsOpen(p=>!p)}/>
           {toolsOpen && (
             <div style={{ flex:1, overflowY:"auto" }}>
-
-              {/* Draw */}
               <div style={{ padding:"12px 12px 10px", borderBottom:"1px solid rgba(255,255,255,0.05)" }}>
                 <div style={{ color:"rgba(255,255,255,0.28)", fontSize:9.5, fontWeight:700, letterSpacing:"0.1em", marginBottom:8, textTransform:"uppercase", fontFamily:"'DM Mono',monospace" }}>Draw Tool</div>
                 <div style={{ display:"flex", gap:4, marginBottom:8 }}>
@@ -1060,7 +1249,6 @@ export default function SurveyMap() {
                 }
               </div>
 
-              {/* Measure */}
               <div style={{ padding:"12px 12px 10px", borderBottom:"1px solid rgba(255,255,255,0.05)" }}>
                 <div style={{ color:"rgba(255,255,255,0.28)", fontSize:9.5, fontWeight:700, letterSpacing:"0.1em", marginBottom:8, textTransform:"uppercase", fontFamily:"'DM Mono',monospace" }}>Measure Tool</div>
                 {!measureMode
@@ -1084,13 +1272,11 @@ export default function SurveyMap() {
                 }
               </div>
 
-              {/* ── FILE FOLDER in desktop sidebar ── */}
               <div style={{ padding:"12px 12px 10px", borderBottom:"1px solid rgba(255,255,255,0.05)" }}>
                 <div style={{ color:"rgba(255,255,255,0.28)", fontSize:9.5, fontWeight:700, letterSpacing:"0.1em", marginBottom:10, textTransform:"uppercase", fontFamily:"'DM Mono',monospace" }}>File Folder</div>
                 <FileFolderPanel compact/>
               </div>
 
-              {/* Compass */}
               <div style={{ padding:"12px 12px 10px", borderBottom:"1px solid rgba(255,255,255,0.05)" }}>
                 <div style={{ color:"rgba(255,255,255,0.28)", fontSize:9.5, fontWeight:700, letterSpacing:"0.1em", marginBottom:8, textTransform:"uppercase", fontFamily:"'DM Mono',monospace" }}>Compass Navigation</div>
                 <PrimaryButton onClick={() => compass.compassNavActive?compass.stopCompassNav():compass.startCompassNav()} variant={compass.compassNavActive?"red":"cyan"}>
@@ -1098,14 +1284,12 @@ export default function SurveyMap() {
                 </PrimaryButton>
               </div>
 
-              {/* Survey */}
               <div style={{ padding:"12px 12px 10px", borderBottom:"1px solid rgba(255,255,255,0.05)" }}>
                 <div style={{ color:"rgba(255,255,255,0.28)", fontSize:9.5, fontWeight:700, letterSpacing:"0.1em", marginBottom:8, textTransform:"uppercase", fontFamily:"'DM Mono',monospace" }}>Survey Route</div>
                 <PrimaryButton onClick={handleToggleSurvey} variant={surveyMode?"red":"blue"}><Ico name={surveyMode?"Stop":"Record"} size={13}/>{surveyMode?"Stop Survey":"Start Survey"}</PrimaryButton>
                 {surveyMode&&<div style={{ marginTop:6, padding:"6px 10px", background:"rgba(248,113,113,0.09)", border:"1px solid rgba(248,113,113,0.22)", borderRadius:7, color:"#f87171", fontSize:11, textAlign:"center", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}><span style={{ animation:"blink 1s infinite" }}>●</span>RECORDING · {route.length} pts</div>}
               </div>
 
-              {/* More tools */}
               <div style={{ padding:"12px 12px 10px", borderBottom:"1px solid rgba(255,255,255,0.05)" }}>
                 <div style={{ color:"rgba(255,255,255,0.28)", fontSize:9.5, fontWeight:700, letterSpacing:"0.1em", marginBottom:8, textTransform:"uppercase", fontFamily:"'DM Mono',monospace" }}>More Tools</div>
                 <div style={{ display:"flex", flexDirection:"column", gap:5 }}>
@@ -1139,7 +1323,6 @@ export default function SurveyMap() {
           </div>
         )}
 
-        {/* Location info card (desktop) */}
         {locationInfo && !isMobile && (
           <div style={{ position:"absolute", top:"calc(var(--top-h) + 14px)", right:60, width:310, zIndex:1050, borderRadius:14, overflow:"hidden", boxShadow:"0 20px 60px rgba(0,0,0,0.7)", border:"1px solid rgba(255,255,255,0.09)", animation:"fadeSlideIn 0.22s ease", background:"rgba(5,12,24,0.97)", backdropFilter:"blur(24px)", fontFamily:"'DM Sans',sans-serif" }}>
             {locationInfo.photo&&(<div style={{ position:"relative", height:130, overflow:"hidden" }}><img src={locationInfo.photo} alt={locationInfo.name} style={{ width:"100%", height:"100%", objectFit:"cover" }}/><div style={{ position:"absolute", inset:0, background:"linear-gradient(to top,rgba(5,12,24,1) 0%,transparent 55%)" }}/><div style={{ position:"absolute", bottom:12, left:14, color:"#fff", fontWeight:700, fontSize:15 }}>{locationInfo.name}</div><button onClick={handleCloseLocationInfo} style={{ position:"absolute", top:10, right:10, background:"rgba(0,0,0,0.5)", border:"1px solid rgba(255,255,255,0.1)", color:"rgba(255,255,255,0.7)", borderRadius:6, width:26, height:26, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}><Ico name="Close" size={10}/></button></div>)}
@@ -1155,7 +1338,6 @@ export default function SurveyMap() {
           </div>
         )}
 
-        {/* Name modal (zIndex 9000 — above all sheets and backdrops) */}
         {showNameModal && (
           <div style={{ position:"fixed", inset:0, zIndex:9000, background:"rgba(0,0,0,0.72)", display:"flex", alignItems:"center", justifyContent:"center", padding:"0 16px", backdropFilter:"blur(10px)" }}>
             <div style={{ background:"rgba(7,18,32,0.98)", borderRadius:16, padding:26, width:"100%", maxWidth:300, boxShadow:"0 20px 60px rgba(0,0,0,0.8)", border:"1px solid rgba(74,158,255,0.18)", fontFamily:"'DM Sans',sans-serif" }}>
@@ -1170,19 +1352,17 @@ export default function SurveyMap() {
           </div>
         )}
 
-        {/* About modal */}
         {showAbout && (
           <div style={{ position:"fixed", inset:0, zIndex:3000, background:"rgba(0,0,0,0.75)", display:"flex", alignItems:"center", justifyContent:"center", padding:"0 16px", backdropFilter:"blur(12px)" }}>
             <div style={{ background:"rgba(5,12,24,0.98)", borderRadius:16, padding:28, width:"100%", maxWidth:360, boxShadow:"0 24px 72px rgba(0,0,0,0.85)", border:"1px solid rgba(74,158,255,0.18)", fontFamily:"'DM Sans',sans-serif" }}>
               <div style={{ display:"flex", alignItems:"center", justifyContent:"center", marginBottom:14 }}><div style={{ width:52, height:52, borderRadius:14, background:"linear-gradient(135deg,rgba(74,158,255,0.22),rgba(37,99,235,0.22))", border:"1px solid rgba(74,158,255,0.32)", display:"flex", alignItems:"center", justifyContent:"center" }}><Ico name="Compass" size={26} style={{ color:"#4a9eff" }}/></div></div>
               <div style={{ color:"#c8e0f8", fontWeight:700, fontSize:20, textAlign:"center", marginBottom:5 }}>SurveyMap Pro</div>
-              <div style={{ color:"rgba(255,255,255,0.32)", fontSize:12, textAlign:"center", marginBottom:18 }}>Version 5.4.0 · File Folder · ZoomControl · All Platforms</div>
+              <div style={{ color:"rgba(255,255,255,0.32)", fontSize:12, textAlign:"center", marginBottom:18 }}>Version 5.9.1 · QGIS-style DEM Elevation Draping + KML Clip Mask · KML/SHP/KMZ colour-coded by elevation</div>
               <PrimaryButton onClick={() => setShowAbout(false)} variant="blue"><Ico name="Check" size={13}/>Close</PrimaryButton>
             </div>
           </div>
         )}
 
-        {/* Shortcuts modal */}
         {showShortcuts && (
           <div style={{ position:"fixed", inset:0, zIndex:3000, background:"rgba(0,0,0,0.75)", display:"flex", alignItems:"center", justifyContent:"center", padding:"0 16px", backdropFilter:"blur(12px)" }}>
             <div style={{ background:"rgba(5,12,24,0.98)", borderRadius:16, padding:26, width:"100%", maxWidth:340, boxShadow:"0 24px 72px rgba(0,0,0,0.85)", border:"1px solid rgba(74,158,255,0.18)", fontFamily:"'DM Sans',sans-serif" }}>
@@ -1217,6 +1397,7 @@ export default function SurveyMap() {
           <div style={{ display:"flex", alignItems:"center", gap:8, flexShrink:0 }}>
             <span style={{ color:"rgba(255,255,255,0.38)", fontSize:10, fontFamily:"'DM Mono',monospace" }}>Z{mapZoom}</span>
             {cursorElevation!=null&&<span onClick={() => setElevOpen(true)} style={{ color:"#38bdf8", fontSize:10, fontFamily:"'DM Mono',monospace", cursor:"pointer", background:"rgba(56,189,248,0.07)", padding:"2px 8px", borderRadius:10, border:"1px solid rgba(56,189,248,0.18)", display:"flex", alignItems:"center", gap:3 }}><Ico name="Mountain" size={10}/>{Math.round(cursorElevation)} m</span>}
+            {demFileName&&demStats&&<span style={{ color:"#fb7185", fontSize:10, background:"rgba(251,113,133,0.09)", padding:"2px 8px", borderRadius:12, border:"1px solid rgba(251,113,133,0.22)", display:"flex", alignItems:"center", gap:3 }}>🏔 {Math.round(demStats.min)}–{Math.round(demStats.max)} m{demRasterData?" · draped":""}{kmlMask?" · clipped":""}</span>}
             {geoJSON.importedGeoJSONLayers.length>0&&<span style={{ color:"#2dd4bf", fontSize:10, background:"rgba(20,184,166,0.09)", padding:"2px 8px", borderRadius:12, border:"1px solid rgba(20,184,166,0.22)", display:"flex", alignItems:"center", gap:3 }}><Ico name="GeoJSON" size={10}/>{geoJSON.importedGeoJSONLayers.length} GeoJSON</span>}
             {importedCount>0&&<span style={{ color:"#60a5fa", fontSize:10, background:"rgba(74,158,255,0.09)", padding:"2px 8px", borderRadius:12, border:"1px solid rgba(74,158,255,0.22)", display:"flex", alignItems:"center", gap:3 }}>📁 {importedCount} file{importedCount!==1?"s":""}</span>}
             {compass.compassNavActive&&<span onClick={compass.stopCompassNav} style={{ color:"#38bdf8", fontSize:10, cursor:"pointer", background:"rgba(14,165,233,0.1)", padding:"2px 8px", borderRadius:12, border:"1px solid rgba(14,165,233,0.25)", display:"flex", alignItems:"center", gap:3 }}><span style={{ animation:"spin 2s linear infinite", display:"inline-block", width:8, height:8 }}>◈</span>{Math.round(((compass.compassHeading??0)%360+360)%360)}°</span>}

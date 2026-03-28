@@ -1,21 +1,8 @@
-/**
- * App.jsx
- * Location: src/App.jsx
- *
- * Folder structure (from your screenshot):
- *   src/component/SurveyMap.jsx        ← the map
- *   src/components/admin/              ← admin components
- *   src/pages/LoginPage.jsx            ← login page
- *   src/pages/AdminDashboard.jsx       ← admin pages
- */
-
 import React, { Suspense, lazy } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 
-// SurveyMap is in src/component/ (note: singular, not components)
 import SurveyMap from "./component/SurveyMap";
 
-// Admin pages — lazy loaded, isolated from map
 const LoginPage      = lazy(() => import("./pages/LoginPage"));
 const AdminDashboard = lazy(() => import("./pages/AdminDashboard"));
 const AdminUsers     = lazy(() => import("./pages/AdminUsers"));
@@ -40,11 +27,11 @@ function Loader() {
   );
 }
 
+// ── Fixed: now checks accessToken + role instead of adminToken ─────────────
 function Protected({ children }) {
-  const token =
-    localStorage.getItem("adminToken") ||
-    sessionStorage.getItem("adminToken");
-  if (!token) return <Navigate to="/login" replace />;
+  const token = localStorage.getItem("accessToken");
+  const role  = localStorage.getItem("role");
+  if (!token || role !== "ADMIN") return <Navigate to="/login" replace />;
   return children;
 }
 
@@ -86,7 +73,7 @@ export default function App() {
     <BrowserRouter>
       <Routes>
 
-        {/* PUBLIC — map, always accessible, zero protection */}
+        {/* PUBLIC — map */}
         <Route path="/" element={<SurveyMap />} />
 
         {/* PUBLIC — login */}
@@ -132,7 +119,7 @@ export default function App() {
         } />
 
         {/* Catch-all → map */}
-        <Route path="*" element={<Navigate to="/" replace />} />
+        <Route path="/*splat" element={<Navigate to="/" replace />} />
 
       </Routes>
     </BrowserRouter>

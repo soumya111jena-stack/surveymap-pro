@@ -1,259 +1,353 @@
 /**
- * GeoJSONLoader.jsx — SurveyMap Pro
+ * GeoJSONLoader.jsx — SurveyMap Pro v5.5
+ * ─────────────────────────────────────────────────────────────────────────────
+ * FILE LOCATION: src/loaders/GeoJSONLoader.jsx
  *
- * Loads .geojson / .json files onto the Leaflet map:
- *  - Polygons / MultiPolygons  — filled with blue border (survey boundaries)
- *  - LineStrings / MultiLines  — colored polyline
- *  - Points / MultiPoints      — dot markers with name labels
- *  - GeometryCollection        — handles mixed geometry
- *  - Rich dark popup for every feature
- *  - Smart color per feature type
- *  - Mobile-safe fitBounds
+ * FIXES APPLIED:
+ *
+ *  FIX 1 — Removed animate:false from fitBounds / setView
+ *    animate:false leaves Leaflet's internal _animatingZoom / _flyingTo flags
+ *    as true on some versions, permanently blocking user zoom/pan after load.
+ *    Solution: let the animation run naturally, then unlock in moveend.
+ *
+ *  FIX 2 — forceUnlock / reEnableHandlers moved into map.once('moveend')
+ *    These were previously called before fitBounds settled, so the map
+ *    re-locked itself after the unlock. Now they fire only after the map
+ *    finishes moving, and onDone() is called from inside moveend too.
+ *
+ *  FIX 3 — Added _animatingZoom and _zooming to forceUnlock()
+ *    These are the exact flags Leaflet checks before accepting zoom input.
+ *    Without resetting them, scroll/button zoom stays silently blocked even
+ *    after dragging and other handlers are re-enabled.
+ *
+ *  ORIGINAL FIX (kept) — refs updated synchronously during render
+ *    mapRef.current = map and fileRef.current = file are set during render
+ *    (not inside useEffect) so they are always ready before any effect fires.
  */
+
 import { useEffect, useRef } from "react";
 import { useMap } from "react-leaflet";
 import L from "leaflet";
 
-// ── Color scheme per geometry type ───────────────────────────────────────────
-const TYPE_COLORS = {
-  Point:              { stroke: "#60a5fa", fill: "#60a5fa" },
-  MultiPoint:         { stroke: "#60a5fa", fill: "#60a5fa" },
-  LineString:         { stroke: "#fb923c", fill: "#fb923c" },
-  MultiLineString:    { stroke: "#fb923c", fill: "#fb923c" },
-  Polygon:            { stroke: "#34d399", fill: "#34d399" },
-  MultiPolygon:       { stroke: "#34d399", fill: "#34d399" },
-  GeometryCollection: { stroke: "#a78bfa", fill: "#a78bfa" },
+/* ── Styles ──────────────────────────────────────────────────────────────── */
+const POINT_STYLE = {
+  radius: 8, fillColor: "#f59e0b", color: "#fff",
+  weight: 2, opacity: 1, fillOpacity: 0.9,
+};
+const LINE_STYLE = {
+  color: "#4a9eff", weight: 3, opacity: 0.9,
+};
+const POLYGON_STYLE = {
+  color: "#34d399", weight: 2.5, fillColor: "#34d399",
+  fillOpacity: 0.2, opacity: 0.9,
 };
 
-function getColors(feature) {
-  const type = feature.geometry?.type || "Polygon";
-  return TYPE_COLORS[type] || { stroke: "#60a5fa", fill: "#60a5fa" };
-}
-
-// ── Rich dark popup ───────────────────────────────────────────────────────────
-function buildPopup(feature) {
-  const p     = feature.properties || {};
-  const type  = feature.geometry?.type || "";
-  const color = getColors(feature);
-
-  const title = p.name || p.Name || p.NAME || p.title || p.TITLE
-    || p.id || p.ID || p.label || type || "Feature";
-
-  const skip = new Set(["name","Name","NAME","title","TITLE","id","ID","label"]);
-  const fieldRows = Object.entries(p)
-    .filter(([k, v]) => !skip.has(k) && v !== null && v !== undefined && String(v).trim() !== "")
-    .map(([k, v]) =>
-      `<tr>
-        <td style="font-weight:700;color:${color.stroke};padding:3px 10px 3px 0;font-size:10px;
-                   text-transform:uppercase;letter-spacing:.04em;white-space:nowrap;vertical-align:top">${k}</td>
-        <td style="color:#e2e8f0;padding:3px 0;font-size:11px;word-break:break-word">${v}</td>
-      </tr>`
-    ).join("");
-
-  // Coordinates row for points
-  const coords = feature.geometry?.coordinates;
-  const isPoint = type === "Point";
-  const coordRow = (coords && isPoint)
-    ? `<tr>
-        <td style="font-weight:700;color:${color.stroke};padding:3px 10px 3px 0;font-size:10px;
-                   text-transform:uppercase;letter-spacing:.04em">Location</td>
-        <td style="color:#e2e8f0;font-size:11px;font-family:monospace">
-          ${Math.abs(coords[1]).toFixed(6)}°${coords[1]>=0?"N":"S"}
-          ${Math.abs(coords[0]).toFixed(6)}°${coords[0]>=0?"E":"W"}
-        </td>
-      </tr>`
-    : "";
-
-  // Gradient by type
-  const gradients = {
-    Polygon:        "linear-gradient(135deg,#064e3b,#065f46)",
-    MultiPolygon:   "linear-gradient(135deg,#064e3b,#065f46)",
-    LineString:     "linear-gradient(135deg,#431407,#7c2d12)",
-    MultiLineString:"linear-gradient(135deg,#431407,#7c2d12)",
-    Point:          "linear-gradient(135deg,#1e3a5f,#1e40af)",
-    MultiPoint:     "linear-gradient(135deg,#1e3a5f,#1e40af)",
-  };
-  const grad = gradients[type] || "linear-gradient(135deg,#1e1b4b,#312e81)";
-
-  return `
-    <div style="font-family:'Segoe UI',system-ui,sans-serif;min-width:175px;max-width:290px;
-                background:#0f172a;border-radius:6px;overflow:hidden;margin:-13px -20px -13px">
-      <div style="background:${grad};padding:9px 14px;display:flex;align-items:center;gap:7px">
-        <div style="width:9px;height:9px;border-radius:${isPoint?"50%":"2px"};background:${color.stroke};
-                    box-shadow:0 0 6px ${color.stroke}80;flex-shrink:0"></div>
-        <div style="flex:1;overflow:hidden">
-          <div style="color:#f1f5f9;font-weight:700;font-size:12px;
-                      overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${title}</div>
-          <div style="color:rgba(255,255,255,0.4);font-size:9px;margin-top:1px;letter-spacing:.04em">${type.toUpperCase()}</div>
-        </div>
-      </div>
-      ${(fieldRows || coordRow)
-        ? `<div style="padding:6px 14px 10px">
-             <table style="border-collapse:collapse;width:100%">
-               ${fieldRows}${coordRow}
-             </table>
-           </div>`
-        : `<div style="padding:8px 14px;color:#475569;font-size:10px;font-style:italic">No attributes</div>`
-      }
-    </div>`;
-}
-
-// ── Point marker ──────────────────────────────────────────────────────────────
-function makeGeoJSONMarker(latlng, name, color) {
-  return L.marker(latlng, {
-    icon: L.divIcon({
-      className: "",
-      html: `
-        <div style="display:flex;flex-direction:column;align-items:center;pointer-events:none">
-          <div style="width:13px;height:13px;background:${color};border:2px solid #fff;
-                      border-radius:50%;box-shadow:0 2px 6px rgba(0,0,0,0.55)"></div>
-          ${name
-            ? `<div style="margin-top:3px;background:rgba(15,23,42,0.9);color:#f1f5f9;
-                           font-size:10px;font-weight:600;padding:2px 6px;border-radius:3px;
-                           white-space:nowrap;max-width:160px;overflow:hidden;
-                           text-overflow:ellipsis;font-family:'DM Sans',sans-serif;
-                           box-shadow:0 1px 4px rgba(0,0,0,0.5)">${name}</div>`
-            : ""}
-        </div>`,
-      iconAnchor: [6, 6],
-      popupAnchor: [0, -10],
-    }),
-  });
-}
-
-// ── Parse & validate GeoJSON ──────────────────────────────────────────────────
-function parseGeoJSON(text) {
-  const data = JSON.parse(text);
-
-  // Accept: FeatureCollection
-  if (data.type === "FeatureCollection") {
-    // geojson.io sometimes exports with empty features array — check
-    if (!data.features || data.features.length === 0) {
-      throw new Error("NO_FEATURES");
-    }
-    return data;
-  }
-
-  // Single Feature
-  if (data.type === "Feature") {
-    if (!data.geometry) throw new Error("Feature has no geometry.");
-    return { type: "FeatureCollection", features: [data] };
-  }
-
-  // Raw geometry types — wrap in Feature + FeatureCollection
-  const GEOM_TYPES = ["Point","MultiPoint","LineString","MultiLineString",
-                      "Polygon","MultiPolygon","GeometryCollection"];
-  if (GEOM_TYPES.includes(data.type)) {
-    return {
-      type: "FeatureCollection",
-      features: [{ type: "Feature", geometry: data, properties: {} }],
-    };
-  }
-
-  throw new Error("Not a valid GeoJSON file. Expected FeatureCollection, Feature, or Geometry.");
-}
-
-// ════════════════════════════════════════════════════════════════════════════
-export default function GeoJSONLoader({ file, onDone }) {
-  const map      = useMap();
+/* ─────────────────────────────────────────────────────────────────────────────
+   GeoJSONLoader
+───────────────────────────────────────────────────────────────────────────── */
+function GeoJSONLoader({ file, triggerKey, onDone }) {
+  const map     = useMap();
+  const mapRef  = useRef(null);
+  const fileRef = useRef(null);
   const layerRef = useRef(null);
 
+  // ── Update refs SYNCHRONOUSLY during render (not in useEffect) ───────────
+  // Guaranteed to be current before any effect fires.
+  mapRef.current  = map;
+  fileRef.current = file;
+
   useEffect(() => {
-    if (!file) return;
+    if (!triggerKey) return;
+
+    const m = mapRef.current;
+    const f = fileRef.current;
+
+    if (!m) {
+      console.error("[GeoJSONLoader] ❌ map is null");
+      onDone?.(); return;
+    }
+    if (!f) {
+      console.error("[GeoJSONLoader] ❌ file is null");
+      onDone?.(); return;
+    }
+
+    console.log(`[GeoJSONLoader] Loading "${f.name}" (${f.size} bytes)`);
 
     // Remove previous layer
-    if (layerRef.current) { map.removeLayer(layerRef.current); layerRef.current = null; }
+    if (layerRef.current) {
+      try { m.removeLayer(layerRef.current); } catch (_) {}
+      layerRef.current = null;
+    }
 
     const reader = new FileReader();
 
     reader.onload = (evt) => {
       try {
-        const geojson = parseGeoJSON(evt.target.result);
+        let text = evt.target.result;
 
-        if (!geojson.features?.length) {
-          alert("GeoJSON file has no features.\n\nMake sure you drew something on geojson.io before downloading.");
-          onDone?.();
-          return;
+        // Strip UTF-8 BOM
+        if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+
+        // Detect JS comments — not valid JSON
+        if (text.trimStart().startsWith("//") || /\n\s*\/\//.test(text)) {
+          throw new Error(
+            "File contains JavaScript comments (// ...) which are not valid JSON.\n\n" +
+            "GeoJSON must be pure JSON — remove all // comment lines."
+          );
         }
 
-        const layer = L.geoJSON(geojson, {
-          // ── Polygon / Line styles ──────────────────────────────────────
+        // Parse JSON
+        let raw;
+        try {
+          raw = JSON.parse(text);
+        } catch (e) {
+          throw new Error(`Invalid JSON: ${e.message}`);
+        }
+
+        // Normalize to FeatureCollection
+        const fc = normalizeToFeatureCollection(raw);
+        console.log(`[GeoJSONLoader] ${fc.features.length} feature(s)`);
+
+        if (fc.features.length === 0) {
+          alert(
+            `"${f.name}" has 0 features — nothing to display.\n\n` +
+            `The file is valid GeoJSON but the features array is empty.\n` +
+            `Add Points, Lines or Polygons to the file first.`
+          );
+          onDone?.(); return;
+        }
+
+        // Compute bounds from raw coordinates
+        // (circleMarker/marker don't contribute to layer.getBounds())
+        const bounds = computeBoundsFromGeoJSON(fc);
+
+        // Build Leaflet layer
+        const currentMap = mapRef.current;
+        if (!currentMap) throw new Error("Map became unavailable during parsing");
+
+        const layer = L.geoJSON(fc, {
           style: (feature) => {
-            const { stroke, fill } = getColors(feature);
-            const type = feature.geometry?.type || "";
-            const isPoly = type.includes("Polygon");
-            return {
-              color:       stroke,
-              weight:      isPoly ? 2.5 : 3,
-              opacity:     0.9,
-              fillColor:   fill,
-              fillOpacity: isPoly ? 0.15 : 0,
-              dashArray:   type.includes("Line") ? null : null,
-            };
+            const t = feature?.geometry?.type || "";
+            if (t === "Polygon"    || t === "MultiPolygon")    return POLYGON_STYLE;
+            if (t === "LineString" || t === "MultiLineString") return LINE_STYLE;
+            return {};
           },
 
-          // ── Point markers ──────────────────────────────────────────────
           pointToLayer: (feature, latlng) => {
-            const { stroke } = getColors(feature);
-            const p    = feature.properties || {};
-            const name = p.name || p.Name || p.NAME || p.title || p.label || "";
-            return makeGeoJSONMarker(latlng, name, stroke);
-          },
-
-          // ── Popups ─────────────────────────────────────────────────────
-          onEachFeature: (feature, featureLayer) => {
-            featureLayer.bindPopup(buildPopup(feature), {
-              maxWidth: 320,
-              className: "geojson-popup",
-            });
-
-            // Highlight on hover for polygons/lines
-            const type = feature.geometry?.type || "";
-            if (type.includes("Polygon") || type.includes("Line")) {
-              const { stroke } = getColors(feature);
-              featureLayer.on("mouseover", () => {
-                featureLayer.setStyle({ weight: 4, opacity: 1, fillOpacity: 0.28 });
-              });
-              featureLayer.on("mouseout", () => {
-                layer.resetStyle(featureLayer);
+            const p     = feature.properties || {};
+            const label = p.name || p.Name || p.title || p.label || "";
+            const marker = L.circleMarker(latlng, POINT_STYLE);
+            if (label) {
+              marker.bindTooltip(String(label), {
+                permanent: false, direction: "top",
               });
             }
+            return marker;
           },
-        }).addTo(map);
 
+          onEachFeature: (feature, lyr) => {
+            const p     = feature.properties || {};
+            const title = p.name || p.Name || p.title || p.id || "Feature";
+            const rows  = Object.entries(p)
+              .filter(([, v]) => v !== null && v !== undefined && v !== "")
+              .slice(0, 10)
+              .map(([k, v]) =>
+                `<tr>
+                  <td style="font-weight:700;color:#555;padding:2px 8px 2px 0;
+                    font-size:11px;text-transform:uppercase;white-space:nowrap">
+                    ${escHtml(k)}</td>
+                  <td style="color:#111;padding:2px 0;font-size:12px">
+                    ${escHtml(String(v))}</td>
+                </tr>`
+              ).join("");
+
+            const isPoint  = feature.geometry?.type === "Point";
+            const coords   = feature.geometry?.coordinates;
+            const coordRow = (isPoint && coords?.length >= 2)
+              ? `<tr>
+                  <td style="font-weight:700;color:#555;padding:2px 8px 2px 0;
+                    font-size:11px;text-transform:uppercase">Location</td>
+                  <td style="color:#111;font-size:12px">
+                    ${Math.abs(coords[1]).toFixed(6)}°${coords[1]<0?"S":"N"}&nbsp;
+                    ${Math.abs(coords[0]).toFixed(6)}°${coords[0]<0?"W":"E"}
+                  </td></tr>`
+              : "";
+
+            lyr.bindPopup(
+              `<div style="font-family:sans-serif;min-width:160px;max-width:280px">
+                <div style="background:#0f172a;color:#4ade80;padding:7px 12px;
+                  margin:-13px -20px 10px;font-weight:800;font-size:13px;
+                  border-radius:4px 4px 0 0">
+                  ${escHtml(String(title))}
+                </div>
+                ${(rows || coordRow)
+                  ? `<table style="border-collapse:collapse;width:100%">
+                      ${rows}${coordRow}</table>`
+                  : `<div style="color:#888;font-size:12px;font-style:italic">
+                      No properties</div>`
+                }
+              </div>`,
+              { maxWidth: 300 }
+            );
+          },
+        });
+
+        // Add layer to map
+        layer.addTo(currentMap);
         layerRef.current = layer;
+        console.log("[GeoJSONLoader] ✅ Layer added to map");
 
-        // Fly to bounds
-        const bounds = layer.getBounds();
-        if (bounds.isValid()) {
-          const isMobile = window.innerWidth <= 640;
-          map.fitBounds(bounds, {
-            padding:  isMobile ? [28, 28] : [50, 50],
-            maxZoom:  17,
-            animate:  true,
-            duration: 1.0,
+        // ── FIX 1 + FIX 2: Fit bounds WITHOUT animate:false, unlock AFTER moveend ──
+        if (bounds && bounds.isValid()) {
+          const isOnePoint =
+            fc.features.length === 1 &&
+            fc.features[0]?.geometry?.type === "Point";
+
+          // moveend fires once the camera settles — safe to unlock here
+          currentMap.once("moveend", () => {
+            reEnableHandlers(currentMap);
+            forceUnlock(currentMap);
+            console.log("[GeoJSONLoader] ✅ Done");
+            onDone?.();
           });
+
+          if (isOnePoint) {
+            const c = fc.features[0].geometry.coordinates;
+            // FIX 1: no animate:false — let Leaflet finish cleanly
+            currentMap.setView([c[1], c[0]], 16);
+          } else {
+            // FIX 1: no animate:false — let Leaflet finish cleanly
+            currentMap.fitBounds(bounds, { padding: [50, 50], maxZoom: 18 });
+          }
+        } else {
+          // No valid bounds — unlock immediately
+          reEnableHandlers(currentMap);
+          forceUnlock(currentMap);
+          console.log("[GeoJSONLoader] ✅ Done (no bounds)");
+          onDone?.();
         }
 
-        onDone?.();
       } catch (err) {
-        console.error("GeoJSON parse error:", err);
-        if (err.message === "NO_FEATURES") {
-          alert("GeoJSON file has no features.\n\nOn geojson.io: draw a shape or place a marker FIRST, then save.");
-        } else {
-          alert("Failed to load GeoJSON:\n" + err.message);
-        }
+        console.error("[GeoJSONLoader] ❌", err);
+        alert(`Failed to load GeoJSON.\n\n${err.message}`);
         onDone?.();
       }
     };
 
-    reader.onerror = () => { alert("Could not read file."); onDone?.(); };
-    reader.readAsText(file);
+    reader.onerror = () => {
+      alert("Could not read the file. Please try again.");
+      onDone?.();
+    };
+
+    reader.readAsText(f, "UTF-8");
 
     return () => {
-      if (layerRef.current) { map.removeLayer(layerRef.current); layerRef.current = null; }
+      if (layerRef.current) {
+        try { mapRef.current?.removeLayer(layerRef.current); } catch (_) {}
+        layerRef.current = null;
+      }
     };
-  }, [file, map, onDone]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [triggerKey]);
 
   return null;
 }
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   normalizeToFeatureCollection
+───────────────────────────────────────────────────────────────────────────── */
+function normalizeToFeatureCollection(data) {
+  if (!data || typeof data !== "object") throw new Error("Not a JSON object.");
+
+  const GEOM = new Set([
+    "Point","MultiPoint","LineString","MultiLineString",
+    "Polygon","MultiPolygon","GeometryCollection",
+  ]);
+  const t = data.type;
+
+  if (t === "FeatureCollection")
+    return { type: "FeatureCollection", features: Array.isArray(data.features) ? data.features : [] };
+  if (t === "Feature")
+    return { type: "FeatureCollection", features: [data] };
+  if (t && GEOM.has(t))
+    return { type: "FeatureCollection", features: [{ type: "Feature", geometry: data, properties: {} }] };
+  if (Array.isArray(data.features))
+    return { type: "FeatureCollection", features: data.features };
+
+  throw new Error(
+    `Not a valid GeoJSON file.\nType: "${t || "(missing)"}"\n` +
+    `Expected: FeatureCollection, Feature, Point, Polygon, LineString, etc.`
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   computeBoundsFromGeoJSON
+   Manual coordinate extraction — works for Points (circleMarker has no bounds)
+───────────────────────────────────────────────────────────────────────────── */
+function computeBoundsFromGeoJSON(fc) {
+  const pts = [];
+  const walk = (geom) => {
+    if (!geom) return;
+    switch (geom.type) {
+      case "Point":
+        if (geom.coordinates?.length >= 2)
+          pts.push([geom.coordinates[1], geom.coordinates[0]]);
+        break;
+      case "MultiPoint": case "LineString":
+        (geom.coordinates || []).forEach(c => { if (c?.length >= 2) pts.push([c[1], c[0]]); });
+        break;
+      case "MultiLineString": case "Polygon":
+        (geom.coordinates || []).forEach(r => (r || []).forEach(c => { if (c?.length >= 2) pts.push([c[1], c[0]]); }));
+        break;
+      case "MultiPolygon":
+        (geom.coordinates || []).forEach(p => (p || []).forEach(r => (r || []).forEach(c => { if (c?.length >= 2) pts.push([c[1], c[0]]); })));
+        break;
+      case "GeometryCollection":
+        (geom.geometries || []).forEach(walk);
+        break;
+      default: break;
+    }
+  };
+  (fc.features || []).forEach(f => { if (f?.geometry) walk(f.geometry); });
+  if (pts.length === 0) return null;
+  try { const b = L.latLngBounds(pts); return b.isValid() ? b : null; } catch (_) { return null; }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   reEnableHandlers
+───────────────────────────────────────────────────────────────────────────── */
+function reEnableHandlers(m) {
+  if (!m) return;
+  ["dragging","scrollWheelZoom","touchZoom","doubleClickZoom","keyboard","boxZoom","tap"]
+    .forEach(h => { try { if (m[h]?.enable) m[h].enable(); } catch (_) {} });
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   forceUnlock
+   FIX 3: Added _animatingZoom and _zooming — the exact internal flags Leaflet
+   checks before accepting scroll-wheel or button zoom input.
+───────────────────────────────────────────────────────────────────────────── */
+function forceUnlock(m) {
+  if (!m) return;
+  try { if (m._flyingTo)    m._flyingTo    = false; } catch (_) {}
+  try { if (m._flyToFrame)  { cancelAnimationFrame(m._flyToFrame); m._flyToFrame = null; } } catch (_) {}
+  try { if (m._panTransition) m._panTransition = null; } catch (_) {}
+  // FIX 3: reset zoom-lock flags
+  try { m._animatingZoom = false; } catch (_) {}
+  try { m._zooming       = false; } catch (_) {}
+  try { if (m._container) m._container.style.pointerEvents = ""; } catch (_) {}
+  try { m.invalidateSize({ animate: false }); } catch (_) {}
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   escHtml
+───────────────────────────────────────────────────────────────────────────── */
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+export default GeoJSONLoader;

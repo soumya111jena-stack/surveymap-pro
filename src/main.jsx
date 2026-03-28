@@ -4,7 +4,11 @@ import App from './App.jsx'
 import 'leaflet/dist/leaflet.css'
 import 'leaflet-geosearch/dist/geosearch.css'
 import './leafletFix'
-window.CESIUM_BASE_URL = "/node_modules/cesium/Build/Cesium/";
+
+// ── Cesium base URL ────────────────────────────────────────────────────────
+// In development: Vite serves from node_modules via vite-plugin-cesium
+// In production:  dist/cesium/ is copied by vite-plugin-static-copy
+window.CESIUM_BASE_URL = "/cesium/";
 
 // ⚠️ React.StrictMode removed intentionally.
 // StrictMode mounts→unmounts→remounts every component in development,

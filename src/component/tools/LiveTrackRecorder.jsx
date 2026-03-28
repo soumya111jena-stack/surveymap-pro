@@ -1,6 +1,14 @@
 /**
- * LiveTrackRecorder.jsx -- SurveyMap Pro v5.1 (Professional Mobile UI)
- * Redesigned: compact typography, refined dark instrument-panel aesthetic
+ * LiveTrackRecorder.jsx -- SurveyMap Pro v5.3.0
+ * ─────────────────────────────────────────────────────────────────────────────
+ * CHANGES FROM v5.2.0:
+ *
+ *  ✅ syncTrack prop — when recording stops, uploads track to backend with:
+ *       - name, startedAt, endedAt, distanceMeters
+ *       - first photo taken during tracking (if any) as multipart upload
+ *  ✅ sessionClientId prop — links track to the active survey session
+ *  ✅ All export formats unchanged (GPX, KML, KMZ, GeoJSON, CSV)
+ *  ✅ All existing UI, GPS, waypoint, auto-pause logic unchanged
  */
 
 import React, { useState, useRef, useEffect, useCallback } from "react";
@@ -88,16 +96,134 @@ async function getBattery() {
   return null;
 }
 
+/* ─────────────────────────────────────────────────────────────────────────────
+   Environment detection
+───────────────────────────────────────────────────────────────────────────── */
+function isCapacitor() {
+  try {
+    return !!(
+      window.Capacitor?.isNativePlatform?.() === true ||
+      window.Capacitor?.platform === "android" ||
+      window.Capacitor?.platform === "ios" ||
+      window.Capacitor?.isPluginAvailable?.("Filesystem")
+    );
+  } catch (_) { return false; }
+}
+
+function isAndroidWebView() {
+  return /Android/i.test(navigator.userAgent) && !isCapacitor();
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   toBase64
+───────────────────────────────────────────────────────────────────────────── */
+function toBase64(content) {
+  if (content instanceof Uint8Array) {
+    let bin = "";
+    for (let i = 0; i < content.byteLength; i++) bin += String.fromCharCode(content[i]);
+    return btoa(bin);
+  }
+  if (content instanceof ArrayBuffer) return toBase64(new Uint8Array(content));
+  try {
+    return btoa(
+      encodeURIComponent(String(content))
+        .replace(/%([0-9A-F]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+    );
+  } catch (_) {
+    return btoa(unescape(encodeURIComponent(String(content))));
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   androidSafeDownload
+───────────────────────────────────────────────────────────────────────────── */
+async function androidSafeDownload(content, filename, mime) {
+
+  if (isCapacitor()) {
+    let Filesystem, Directory, Share;
+    try {
+      ({ Filesystem, Directory } = await import("@capacitor/filesystem"));
+      ({ Share }                 = await import("@capacitor/share"));
+    } catch (_) {
+      alert(
+        "Export plugins not installed.\n\n" +
+        "Run:\n  npm install @capacitor/filesystem @capacitor/share\n" +
+        "  npx cap sync android\nThen rebuild the APK."
+      );
+      return;
+    }
+    try { await Filesystem.requestPermissions(); } catch (_) {}
+    const base64   = toBase64(content);
+    const filePath = `SurveyMapPro/${filename}`;
+    const writeTargets = [Directory.Documents, Directory.ExternalStorage, Directory.Cache].filter(Boolean);
+    let fileUri = null, lastError = null;
+    for (const dir of writeTargets) {
+      try {
+        const result = await Filesystem.writeFile({ path: filePath, data: base64, directory: dir, recursive: true });
+        if (result?.uri) { fileUri = result.uri; break; }
+      } catch (e) { lastError = e; }
+    }
+    if (!fileUri) {
+      alert(`Could not save "${filename}".\nError: ${lastError?.message || lastError}\nFix: Settings → Apps → SurveyMap Pro → Permissions → Storage → Allow`);
+      return;
+    }
+    try {
+      const cs = await Share.canShare();
+      if (cs?.value !== false) {
+        await Share.share({ title: filename, text: `SurveyMap Pro track — ${filename}`, url: fileUri, dialogTitle: `Open or save ${filename}` });
+      } else {
+        alert(`Track saved!\nFiles app → Documents → SurveyMapPro → ${filename}`);
+      }
+    } catch (shareErr) {
+      const dismissed = ["Share canceled", "shareSheet: canceled"].some(m => shareErr?.message?.includes(m));
+      if (!dismissed) alert(`Track saved!\nFiles app → Documents → SurveyMapPro → ${filename}`);
+    }
+    return;
+  }
+
+  if (isAndroidWebView()) {
+    if (navigator.share && navigator.canShare) {
+      try {
+        const blob = new Blob([content], { type: mime });
+        const file = new File([blob], filename, { type: mime });
+        if (navigator.canShare({ files: [file] })) {
+          await navigator.share({ title: filename, text: "SurveyMap Pro track export", files: [file] });
+          return;
+        }
+      } catch (e) { if (e.name !== "AbortError") console.warn("[LiveTrack Export] Web Share failed:", e); }
+    }
+    try {
+      let dataUri;
+      if (content instanceof Uint8Array || content instanceof ArrayBuffer) {
+        const bytes = content instanceof Uint8Array ? content : new Uint8Array(content);
+        let bin = ""; for (let i = 0; i < bytes.byteLength; i++) bin += String.fromCharCode(bytes[i]);
+        dataUri = `data:${mime};base64,${btoa(bin)}`;
+      } else {
+        dataUri = `data:${mime};charset=utf-8,${encodeURIComponent(String(content))}`;
+      }
+      const a = Object.assign(document.createElement("a"), { href: dataUri, download: filename, style: "display:none" });
+      document.body.appendChild(a); a.click();
+      setTimeout(() => document.body.removeChild(a), 1000);
+      setTimeout(() => { try { window.open(dataUri, "_blank"); } catch (_) {} }, 400);
+      return;
+    } catch (e) { console.warn("[LiveTrack Export] Data URI failed:", e); }
+  }
+
+  const blob = new Blob([content], { type: mime });
+  const url  = URL.createObjectURL(blob);
+  const a    = Object.assign(document.createElement("a"), { href: url, download: filename, style: "display:none" });
+  document.body.appendChild(a); a.click();
+  setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 5000);
+}
+
 /* --- IndexedDB ------------------------------------------------------------ */
 function openDB() {
   return new Promise((res, rej) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = e => {
       const db = e.target.result;
-      if (!db.objectStoreNames.contains(STORE_TRACKS))
-        db.createObjectStore(STORE_TRACKS, { keyPath:"id" });
-      if (!db.objectStoreNames.contains(STORE_PHOTOS))
-        db.createObjectStore(STORE_PHOTOS, { keyPath:"id" });
+      if (!db.objectStoreNames.contains(STORE_TRACKS)) db.createObjectStore(STORE_TRACKS, { keyPath:"id" });
+      if (!db.objectStoreNames.contains(STORE_PHOTOS)) db.createObjectStore(STORE_PHOTOS, { keyPath:"id" });
     };
     req.onsuccess = e => res(e.target.result);
     req.onerror   = e => rej(e.target.error);
@@ -115,9 +241,7 @@ async function dbPut(store, value) {
 }
 
 function esc(s) {
-  return String(s||"")
-    .replace(/&/g,"&amp;").replace(/</g,"&lt;")
-    .replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+  return String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 }
 
 /* --- Export builders ------------------------------------------------------ */
@@ -252,14 +376,6 @@ function buildZip(files) {
   return out;
 }
 
-function dl(content, filename, mime) {
-  const blob = content instanceof Uint8Array
-    ? new Blob([content],{type:mime}) : new Blob([content],{type:mime});
-  const url = URL.createObjectURL(blob);
-  Object.assign(document.createElement("a"),{href:url,download:filename}).click();
-  setTimeout(()=>URL.revokeObjectURL(url),5000);
-}
-
 /* --- Leaflet icons -------------------------------------------------------- */
 function flagIcon(color, label) {
   return L.divIcon({
@@ -306,76 +422,44 @@ const POS_ICON = L.divIcon({
 function StatCell({ label, value, unit, color=T.text, wide=false }) {
   return (
     <div style={{
-      background: T.surface,
-      border: `1px solid ${T.border}`,
-      borderRadius: 7,
-      padding: "5px 8px 6px",
-      display: "flex",
-      flexDirection: "column",
-      gap: 1,
+      background: T.surface, border: `1px solid ${T.border}`,
+      borderRadius: 7, padding: "5px 8px 6px",
+      display: "flex", flexDirection: "column", gap: 1,
       gridColumn: wide ? "span 2" : undefined,
     }}>
-      <div style={{
-        fontSize: 8,
-        fontWeight: 600,
-        letterSpacing: "0.11em",
-        color: T.textFaint,
-        textTransform: "uppercase",
-        fontFamily: FONT_MONO,
-        lineHeight: 1,
-      }}>{label}</div>
-      <div style={{ display:"flex", alignItems:"baseline", gap: 2 }}>
-        <span style={{
-          fontSize: 13,
-          fontWeight: 700,
-          color,
-          fontFamily: FONT_MONO,
-          lineHeight: 1.1,
-          letterSpacing: "-0.02em",
-        }}>{value ?? "--"}</span>
+      <div style={{ fontSize:8, fontWeight:600, letterSpacing:"0.11em", color:T.textFaint,
+        textTransform:"uppercase", fontFamily:FONT_MONO, lineHeight:1 }}>{label}</div>
+      <div style={{ display:"flex", alignItems:"baseline", gap:2 }}>
+        <span style={{ fontSize:13, fontWeight:700, color, fontFamily:FONT_MONO,
+          lineHeight:1.1, letterSpacing:"-0.02em" }}>{value ?? "--"}</span>
         {value != null && unit && (
-          <span style={{
-            fontSize: 8,
-            color: T.textFaint,
-            fontFamily: FONT_MONO,
-            letterSpacing: "0.04em",
-          }}>{unit}</span>
+          <span style={{ fontSize:8, color:T.textFaint, fontFamily:FONT_MONO,
+            letterSpacing:"0.04em" }}>{unit}</span>
         )}
       </div>
     </div>
   );
 }
 
-/* --- Divider -------------------------------------------------------------- */
 function Divider() {
   return <div style={{ height:1, background:T.border, margin:"0 -14px" }}/>;
 }
 
-/* --- Modal ---------------------------------------------------------------- */
 function Modal({ children, onClose }) {
   return (
-    <div
-      style={{
-        position:"fixed",inset:0,zIndex:9999,
-        background:"rgba(0,0,0,0.72)",backdropFilter:"blur(12px)",
-        WebkitBackdropFilter:"blur(12px)",
-        display:"flex",alignItems:"flex-end",justifyContent:"center",
-        padding:"0 0 env(safe-area-inset-bottom,0)",
-      }}
-      onClick={e=>e.target===e.currentTarget&&onClose?.()}
-    >
+    <div style={{
+      position:"fixed",inset:0,zIndex:9999,
+      background:"rgba(0,0,0,0.72)",backdropFilter:"blur(12px)",
+      WebkitBackdropFilter:"blur(12px)",
+      display:"flex",alignItems:"flex-end",justifyContent:"center",
+      padding:"0 0 env(safe-area-inset-bottom,0)",
+    }} onClick={e=>e.target===e.currentTarget&&onClose?.()}>
       <div style={{
-        background:"#0d1525",
-        borderRadius:"16px 16px 0 0",
-        border:`1px solid ${T.borderHi}`,
-        borderBottom:"none",
-        padding:"20px 18px 28px",
-        width:"100%",
-        maxWidth:420,
-        boxShadow:"0 -20px 60px rgba(0,0,0,0.7)",
-        fontFamily: FONT_UI,
+        background:"#0d1525", borderRadius:"16px 16px 0 0",
+        border:`1px solid ${T.borderHi}`, borderBottom:"none",
+        padding:"20px 18px 28px", width:"100%", maxWidth:420,
+        boxShadow:"0 -20px 60px rgba(0,0,0,0.7)", fontFamily:FONT_UI,
       }}>
-        {/* Handle */}
         <div style={{ display:"flex",justifyContent:"center",marginBottom:16 }}>
           <div style={{ width:36,height:3,borderRadius:2,background:"rgba(255,255,255,0.15)" }}/>
         </div>
@@ -390,18 +474,15 @@ function MInput({ label, value, onChange, placeholder, multiline, autoFocus }) {
     width:"100%",padding:"8px 11px",borderRadius:8,
     border:`1px solid ${T.borderHi}`,
     background:"rgba(255,255,255,0.05)",color:T.text,
-    fontSize:12,outline:"none",fontFamily: FONT_UI,
-    marginBottom:10,boxSizing:"border-box",resize:"vertical",
-    lineHeight:1.5,
+    fontSize:12,outline:"none",fontFamily:FONT_UI,
+    marginBottom:10,boxSizing:"border-box",resize:"vertical",lineHeight:1.5,
   };
   return (
     <div>
       {label && (
-        <div style={{
-          color: T.textFaint,fontSize:9,fontWeight:700,
+        <div style={{ color:T.textFaint,fontSize:9,fontWeight:700,
           letterSpacing:".1em",marginBottom:4,textTransform:"uppercase",
-          fontFamily: FONT_MONO,
-        }}>{label}</div>
+          fontFamily:FONT_MONO }}>{label}</div>
       )}
       {multiline
         ? <textarea autoFocus={autoFocus} rows={3} value={value}
@@ -418,15 +499,14 @@ function MActions({ onConfirm, onCancel, confirmLabel="Save", confirmColor=T.blu
     <div style={{ display:"flex",gap:8,marginTop:6 }}>
       <button onClick={onConfirm} style={{
         flex:2,padding:"10px 0",borderRadius:9,border:"none",
-        background: confirmColor,
-        color:"#fff",fontWeight:700,fontSize:12,cursor:"pointer",fontFamily: FONT_UI,
-        letterSpacing:".02em",
+        background:confirmColor, color:"#fff",fontWeight:700,fontSize:12,
+        cursor:"pointer",fontFamily:FONT_UI,letterSpacing:".02em",
       }}>{confirmLabel}</button>
       <button onClick={onCancel} style={{
         flex:1,padding:"10px 0",borderRadius:9,
         border:`1px solid ${T.border}`,
         background:"transparent",color:T.textDim,
-        fontSize:12,cursor:"pointer",fontFamily: FONT_UI,
+        fontSize:12,cursor:"pointer",fontFamily:FONT_UI,
       }}>Cancel</button>
     </div>
   );
@@ -438,6 +518,8 @@ function MActions({ onConfirm, onCancel, confirmLabel="Save", confirmColor=T.blu
 export default function LiveTrackRecorder({
   map: mapProp, leafletMapRef,
   visible, onClose, onRecordingChange,
+  syncTrack,        // ← NEW: called on stopRecording to upload to backend
+  sessionClientId,  // ← NEW: active session link (informational, syncTrack handles it)
 }) {
   const internalRef = useRef(null);
   useEffect(()=>{ internalRef.current = mapProp??null; },[mapProp]);
@@ -455,38 +537,39 @@ export default function LiveTrackRecorder({
   const [tab,          setTab]          = useState("stats");
   const [showExport,   setShowExport]   = useState(false);
   const [exporting,    setExporting]    = useState(null);
+  const [uploading,    setUploading]    = useState(false); // ← NEW: upload indicator
 
   const [stats, setStats] = useState({
     distance:0, totalDuration:0, movingDuration:0, stoppedDuration:0,
     speed:0, maxSpeed:0, avgSpeed:0, ascent:0, descent:0, points:0, battery:null,
   });
 
-  const [waypoints, setWaypoints]     = useState([]);
-  const [showWptModal, setShowWptModal] = useState(false);
-  const [wptName, setWptName]         = useState("");
-  const [wptNote, setWptNote]         = useState("");
-  const [pendingPhoto, setPendingPhoto] = useState(null);
-  const [photoName,    setPhotoName]   = useState("");
-  const [photoNote,    setPhotoNote]   = useState("");
+  const [waypoints,     setWaypoints]     = useState([]);
+  const [showWptModal,  setShowWptModal]  = useState(false);
+  const [wptName,       setWptName]       = useState("");
+  const [wptNote,       setWptNote]       = useState("");
+  const [pendingPhoto,  setPendingPhoto]  = useState(null);
+  const [photoName,     setPhotoName]     = useState("");
+  const [photoNote,     setPhotoNote]     = useState("");
   const photoInputRef = useRef(null);
 
-  const trackIdRef    = useRef(null);
-  const pointsRef     = useRef([]);
-  const waypointsRef  = useRef([]);
-  const photosRef     = useRef({});
-  const startTimeRef  = useRef(null);
-  const pausedMsRef   = useRef(0);
-  const pauseStartRef = useRef(null);
-  const lastPtRef     = useRef(null);
-  const timerRef      = useRef(null);
-  const watchIdRef    = useRef(null);
-  const maxSpeedRef   = useRef(0);
-  const statusRef     = useRef("idle");
-  const trackNameRef  = useRef("");
-  const trackColorRef = useRef(TRACK_COLORS[0].hex);
-  const movingMsRef   = useRef(0);
-  const lastMoveRef   = useRef(null);
-  const stillSinceRef = useRef(null);
+  const trackIdRef     = useRef(null);
+  const pointsRef      = useRef([]);
+  const waypointsRef   = useRef([]);
+  const photosRef      = useRef({});
+  const startTimeRef   = useRef(null);
+  const pausedMsRef    = useRef(0);
+  const pauseStartRef  = useRef(null);
+  const lastPtRef      = useRef(null);
+  const timerRef       = useRef(null);
+  const watchIdRef     = useRef(null);
+  const maxSpeedRef    = useRef(0);
+  const statusRef      = useRef("idle");
+  const trackNameRef   = useRef("");
+  const trackColorRef  = useRef(TRACK_COLORS[0].hex);
+  const movingMsRef    = useRef(0);
+  const lastMoveRef    = useRef(null);
+  const stillSinceRef  = useRef(null);
 
   const layerGroupRef = useRef(null);
   const polylineRef   = useRef(null);
@@ -536,12 +619,10 @@ export default function LiveTrackRecorder({
         if (curSpeed < AUTO_PAUSE_SPEED) {
           if (!stillSinceRef.current) stillSinceRef.current = now;
           if (now - stillSinceRef.current > AUTO_PAUSE_SECS*1000) {
-            setAutoPaused(true);
-            lastMoveRef.current = null;
+            setAutoPaused(true); lastMoveRef.current = null;
           }
         } else {
-          stillSinceRef.current = null;
-          setAutoPaused(false);
+          stillSinceRef.current = null; setAutoPaused(false);
           if (lastMoveRef.current) movingMsRef.current += now - lastMoveRef.current;
           lastMoveRef.current = now;
         }
@@ -552,13 +633,10 @@ export default function LiveTrackRecorder({
         const batt  = await getBattery();
         setStats(s=>({
           ...s,
-          totalDuration: total,
-          movingDuration: movMs,
-          stoppedDuration: Math.max(0, total-movMs),
-          speed: curSpeed,
-          maxSpeed: maxSpeedRef.current,
-          avgSpeed: avgSpd,
-          battery: batt,
+          totalDuration: total, movingDuration: movMs,
+          stoppedDuration: Math.max(0,total-movMs),
+          speed: curSpeed, maxSpeed: maxSpeedRef.current,
+          avgSpeed: avgSpd, battery: batt,
         }));
       },1000);
     } else {
@@ -601,7 +679,7 @@ export default function LiveTrackRecorder({
       const dh = (pts[i].alt??0)-(pts[i-1].alt??0);
       if (dh>0) asc+=dh; else desc+=Math.abs(dh);
     }
-    setStats(s=>({...s, distance:dist, ascent:asc, descent:desc, points:pts.length, battery }));
+    setStats(s=>({...s, distance:dist, ascent:asc, descent:desc, points:pts.length, battery}));
     if (pts.length%10===0) persist();
   },[]);
 
@@ -626,13 +704,14 @@ export default function LiveTrackRecorder({
     setAutoPaused(false);
     setConfirmStop(false);
     setShowExport(false);
+    setUploading(false);
     setStats({ distance:0,totalDuration:0,movingDuration:0,stoppedDuration:0,
                speed:0,maxSpeed:0,avgSpeed:0,ascent:0,descent:0,points:0,battery:null });
     setStatus("recording");
     setMinimised(true);
     onRecordingChange?.(true);
     polylineRef.current = L.polyline([],{
-      color: trackColorRef.current, weight:3.5, opacity:0.9,
+      color:trackColorRef.current, weight:3.5, opacity:0.9,
       lineCap:"round", lineJoin:"round",
     }).addTo(layerGroupRef.current);
     if (!navigator.geolocation) {
@@ -657,8 +736,14 @@ export default function LiveTrackRecorder({
     setStatus("recording");
   },[]);
 
-  const stopRecording = useCallback(async ()=>{
+  // ── stopRecording — NOW uploads to backend ──────────────────────────────
+  const stopRecording = useCallback(async () => {
     navigator.geolocation.clearWatch(watchIdRef.current);
+
+    // Capture end time immediately
+    const endedAt   = new Date().toISOString();
+    const startedAt = new Date(startTimeRef.current).toISOString();
+
     if (lastPtRef.current) {
       const {lat,lng} = lastPtRef.current;
       L.marker([lat,lng],{ icon:flagIcon("#e63946","END"), zIndexOffset:900 })
@@ -667,12 +752,49 @@ export default function LiveTrackRecorder({
     }
     posMarkerRef.current?.remove();
     posMarkerRef.current = null;
+
+    // Save to IndexedDB first (local backup)
     await persist();
+
+    // ── Upload to backend if syncTrack provided ─────────────────────────
+    if (syncTrack && pointsRef.current.length >= 2) {
+      setUploading(true);
+      try {
+        // Calculate total distance
+        const pts = pointsRef.current;
+        let distanceMeters = 0;
+        for (let i = 1; i < pts.length; i++) distanceMeters += haversine(pts[i-1], pts[i]);
+        distanceMeters = Math.round(distanceMeters * 100) / 100;
+
+        // Get first photo taken during tracking (if any)
+        const photoWpt     = waypointsRef.current.find(w => w.photo && w.photoId);
+        const photoDataURL = photoWpt ? (photosRef.current[photoWpt.photoId] || null) : null;
+        const safeName     = (trackNameRef.current || "track").replace(/[^a-z0-9]/gi, "_");
+        const photoFilename = photoWpt ? `${safeName}_photo.jpg` : null;
+
+        await syncTrack({
+          points:         pts,
+          name:           trackNameRef.current || "Field Track",
+          startedAt,
+          endedAt,
+          distanceMeters,
+          photoDataURL,
+          photoFilename,
+        });
+
+        console.log("[LiveTrackRecorder] Track uploaded to backend ✓");
+      } catch (err) {
+        console.warn("[LiveTrackRecorder] Backend upload failed (saved locally):", err.message);
+      } finally {
+        setUploading(false);
+      }
+    }
+
     setStatus("stopped");
     setMinimised(false);
     setShowExport(true);
     onRecordingChange?.(false);
-  },[persist]);
+  }, [persist, syncTrack]);
 
   const discardTrack = useCallback(()=>{
     navigator.geolocation.clearWatch(watchIdRef.current);
@@ -682,12 +804,9 @@ export default function LiveTrackRecorder({
     photosRef.current = {};
     movingMsRef.current = 0;
     maxSpeedRef.current = 0;
-    setStatus("idle");
-    setMinimised(false);
-    setShowExport(false);
-    setConfirmStop(false);
-    setWaypoints([]);
-    setAutoPaused(false);
+    setStatus("idle"); setMinimised(false); setShowExport(false);
+    setConfirmStop(false); setWaypoints([]); setAutoPaused(false);
+    setUploading(false);
     onRecordingChange?.(false);
     setStats({ distance:0,totalDuration:0,movingDuration:0,stoppedDuration:0,
                speed:0,maxSpeed:0,avgSpeed:0,ascent:0,descent:0,points:0,battery:null });
@@ -761,18 +880,23 @@ export default function LiveTrackRecorder({
 
   const safeName = () => trackName.replace(/[^a-z0-9]/gi,"_")||"track";
 
-  const doExport = useCallback(async fmt=>{
+  const doExport = useCallback(async fmt => {
     setExporting(fmt);
     try {
       await persist();
       const t = trackObj();
-      if (fmt==="gpx")     dl(buildGPX(t),      `${safeName()}.gpx`,     "application/gpx+xml");
-      if (fmt==="kml")     dl(buildKML(t),      `${safeName()}.kml`,     "application/vnd.google-earth.kml+xml");
-      if (fmt==="kmz")     dl(await buildKMZ(t,photosRef.current), `${safeName()}.kmz`, "application/vnd.google-earth.kmz");
-      if (fmt==="geojson") dl(buildGeoJSON(t),  `${safeName()}.geojson`, "application/geo+json");
-      if (fmt==="csv")     dl(buildCSV(t),      `${safeName()}.csv`,     "text/csv");
-    } finally { setExporting(null); }
-  },[trackName,trackColor,stats,persist]);
+      if (fmt==="gpx")     await androidSafeDownload(buildGPX(t),   `${safeName()}.gpx`,     "application/gpx+xml");
+      if (fmt==="kml")     await androidSafeDownload(buildKML(t),   `${safeName()}.kml`,     "application/vnd.google-earth.kml+xml");
+      if (fmt==="kmz")     await androidSafeDownload(await buildKMZ(t, photosRef.current), `${safeName()}.kmz`, "application/vnd.google-earth.kmz");
+      if (fmt==="geojson") await androidSafeDownload(buildGeoJSON(t),`${safeName()}.geojson`,"application/geo+json");
+      if (fmt==="csv")     await androidSafeDownload(buildCSV(t),   `${safeName()}.csv`,     "text/csv");
+    } catch (err) {
+      console.error("[LiveTrack Export] Error:", err);
+      alert(`Export failed: ${err?.message || err}`);
+    } finally {
+      setExporting(null);
+    }
+  }, [trackName, trackColor, stats, persist]);
 
   useEffect(()=>()=>{
     navigator.geolocation.clearWatch(watchIdRef.current);
@@ -802,21 +926,18 @@ export default function LiveTrackRecorder({
       <>
         <style>{`@keyframes recpulse{0%,100%{opacity:1}50%{opacity:.15}}`}</style>
         <div onClick={()=>setMinimised(false)} style={{
-          position:"fixed", bottom:76, left:"50%",
-          transform:"translateX(-50%)",
+          position:"fixed", bottom:76, left:"50%", transform:"translateX(-50%)",
           zIndex:2200,
           display:"flex", alignItems:"center", gap:10,
           padding:"8px 14px 8px 12px",
           background:"rgba(6,10,22,0.96)",
-          backdropFilter:"blur(24px)",
-          WebkitBackdropFilter:"blur(24px)",
+          backdropFilter:"blur(24px)", WebkitBackdropFilter:"blur(24px)",
           border:`1px solid ${isRecording&&!autoPaused?"rgba(230,57,70,0.4)":"rgba(255,255,255,0.09)"}`,
           borderRadius:100,
-          boxShadow: isRecording&&!autoPaused
-            ?"0 4px 24px rgba(230,57,70,0.25)":"0 4px 20px rgba(0,0,0,0.5)",
+          boxShadow:isRecording&&!autoPaused?"0 4px 24px rgba(230,57,70,0.25)":"0 4px 20px rgba(0,0,0,0.5)",
           cursor:"pointer", userSelect:"none",
           minWidth:240, justifyContent:"space-between",
-          fontFamily: FONT_UI,
+          fontFamily:FONT_UI,
         }}>
           <div style={{ display:"flex",alignItems:"center",gap:7 }}>
             <div style={{
@@ -836,7 +957,7 @@ export default function LiveTrackRecorder({
           </div>
           <div style={{ display:"flex",alignItems:"center",gap:8 }}>
             {[
-              [distVal, distUnit,    T.blue],
+              [distVal, distUnit, T.blue],
               [formatDuration(stats.totalDuration), "", T.cyan],
               [fmtSpeed(stats.speed), "km/h", T.amber],
             ].map(([v,u,c],i)=>(
@@ -860,6 +981,7 @@ export default function LiveTrackRecorder({
       <style>{`
         @keyframes recpulse{0%,100%{opacity:1}50%{opacity:.15}}
         @keyframes slideup{from{transform:translateY(100%);opacity:.6}to{transform:translateY(0);opacity:1}}
+        @keyframes spin{to{transform:rotate(360deg)}}
         .ltr-scroll::-webkit-scrollbar{width:2px}
         .ltr-scroll::-webkit-scrollbar-thumb{background:rgba(72,149,239,.25);border-radius:2px}
         .ltr-scroll{scrollbar-width:thin;scrollbar-color:rgba(72,149,239,.2) transparent}
@@ -870,7 +992,6 @@ export default function LiveTrackRecorder({
       <input ref={photoInputRef} type="file" accept="image/*" capture="environment"
         style={{ display:"none" }} onChange={handlePhotoCapture}/>
 
-      {/* Waypoint modal */}
       {showWptModal && (
         <Modal onClose={()=>setShowWptModal(false)}>
           <div style={{ color:T.text,fontWeight:700,fontSize:14,marginBottom:2,fontFamily:FONT_UI }}>
@@ -888,7 +1009,6 @@ export default function LiveTrackRecorder({
         </Modal>
       )}
 
-      {/* Photo modal */}
       {pendingPhoto && (
         <Modal onClose={()=>setPendingPhoto(null)}>
           <div style={{ color:T.text,fontWeight:700,fontSize:14,marginBottom:2,fontFamily:FONT_UI }}>
@@ -914,42 +1034,32 @@ export default function LiveTrackRecorder({
       {/* Backdrop */}
       <div onClick={()=>setMinimised(true)} style={{
         position:"fixed",inset:0,zIndex:2099,
-        background:"rgba(0,0,0,0.3)",backdropFilter:"blur(1px)",
-        WebkitBackdropFilter:"blur(1px)",
+        background:"rgba(0,0,0,0.3)",backdropFilter:"blur(1px)",WebkitBackdropFilter:"blur(1px)",
       }}/>
 
       {/* ── MAIN PANEL ── */}
       <div style={{
-        position:"fixed",bottom:0,left:0,right:0,
-        zIndex:2100,
+        position:"fixed",bottom:0,left:0,right:0,zIndex:2100,
         maxHeight:"58vh",
         background:"rgba(7,11,22,0.98)",
-        backdropFilter:"blur(40px) saturate(200%)",
-        WebkitBackdropFilter:"blur(40px) saturate(200%)",
+        backdropFilter:"blur(40px) saturate(200%)",WebkitBackdropFilter:"blur(40px) saturate(200%)",
         borderTop:`1.5px solid ${accentColor}35`,
         borderRadius:"14px 14px 0 0",
         display:"flex",flexDirection:"column",
-        fontFamily: FONT_UI,
+        fontFamily:FONT_UI,
         boxShadow:"0 -8px 40px rgba(0,0,0,0.8), 0 -1px 0 rgba(255,255,255,0.04) inset",
         animation:"slideup 0.22s cubic-bezier(.16,1,.3,1)",
         transition:"border-color 0.3s",
       }}>
-
-        {/* Handle */}
-        <div style={{ flexShrink:0,paddingTop:8,paddingBottom:0,
-          display:"flex",justifyContent:"center" }}>
+        <div style={{ flexShrink:0,paddingTop:8,paddingBottom:0,display:"flex",justifyContent:"center" }}>
           <div style={{ width:34,height:3,borderRadius:2,background:"rgba(255,255,255,0.12)" }}/>
         </div>
 
-        {/* ── HEADER ── */}
-        <div style={{ flexShrink:0,display:"flex",alignItems:"center",
-          padding:"7px 12px 8px",gap:9 }}>
-
-          {/* Status icon */}
+        {/* Header */}
+        <div style={{ flexShrink:0,display:"flex",alignItems:"center",padding:"7px 12px 8px",gap:9 }}>
           <div style={{
             width:30,height:30,borderRadius:8,flexShrink:0,
-            background:`${accentColor}14`,
-            border:`1px solid ${accentColor}28`,
+            background:`${accentColor}14`,border:`1px solid ${accentColor}28`,
             display:"flex",alignItems:"center",justifyContent:"center",position:"relative",
           }}>
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
@@ -970,7 +1080,6 @@ export default function LiveTrackRecorder({
             )}
           </div>
 
-          {/* Name + subtitle */}
           <div style={{ flex:1,minWidth:0 }}>
             {editingName && !isIdle ? (
               <input autoFocus value={trackName}
@@ -979,37 +1088,33 @@ export default function LiveTrackRecorder({
                 onKeyDown={e=>e.key==="Enter"&&setEditingName(false)}
                 style={{ background:"transparent",border:"none",
                   borderBottom:`1px solid ${T.blue}55`,color:T.text,
-                  fontSize:12,fontWeight:600,outline:"none",
-                  width:"100%",fontFamily:FONT_UI }}/>
+                  fontSize:12,fontWeight:600,outline:"none",width:"100%",fontFamily:FONT_UI }}/>
             ) : (
-              <div
-                onClick={()=>!isIdle&&setEditingName(true)}
-                style={{
-                  fontSize:12,fontWeight:600,color:T.text,
-                  cursor:isIdle?"default":"text",
-                  overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",
-                  lineHeight:1.3,
-                }}
-              >
+              <div onClick={()=>!isIdle&&setEditingName(true)} style={{
+                fontSize:12,fontWeight:600,color:T.text,
+                cursor:isIdle?"default":"text",
+                overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",lineHeight:1.3,
+              }}>
                 {isIdle ? "Live Track Recorder" : trackName}
               </div>
             )}
             <div style={{
               fontSize:9,color:T.textDim,marginTop:1.5,
-              fontFamily: FONT_MONO, letterSpacing:".03em",
+              fontFamily:FONT_MONO,letterSpacing:".03em",
               overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",
             }}>
-              {isRecording
-                ? autoPaused
-                  ? `⏸  Not moving · ${stats.points} pts`
-                  : `● REC · ${stats.points} pts · ±${Math.round(lastPtRef.current?.accuracy??0)}m`
-                : isPaused  ? `⏸  Paused · ${stats.points} pts`
-                : isStopped ? `✓  Saved · ${stats.points} pts`
-                : "GPS track recorder · waypoints · export"}
+              {uploading
+                ? "⏳ Uploading to server…"
+                : isRecording
+                  ? autoPaused
+                    ? `⏸  Not moving · ${stats.points} pts`
+                    : `● REC · ${stats.points} pts · ±${Math.round(lastPtRef.current?.accuracy??0)}m`
+                  : isPaused  ? `⏸  Paused · ${stats.points} pts`
+                  : isStopped ? `✓  Saved · ${stats.points} pts`
+                  : "GPS track recorder · waypoints · export"}
             </div>
           </div>
 
-          {/* Color swatch */}
           {(isIdle||isStopped) && (
             <div style={{ position:"relative",flexShrink:0 }}>
               <button onClick={()=>setShowColors(p=>!p)} style={{
@@ -1037,14 +1142,12 @@ export default function LiveTrackRecorder({
             </div>
           )}
 
-          {/* Controls */}
           <div style={{ display:"flex",gap:4,flexShrink:0 }}>
             {(isRecording||isPaused) && (
               <button onClick={()=>setMinimised(true)} style={{
                 width:26,height:26,borderRadius:7,cursor:"pointer",
                 background:T.surface,border:`1px solid ${T.border}`,
-                color:T.textFaint,display:"flex",
-                alignItems:"center",justifyContent:"center",padding:0,
+                color:T.textFaint,display:"flex",alignItems:"center",justifyContent:"center",padding:0,
               }}>
                 <svg width="9" height="9" viewBox="0 0 24 24" fill="none"
                   stroke="currentColor" strokeWidth="2.5">
@@ -1055,8 +1158,7 @@ export default function LiveTrackRecorder({
             <button onClick={onClose} style={{
               width:26,height:26,borderRadius:7,cursor:"pointer",
               background:T.surface,border:`1px solid ${T.border}`,
-              color:T.textFaint,display:"flex",
-              alignItems:"center",justifyContent:"center",padding:0,
+              color:T.textFaint,display:"flex",alignItems:"center",justifyContent:"center",padding:0,
             }}>
               <svg width="9" height="9" viewBox="0 0 24 24" fill="none"
                 stroke="currentColor" strokeWidth="2.5">
@@ -1068,16 +1170,14 @@ export default function LiveTrackRecorder({
 
         <Divider/>
 
-        {/* ── IDLE STATE ── */}
+        {/* Idle */}
         {isIdle && (
           <div style={{ padding:"16px 14px 20px",textAlign:"center",flexShrink:0 }}>
-            <div style={{ color:T.textFaint,fontSize:10,marginBottom:14,lineHeight:1.7,
-              letterSpacing:".01em" }}>
+            <div style={{ color:T.textFaint,fontSize:10,marginBottom:14,lineHeight:1.7,letterSpacing:".01em" }}>
               📍 GPS path recording &nbsp;·&nbsp; 📷 Photo waypoints<br/>
               ↑ Elevation tracking &nbsp;·&nbsp; 💾 GPX · KML · GeoJSON export
             </div>
-            <div style={{ display:"flex",alignItems:"center",justifyContent:"center",
-              gap:5,marginBottom:14 }}>
+            <div style={{ display:"flex",alignItems:"center",justifyContent:"center",gap:5,marginBottom:14 }}>
               <span style={{ color:T.textFaint,fontSize:10 }}>Color:</span>
               <div style={{ width:11,height:11,borderRadius:"50%",background:trackColor,
                 border:"1.5px solid rgba(255,255,255,0.2)" }}/>
@@ -1090,8 +1190,7 @@ export default function LiveTrackRecorder({
               padding:"12px 32px",borderRadius:12,border:"none",
               background:`linear-gradient(135deg,#c1121f,${T.red})`,
               color:"#fff",fontWeight:700,fontSize:12,cursor:"pointer",
-              letterSpacing:".04em",boxShadow:"0 6px 20px rgba(230,57,70,0.38)",
-              fontFamily: FONT_UI,
+              letterSpacing:".04em",boxShadow:"0 6px 20px rgba(230,57,70,0.38)",fontFamily:FONT_UI,
             }}>
               <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
                 <circle cx="12" cy="12" r="8"/>
@@ -1101,64 +1200,65 @@ export default function LiveTrackRecorder({
           </div>
         )}
 
-        {/* ── ACTIVE STATE (recording / paused / stopped) ── */}
+        {/* Active */}
         {!isIdle && (
           <>
-            {/* Tabs */}
-            <div style={{ flexShrink:0,display:"flex",
-              borderBottom:`1px solid ${T.border}` }}>
+            <div style={{ flexShrink:0,display:"flex",borderBottom:`1px solid ${T.border}` }}>
               {[
-                ["stats",     "Stats"],
-                ["waypoints", `Waypoints (${waypoints.filter(w=>!w.photo).length})`],
-                ["photos",    `Photos (${waypoints.filter(w=>w.photo).length})`],
+                ["stats","Stats"],
+                ["waypoints",`Waypoints (${waypoints.filter(w=>!w.photo).length})`],
+                ["photos",`Photos (${waypoints.filter(w=>w.photo).length})`],
               ].map(([id,label])=>(
                 <button key={id} className="tab-btn" onClick={()=>setTab(id)} style={{
                   flex:1,padding:"7px 4px 6px",background:"transparent",border:"none",
                   borderBottom:`2px solid ${tab===id?accentColor:"transparent"}`,
                   color:tab===id?T.text:T.textFaint,
                   fontWeight:tab===id?600:400,fontSize:9.5,cursor:"pointer",
-                  fontFamily: FONT_UI, letterSpacing:".02em",
+                  fontFamily:FONT_UI,letterSpacing:".02em",
                 }}>{label}</button>
               ))}
             </div>
 
-            {/* Scrollable content */}
-            <div className="ltr-scroll" style={{ flex:1,overflowY:"auto",
-              overflowX:"hidden",padding:"8px 12px 10px" }}>
+            <div className="ltr-scroll" style={{ flex:1,overflowY:"auto",overflowX:"hidden",padding:"8px 12px 10px" }}>
 
-              {/* ── STATS TAB ── */}
               {tab==="stats" && (
                 <div style={{ display:"flex",flexDirection:"column",gap:5 }}>
                   {autoPaused && (
                     <div style={{ padding:"5px 10px",borderRadius:7,
-                      background:"rgba(244,162,97,0.06)",
-                      border:"1px solid rgba(244,162,97,0.18)",
-                      color:"#f4a261",fontSize:9,textAlign:"center",fontWeight:600,
-                      letterSpacing:".05em" }}>
+                      background:"rgba(244,162,97,0.06)",border:"1px solid rgba(244,162,97,0.18)",
+                      color:"#f4a261",fontSize:9,textAlign:"center",fontWeight:600,letterSpacing:".05em" }}>
                       ⏸ AUTO-PAUSED — NOT MOVING
                     </div>
                   )}
+                  {/* Upload status indicator */}
+                  {uploading && (
+                    <div style={{ padding:"6px 10px",borderRadius:7,
+                      background:"rgba(72,149,239,0.06)",border:"1px solid rgba(72,149,239,0.18)",
+                      color:"#4895ef",fontSize:9,textAlign:"center",fontWeight:600,
+                      display:"flex",alignItems:"center",justifyContent:"center",gap:6 }}>
+                      <span style={{ display:"inline-block",animation:"spin 1s linear infinite",fontSize:10 }}>◌</span>
+                      Uploading track to server…
+                    </div>
+                  )}
                   <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:4 }}>
-                    <StatCell label="Distance"  value={distVal}                unit={distUnit}  color={T.blue}/>
-                    <StatCell label="Total Time" value={formatDuration(stats.totalDuration)}   color={T.cyan}/>
-                    <StatCell label="Speed"     value={fmtSpeed(stats.speed)}  unit="km/h"      color={T.amber}/>
-                    <StatCell label="Moving"    value={formatDuration(stats.movingDuration)}   color={T.green}/>
-                    <StatCell label="Stopped"   value={formatDuration(stats.stoppedDuration)}  color={T.red}/>
-                    <StatCell label="Points"    value={stats.points}                           color={T.textDim}/>
-                    <StatCell label="Ascent"    value={`+${Math.round(stats.ascent)}`} unit="m" color={T.green}/>
-                    <StatCell label="Descent"   value={`-${Math.round(stats.descent)}`} unit="m" color={T.red}/>
-                    <StatCell label="Max Speed" value={fmtSpeed(stats.maxSpeed)} unit="km/h"   color={T.violet}/>
-                    <StatCell label="Avg Speed" value={fmtSpeed(stats.avgSpeed)} unit="km/h"   color={T.teal}/>
-                    <StatCell label="Pace"      value={fmtPace(stats.avgSpeed)}  unit="/km"     color={T.pink}/>
+                    <StatCell label="Distance"   value={distVal}                           unit={distUnit} color={T.blue}/>
+                    <StatCell label="Total Time"  value={formatDuration(stats.totalDuration)}              color={T.cyan}/>
+                    <StatCell label="Speed"       value={fmtSpeed(stats.speed)}             unit="km/h"    color={T.amber}/>
+                    <StatCell label="Moving"      value={formatDuration(stats.movingDuration)}             color={T.green}/>
+                    <StatCell label="Stopped"     value={formatDuration(stats.stoppedDuration)}            color={T.red}/>
+                    <StatCell label="Points"      value={stats.points}                                     color={T.textDim}/>
+                    <StatCell label="Ascent"      value={`+${Math.round(stats.ascent)}`}    unit="m"       color={T.green}/>
+                    <StatCell label="Descent"     value={`-${Math.round(stats.descent)}`}   unit="m"       color={T.red}/>
+                    <StatCell label="Max Speed"   value={fmtSpeed(stats.maxSpeed)}          unit="km/h"    color={T.violet}/>
+                    <StatCell label="Avg Speed"   value={fmtSpeed(stats.avgSpeed)}          unit="km/h"    color={T.teal}/>
+                    <StatCell label="Pace"        value={fmtPace(stats.avgSpeed)}            unit="/km"     color={T.pink}/>
                     <StatCell label="Battery"
                       value={stats.battery!=null?`${stats.battery}%`:"--"}
                       color={stats.battery!=null&&stats.battery<20?"#f87171":"#86efac"}/>
                   </div>
                   {lastPtRef.current && (
-                    <div style={{ display:"flex",alignItems:"center",gap:5,
-                      padding:"4px 8px",borderRadius:6,
-                      background:"rgba(76,201,240,0.04)",
-                      border:"1px solid rgba(76,201,240,0.09)" }}>
+                    <div style={{ display:"flex",alignItems:"center",gap:5,padding:"4px 8px",borderRadius:6,
+                      background:"rgba(76,201,240,0.04)",border:"1px solid rgba(76,201,240,0.09)" }}>
                       <div style={{ width:4,height:4,borderRadius:"50%",background:T.cyan,flexShrink:0 }}/>
                       <span style={{ color:T.textFaint,fontSize:9,fontFamily:FONT_MONO }}>
                         GPS ±{Math.round(lastPtRef.current.accuracy??0)}m accuracy
@@ -1170,19 +1270,15 @@ export default function LiveTrackRecorder({
                 </div>
               )}
 
-              {/* ── WAYPOINTS TAB ── */}
               {tab==="waypoints" && (
                 <div>
                   {waypoints.filter(w=>!w.photo).length===0 ? (
-                    <div style={{ textAlign:"center",color:T.textFaint,
-                      fontSize:11,padding:"18px 0" }}>
-                      <div style={{ fontSize:22,marginBottom:6,opacity:.5 }}>📍</div>
-                      No waypoints yet
+                    <div style={{ textAlign:"center",color:T.textFaint,fontSize:11,padding:"18px 0" }}>
+                      <div style={{ fontSize:22,marginBottom:6,opacity:.5 }}>📍</div>No waypoints yet
                     </div>
                   ) : waypoints.filter(w=>!w.photo).map(w=>(
                     <div key={w.id} style={{ padding:"8px 10px",borderRadius:8,marginBottom:4,
-                      background:"rgba(72,149,239,0.05)",
-                      border:"1px solid rgba(72,149,239,0.1)" }}>
+                      background:"rgba(72,149,239,0.05)",border:"1px solid rgba(72,149,239,0.1)" }}>
                       <div style={{ display:"flex",alignItems:"center",gap:7 }}>
                         <span style={{ fontSize:11 }}>📍</span>
                         <span style={{ color:T.text,fontWeight:600,fontSize:11,flex:1 }}>{w.name}</span>
@@ -1190,12 +1286,8 @@ export default function LiveTrackRecorder({
                           {new Date(w.time).toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit"})}
                         </span>
                       </div>
-                      {w.note && (
-                        <div style={{ color:T.textFaint,fontSize:10,
-                          marginLeft:18,fontStyle:"italic",marginTop:2 }}>{w.note}</div>
-                      )}
-                      <div style={{ color:T.textFaint,fontSize:8.5,marginLeft:18,
-                        fontFamily:FONT_MONO,marginTop:2,opacity:.7 }}>
+                      {w.note && <div style={{ color:T.textFaint,fontSize:10,marginLeft:18,fontStyle:"italic",marginTop:2 }}>{w.note}</div>}
+                      <div style={{ color:T.textFaint,fontSize:8.5,marginLeft:18,fontFamily:FONT_MONO,marginTop:2,opacity:.7 }}>
                         {w.lat.toFixed(5)}, {w.lng.toFixed(5)}
                       </div>
                     </div>
@@ -1203,31 +1295,24 @@ export default function LiveTrackRecorder({
                 </div>
               )}
 
-              {/* ── PHOTOS TAB ── */}
               {tab==="photos" && (
                 <div>
                   {waypoints.filter(w=>w.photo).length===0 ? (
-                    <div style={{ textAlign:"center",color:T.textFaint,
-                      fontSize:11,padding:"18px 0" }}>
-                      <div style={{ fontSize:22,marginBottom:6,opacity:.5 }}>📷</div>
-                      No photos yet
+                    <div style={{ textAlign:"center",color:T.textFaint,fontSize:11,padding:"18px 0" }}>
+                      <div style={{ fontSize:22,marginBottom:6,opacity:.5 }}>📷</div>No photos yet
                     </div>
                   ) : (
                     <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:6 }}>
                       {waypoints.filter(w=>w.photo).map(w=>(
                         <div key={w.id} style={{ borderRadius:9,overflow:"hidden",
-                          border:"1px solid rgba(244,162,97,0.15)",
-                          background:"rgba(244,162,97,0.04)" }}>
+                          border:"1px solid rgba(244,162,97,0.15)",background:"rgba(244,162,97,0.04)" }}>
                           {photosRef.current[w.photoId] && (
                             <img src={photosRef.current[w.photoId]} alt={w.name}
                               style={{ width:"100%",height:80,objectFit:"cover",display:"block" }}/>
                           )}
                           <div style={{ padding:"5px 7px" }}>
                             <div style={{ color:T.text,fontSize:10,fontWeight:600 }}>{w.name}</div>
-                            {w.note && (
-                              <div style={{ color:T.textFaint,fontSize:9,
-                                fontStyle:"italic",marginTop:1 }}>{w.note}</div>
-                            )}
+                            {w.note && <div style={{ color:T.textFaint,fontSize:9,fontStyle:"italic",marginTop:1 }}>{w.note}</div>}
                             <div style={{ color:T.textFaint,fontSize:8.5,marginTop:1,fontFamily:FONT_MONO }}>
                               {new Date(w.time).toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit"})}
                             </div>
@@ -1239,13 +1324,13 @@ export default function LiveTrackRecorder({
                 </div>
               )}
 
-              {/* ── EXPORT PANEL ── */}
               {isStopped && showExport && (
                 <div style={{ marginTop:6 }}>
                   <div style={{ padding:"8px 10px",borderRadius:8,marginBottom:8,
                     background:"rgba(45,198,83,0.05)",border:"1px solid rgba(45,198,83,0.12)" }}>
-                    <div style={{ color:T.textFaint,fontSize:9,textAlign:"center",
-                      marginBottom:6,letterSpacing:".05em" }}>TRACK SAVED ✓</div>
+                    <div style={{ color:T.textFaint,fontSize:9,textAlign:"center",marginBottom:6,letterSpacing:".05em" }}>
+                      {uploading ? "⏳ UPLOADING…" : "TRACK SAVED ✓"}
+                    </div>
                     <div style={{ display:"flex",justifyContent:"space-around" }}>
                       {[
                         [formatDist(stats.distance),"Distance"],
@@ -1254,8 +1339,7 @@ export default function LiveTrackRecorder({
                         [`${stats.points}`,"Points"],
                       ].map(([v,l])=>(
                         <div key={l} style={{ textAlign:"center" }}>
-                          <div style={{ color:T.text,fontWeight:700,fontSize:11,
-                            fontFamily:FONT_MONO }}>{v}</div>
+                          <div style={{ color:T.text,fontWeight:700,fontSize:11,fontFamily:FONT_MONO }}>{v}</div>
                           <div style={{ color:T.textFaint,fontSize:8 }}>{l}</div>
                         </div>
                       ))}
@@ -1269,12 +1353,12 @@ export default function LiveTrackRecorder({
                       ["geojson","JSON","#4cc9f0"],
                       ["csv","CSV","#f4a261"],
                     ].map(([k,lb,c])=>(
-                      <button key={k} onClick={()=>doExport(k)} disabled={!!exporting} style={{
-                        padding:"9px 4px",borderRadius:8,border:"none",cursor:"pointer",
+                      <button key={k} onClick={()=>doExport(k)} disabled={!!exporting||uploading} style={{
+                        padding:"9px 4px",borderRadius:8,cursor:"pointer",
                         background:`${c}18`,
                         border:`1px solid ${c}30`,
-                        color:c,fontWeight:700,fontSize:10,fontFamily: FONT_UI,
-                        opacity:exporting&&exporting!==k?0.35:1,
+                        color:c,fontWeight:700,fontSize:10,fontFamily:FONT_UI,
+                        opacity:(exporting&&exporting!==k)||uploading?0.35:1,
                         display:"flex",flexDirection:"column",alignItems:"center",gap:2,
                         transition:"opacity .15s",
                       }}>
@@ -1283,64 +1367,40 @@ export default function LiveTrackRecorder({
                       </button>
                     ))}
                   </div>
-                  <button onClick={discardTrack} style={{
+                  <button onClick={discardTrack} disabled={uploading} style={{
                     width:"100%",padding:"8px 0",borderRadius:8,
                     border:`1px solid ${T.border}`,background:"transparent",
-                    color:T.textFaint,fontSize:10,cursor:"pointer",fontFamily: FONT_UI,
-                    letterSpacing:".02em",
+                    color:T.textFaint,fontSize:10,cursor:"pointer",fontFamily:FONT_UI,letterSpacing:".02em",
+                    opacity:uploading?0.4:1,
                   }}>+ New Track</button>
                 </div>
               )}
             </div>
 
-            {/* ── ACTION BUTTONS ── */}
             {!isStopped && (
               <>
                 <Divider/>
-                <div style={{ flexShrink:0,display:"flex",gap:5,
-                  padding:"7px 10px 10px" }}>
+                <div style={{ flexShrink:0,display:"flex",gap:5,padding:"7px 10px 10px" }}>
                   {[
-                    {
-                      label:"Waypoint", icon:"📍",
-                      color:T.blue, bg:"rgba(72,149,239,0.1)", border:"rgba(72,149,239,0.22)",
-                      onClick: addWaypoint,
-                      disabled: !isRecording&&!isPaused,
-                    },
-                    {
-                      label:"Photo", icon:"📷",
-                      color:T.amber, bg:"rgba(244,162,97,0.1)", border:"rgba(244,162,97,0.22)",
-                      onClick: addPhoto,
-                      disabled: !isRecording&&!isPaused,
-                    },
+                    { label:"Waypoint",icon:"📍",color:T.blue,bg:"rgba(72,149,239,0.1)",border:"rgba(72,149,239,0.22)",onClick:addWaypoint,disabled:!isRecording&&!isPaused },
+                    { label:"Photo",icon:"📷",color:T.amber,bg:"rgba(244,162,97,0.1)",border:"rgba(244,162,97,0.22)",onClick:addPhoto,disabled:!isRecording&&!isPaused },
                     isRecording ? {
-                      label:"Pause", icon:"⏸",
-                      color:T.amber, bg:"rgba(244,162,97,0.1)", border:"rgba(244,162,97,0.22)",
-                      onClick: pauseRecording, disabled:false,
+                      label:"Pause",icon:"⏸",color:T.amber,bg:"rgba(244,162,97,0.1)",border:"rgba(244,162,97,0.22)",onClick:pauseRecording,disabled:false,
                     } : {
-                      label:"Resume", icon:"▶",
-                      color:T.green, bg:"rgba(45,198,83,0.1)", border:"rgba(45,198,83,0.22)",
-                      onClick: resumeRecording, disabled:false,
+                      label:"Resume",icon:"▶",color:T.green,bg:"rgba(45,198,83,0.1)",border:"rgba(45,198,83,0.22)",onClick:resumeRecording,disabled:false,
                     },
                     {
-                      label: confirmStop ? "Confirm?" : "Stop",
-                      icon: confirmStop ? "!" : "■",
-                      color: T.red,
-                      bg: confirmStop ? "rgba(230,57,70,0.22)" : "rgba(230,57,70,0.1)",
-                      border: "rgba(230,57,70,0.35)",
-                      onClick: ()=>{
-                        if (!confirmStop) { setConfirmStop(true); return; }
-                        setConfirmStop(false); stopRecording(); setTab("stats");
-                      },
+                      label:confirmStop?"Confirm?":"Stop",icon:confirmStop?"!":"■",
+                      color:T.red,bg:confirmStop?"rgba(230,57,70,0.22)":"rgba(230,57,70,0.1)",border:"rgba(230,57,70,0.35)",
+                      onClick:()=>{ if(!confirmStop){setConfirmStop(true);return;} setConfirmStop(false);stopRecording();setTab("stats"); },
                       disabled:false,
                     },
-                  ].map(({ label,icon,color,bg,border,onClick,disabled })=>(
+                  ].map(({label,icon,color,bg,border,onClick,disabled})=>(
                     <button key={label} className="action-btn" onClick={onClick}
                       disabled={disabled} style={{
                       flex:1,padding:"7px 0 8px",borderRadius:9,cursor:"pointer",
-                      background: bg,
-                      border:`1px solid ${border}`,
-                      color,fontWeight:600,fontSize:9.5,
-                      fontFamily: FONT_UI, letterSpacing:".03em",
+                      background:bg, border:`1px solid ${border}`,
+                      color,fontWeight:600,fontSize:9.5,fontFamily:FONT_UI,letterSpacing:".03em",
                       opacity:disabled?0.35:1,
                       display:"flex",flexDirection:"column",alignItems:"center",gap:3,
                       transition:"opacity .15s",

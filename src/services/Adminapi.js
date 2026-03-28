@@ -6,15 +6,16 @@ const headers = () => ({
 });
 
 // ── AUTH ──────────────────────────────────────────────────────────────────
-export const login = (email, password) =>
-  fetch(`${BASE}/api/auth/login`, {
+export const login = async (email, password) => {
+  const res = await fetch(`${BASE}/api/auth/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password }),
-  }).then(r => {
-    if (!r.ok) throw new Error("Invalid credentials");
-    return r.json();
   });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.message || "Login failed");
+  return data;
+};
 
 export const getMe = () =>
   fetch(`${BASE}/api/auth/me`, { headers: headers() }).then(r => r.json());

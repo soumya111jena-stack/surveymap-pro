@@ -1,5 +1,20 @@
 {
   "appId": "com.surveymap.pro",
   "appName": "SurveyMap Pro",
-  "webDir": "dist"
+  "webDir": "dist",
+  "bundledWebRuntime": false,
+
+  "android": {
+    "allowMixedContent": true,
+    "captureInput": true,
+    "webContentsDebuggingEnabled": true
+  },
+
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 2000,
+      "backgroundColor": "#050d1a",
+      "showSpinner": false
+    }
+  }
 }

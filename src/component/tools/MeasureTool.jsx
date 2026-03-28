@@ -2,17 +2,11 @@
  * MeasureTool.jsx — SurveyMap Pro
  * Enhanced measurement tool with live multi-unit conversion panel.
  *
- * Features:
- *  • Click to place measurement points on the map
- *  • Live dashed preview line while moving mouse
- *  • Per-segment distance labels on the polyline
- *  • Double-click or "Finish" to complete measurement
- *  • Right-click to cancel & clear
- *  • Floating multi-unit conversion panel showing total in ALL units:
- *      m, km, mi, ft, yd, nmi, chains, furlongs
- *  • Manual entry tab: type any distance + unit → auto-converts to all others
- *  • Copy-to-clipboard button per unit row
- *  • Selected display unit is highlighted and used in the map tooltip
+ * FIXED:
+ *  • Panel no longer intercepts map clicks (pointer-events: none on wrapper)
+ *  • Inner panel content restored with pointer-events: auto
+ *  • dblclick on panel no longer triggers map "finish"
+ *  • stopPropagation on panel mousedown/click to prevent map interference
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -87,7 +81,7 @@ export default function MeasureTool({
   measurePoints,
   setMeasurePoints,
   measureUnit,
-  setMeasureUnit,   // NEW: parent should pass this so panel can change display unit
+  setMeasureUnit,
   onFinish,
 }) {
   const map = useMap();
@@ -102,7 +96,7 @@ export default function MeasureTool({
 
   // Panel state
   const [panelOpen,    setPanelOpen]    = useState(false);
-  const [activeTab,    setActiveTab]    = useState("live");   // "live" | "manual"
+  const [activeTab,    setActiveTab]    = useState("live");
   const [manualVal,    setManualVal]    = useState("");
   const [manualUnit,   setManualUnit]   = useState("m");
   const [copiedKey,    setCopiedKey]    = useState("");
@@ -166,7 +160,6 @@ export default function MeasureTool({
   // Re-render segment labels when display unit changes
   useEffect(() => {
     if (measurePoints.length >= 2) refreshSegLabels(measurePoints);
-    // Also update total label
     if (totalLabelRef.current && totalMetres > 0) {
       const uAbbr = UNITS.find(u => u.key === (measureUnit || "m"))?.abbr || "m";
       totalLabelRef.current.setContent(
@@ -300,12 +293,18 @@ export default function MeasureTool({
   // ── Panel ──────────────────────────────────────────────────────────────────
   if (!measureMode && !panelOpen) return null;
   if (!measureMode && panelOpen) {
-    // Keep panel open after finish if there are points
     if (measurePoints.length < 2) return null;
   }
 
   const displayMetres = activeTab === "live" ? totalMetres : (manualMetres ?? 0);
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // FIX: The outer wrapper uses pointerEvents:"none" so map clicks pass through
+  //      the transparent/empty areas of the panel. The inner content div uses
+  //      pointerEvents:"auto" to restore interactivity for all UI controls.
+  //      stopPropagation on mousedown/click/dblclick prevents any panel
+  //      interaction from accidentally firing map events.
+  // ─────────────────────────────────────────────────────────────────────────
   return (
     <div
       style={{
@@ -316,373 +315,386 @@ export default function MeasureTool({
         zIndex: 1200,
         width: 440,
         maxWidth: "calc(100vw - 24px)",
-        background: "#0f1825",
-        borderRadius: 12,
-        border: "1px solid rgba(255,140,0,0.28)",
-        boxShadow: "0 8px 40px rgba(0,0,0,0.7)",
+        // ✅ FIX: let map clicks pass through the wrapper
+        pointerEvents: "none",
         fontFamily: "'Segoe UI', system-ui, sans-serif",
-        overflow: "hidden",
-        animation: "mtFadeIn .22s ease",
       }}
     >
-      <style>{`
-        @keyframes mtFadeIn{from{opacity:0;transform:translateX(-50%) translateY(10px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
-        .mt-unit-row:hover{background:rgba(255,255,255,.05)!important;}
-        .mt-tab{cursor:pointer;padding:6px 16px;font-size:11px;font-weight:700;border:none;background:transparent;letter-spacing:.05em;transition:all .15s;}
-      `}</style>
+      {/* ✅ FIX: inner content div restores pointer events + blocks map event bubbling */}
+      <div
+        style={{
+          pointerEvents: "auto",
+          background: "#0f1825",
+          borderRadius: 12,
+          border: "1px solid rgba(255,140,0,0.28)",
+          boxShadow: "0 8px 40px rgba(0,0,0,0.7)",
+          overflow: "hidden",
+          animation: "mtFadeIn .22s ease",
+        }}
+        // Prevent map from receiving click / dblclick / mousedown through the panel
+        onClick={e => e.stopPropagation()}
+        onDoubleClick={e => e.stopPropagation()}
+        onMouseDown={e => e.stopPropagation()}
+      >
+        <style>{`
+          @keyframes mtFadeIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+          .mt-unit-row:hover{background:rgba(255,255,255,.05)!important;}
+          .mt-tab{cursor:pointer;padding:6px 16px;font-size:11px;font-weight:700;border:none;background:transparent;letter-spacing:.05em;transition:all .15s;}
+        `}</style>
 
-      {/* ── Header ── */}
-      <div style={{
-        background: "#141e2e",
-        borderBottom: "1px solid rgba(255,255,255,.07)",
-        padding: "10px 14px",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-      }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <div style={{
-            width: 26, height: 26, borderRadius: 6,
-            background: "linear-gradient(135deg,#ff8800,#fbbf24)",
-            display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14,
-          }}>📏</div>
-          <div>
-            <div style={{ color: "#f1f5f9", fontWeight: 700, fontSize: 13 }}>Measurement Converter</div>
-            <div style={{ color: "#475569", fontSize: 10 }}>
-              {measureMode
-                ? `${measurePoints.length} point${measurePoints.length !== 1 ? "s" : ""} — double-click to finish`
-                : `${measurePoints.length} points measured`}
+        {/* ── Header ── */}
+        <div style={{
+          background: "#141e2e",
+          borderBottom: "1px solid rgba(255,255,255,.07)",
+          padding: "10px 14px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={{
+              width: 26, height: 26, borderRadius: 6,
+              background: "linear-gradient(135deg,#ff8800,#fbbf24)",
+              display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14,
+            }}>📏</div>
+            <div>
+              <div style={{ color: "#f1f5f9", fontWeight: 700, fontSize: 13 }}>Measurement Converter</div>
+              <div style={{ color: "#475569", fontSize: 10 }}>
+                {measureMode
+                  ? `${measurePoints.length} point${measurePoints.length !== 1 ? "s" : ""} — double-click to finish`
+                  : `${measurePoints.length} points measured`}
+              </div>
             </div>
           </div>
-        </div>
-        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-          {measureMode && measurePoints.length >= 2 && (
-            <button
-              onClick={() => { if (onFinish) onFinish(); }}
-              style={{
-                padding: "4px 11px", borderRadius: 5, border: "none",
-                background: "#16a34a", color: "#fff", fontSize: 11,
-                fontWeight: 700, cursor: "pointer",
-              }}>
-              ✓ Finish
-            </button>
-          )}
-          {measurePoints.length > 0 && (
-            <button
-              onClick={() => { clearAll(); setPanelOpen(false); }}
-              style={{
-                padding: "4px 10px", borderRadius: 5,
-                border: "1px solid rgba(239,68,68,.35)",
-                background: "rgba(239,68,68,.08)", color: "#f87171",
-                fontSize: 11, fontWeight: 700, cursor: "pointer",
-              }}>
-              ✕ Clear
-            </button>
-          )}
-          <button
-            onClick={() => setPanelOpen(p => !p)}
-            style={{ background: "none", border: "none", color: "#475569", cursor: "pointer", fontSize: 17 }}>
-            {panelOpen ? "▼" : "▲"}
-          </button>
-        </div>
-      </div>
-
-      {panelOpen && (
-        <>
-          {/* ── Tabs ── */}
-          <div style={{
-            display: "flex",
-            borderBottom: "1px solid rgba(255,255,255,.06)",
-            background: "#0d1520",
-          }}>
-            {[
-              { id: "live",   label: "📍 Live Measurement" },
-              { id: "manual", label: "✏️ Manual Entry"      },
-            ].map(tab => (
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            {measureMode && measurePoints.length >= 2 && (
               <button
-                key={tab.id}
-                className="mt-tab"
-                onClick={() => setActiveTab(tab.id)}
+                onClick={() => { if (onFinish) onFinish(); }}
                 style={{
-                  color: activeTab === tab.id ? "#fbbf24" : "#475569",
-                  borderBottom: `2px solid ${activeTab === tab.id ? "#fbbf24" : "transparent"}`,
+                  padding: "4px 11px", borderRadius: 5, border: "none",
+                  background: "#16a34a", color: "#fff", fontSize: 11,
+                  fontWeight: 700, cursor: "pointer",
                 }}>
-                {tab.label}
+                ✓ Finish
               </button>
-            ))}
-          </div>
-
-          {/* ── Live tab ── */}
-          {activeTab === "live" && (
-            <div style={{ padding: "12px 14px" }}>
-              {totalMetres === 0 ? (
-                <div style={{
-                  textAlign: "center", padding: "18px 0",
-                  color: "#334155", fontSize: 12, fontStyle: "italic",
+            )}
+            {measurePoints.length > 0 && (
+              <button
+                onClick={() => { clearAll(); setPanelOpen(false); }}
+                style={{
+                  padding: "4px 10px", borderRadius: 5,
+                  border: "1px solid rgba(239,68,68,.35)",
+                  background: "rgba(239,68,68,.08)", color: "#f87171",
+                  fontSize: 11, fontWeight: 700, cursor: "pointer",
                 }}>
-                  Click on the map to place measurement points…
-                </div>
-              ) : (
-                <>
-                  {/* Big total display */}
-                  <div style={{
-                    background: "rgba(255,140,0,.07)",
-                    border: "1px solid rgba(255,140,0,.2)",
-                    borderRadius: 8,
-                    padding: "10px 14px",
-                    marginBottom: 10,
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
+                ✕ Clear
+              </button>
+            )}
+            <button
+              onClick={() => setPanelOpen(p => !p)}
+              style={{ background: "none", border: "none", color: "#475569", cursor: "pointer", fontSize: 17 }}>
+              {panelOpen ? "▼" : "▲"}
+            </button>
+          </div>
+        </div>
+
+        {panelOpen && (
+          <>
+            {/* ── Tabs ── */}
+            <div style={{
+              display: "flex",
+              borderBottom: "1px solid rgba(255,255,255,.06)",
+              background: "#0d1520",
+            }}>
+              {[
+                { id: "live",   label: "📍 Live Measurement" },
+                { id: "manual", label: "✏️ Manual Entry"      },
+              ].map(tab => (
+                <button
+                  key={tab.id}
+                  className="mt-tab"
+                  onClick={() => setActiveTab(tab.id)}
+                  style={{
+                    color: activeTab === tab.id ? "#fbbf24" : "#475569",
+                    borderBottom: `2px solid ${activeTab === tab.id ? "#fbbf24" : "transparent"}`,
                   }}>
-                    <div>
-                      <div style={{ color: "#64748b", fontSize: 9, fontWeight: 700, letterSpacing: ".07em", marginBottom: 3 }}>
-                        TOTAL DISTANCE · {measurePoints.length} POINTS
-                      </div>
-                      <div style={{ color: "#fbbf24", fontSize: 22, fontWeight: 800, fontFamily: "monospace", lineHeight: 1 }}>
-                        {fmtVal(totalMetres, measureUnit || "m")}
-                        <span style={{ fontSize: 13, color: "#92400e", marginLeft: 5 }}>
-                          {UNITS.find(u => u.key === (measureUnit || "m"))?.abbr}
-                        </span>
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => copyVal(measureUnit || "m", totalMetres)}
-                      style={{
-                        padding: "5px 12px", borderRadius: 5,
-                        border: `1px solid ${copiedKey === (measureUnit || "m") ? "rgba(74,222,128,.4)" : "rgba(255,255,255,.1)"}`,
-                        background: copiedKey === (measureUnit || "m") ? "rgba(74,222,128,.1)" : "rgba(255,255,255,.04)",
-                        color: copiedKey === (measureUnit || "m") ? "#4ade80" : "#64748b",
-                        fontSize: 11, fontWeight: 600, cursor: "pointer",
-                      }}>
-                      {copiedKey === (measureUnit || "m") ? "✓ Copied" : "Copy"}
-                    </button>
-                  </div>
+                  {tab.label}
+                </button>
+              ))}
+            </div>
 
-                  {/* Per-segment breakdown */}
-                  {measurePoints.length >= 3 && (
+            {/* ── Live tab ── */}
+            {activeTab === "live" && (
+              <div style={{ padding: "12px 14px" }}>
+                {totalMetres === 0 ? (
+                  <div style={{
+                    textAlign: "center", padding: "18px 0",
+                    color: "#334155", fontSize: 12, fontStyle: "italic",
+                  }}>
+                    Click on the map to place measurement points…
+                  </div>
+                ) : (
+                  <>
+                    {/* Big total display */}
                     <div style={{
+                      background: "rgba(255,140,0,.07)",
+                      border: "1px solid rgba(255,140,0,.2)",
+                      borderRadius: 8,
+                      padding: "10px 14px",
                       marginBottom: 10,
-                      background: "rgba(255,255,255,.02)",
-                      border: "1px solid rgba(255,255,255,.05)",
-                      borderRadius: 7,
-                      padding: "8px 10px",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
                     }}>
-                      <div style={{ color: "#334155", fontSize: 9, fontWeight: 700, letterSpacing: ".07em", marginBottom: 6 }}>
-                        SEGMENT BREAKDOWN
-                      </div>
-                      <div style={{ display: "flex", flexDirection: "column", gap: 3, maxHeight: 90, overflowY: "auto" }}>
-                        {measurePoints.slice(1).map((pt, i) => {
-                          const d = haversine(measurePoints[i], pt);
-                          return (
-                            <div key={i} style={{
-                              display: "flex", alignItems: "center", justifyContent: "space-between",
-                              padding: "2px 6px", borderRadius: 4,
-                              background: i % 2 === 0 ? "transparent" : "rgba(255,255,255,.02)",
-                            }}>
-                              <span style={{ color: "#475569", fontSize: 10, fontFamily: "monospace" }}>
-                                Pt {i + 1} → {i + 2}
-                              </span>
-                              <span style={{ color: "#fbbf24", fontSize: 10, fontFamily: "monospace", fontWeight: 700 }}>
-                                {fmtVal(d, measureUnit || "m")} {UNITS.find(u => u.key === (measureUnit || "m"))?.abbr}
-                              </span>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-          )}
-
-          {/* ── Manual entry tab ── */}
-          {activeTab === "manual" && (
-            <div style={{ padding: "12px 14px" }}>
-              <div style={{
-                background: "rgba(167,139,250,.06)",
-                border: "1px solid rgba(167,139,250,.18)",
-                borderRadius: 8,
-                padding: "10px 12px",
-                marginBottom: 10,
-              }}>
-                <div style={{ color: "#a78bfa", fontSize: 10, fontWeight: 700, letterSpacing: ".07em", marginBottom: 8 }}>
-                  ENTER A DISTANCE TO CONVERT
-                </div>
-                <div style={{ display: "flex", gap: 7, alignItems: "center" }}>
-                  <input
-                    type="number"
-                    min="0"
-                    step="any"
-                    value={manualVal}
-                    onChange={e => setManualVal(e.target.value)}
-                    placeholder="e.g. 1500"
-                    style={{
-                      flex: 1, padding: "8px 10px", borderRadius: 6,
-                      border: "1px solid rgba(255,255,255,.1)",
-                      background: "rgba(255,255,255,.04)",
-                      color: "#e2e8f0", fontSize: 13, outline: "none",
-                      fontFamily: "monospace",
-                    }}
-                  />
-                  <select
-                    value={manualUnit}
-                    onChange={e => setManualUnit(e.target.value)}
-                    style={{
-                      padding: "8px 10px", borderRadius: 6,
-                      border: "1px solid rgba(255,255,255,.1)",
-                      background: "#1e2d45", color: "#e2e8f0",
-                      fontSize: 12, outline: "none", cursor: "pointer",
-                    }}>
-                    {UNITS.map(u => (
-                      <option key={u.key} value={u.key}>{u.abbr} — {u.label}</option>
-                    ))}
-                  </select>
-                </div>
-                {manualVal && !isFinite(parseFloat(manualVal)) && (
-                  <div style={{ color: "#f87171", fontSize: 10, marginTop: 5 }}>
-                    ⚠ Please enter a valid number
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* ── Unit conversion grid (shared by both tabs) ── */}
-          {(activeTab === "live" ? totalMetres > 0 : manualMetres !== null && manualMetres > 0) && (
-            <div style={{ padding: "0 14px 14px" }}>
-              <div style={{
-                color: "#334155", fontSize: 9, fontWeight: 700,
-                letterSpacing: ".07em", marginBottom: 7,
-              }}>
-                ALL UNITS
-              </div>
-              <div style={{
-                display: "grid",
-                gridTemplateColumns: "1fr 1fr",
-                gap: 5,
-              }}>
-                {UNITS.map(u => {
-                  const val = toUnit(displayMetres, u.key).toFixed(u.dp);
-                  const isActive = u.key === (measureUnit || "m");
-                  return (
-                    <div
-                      key={u.key}
-                      className="mt-unit-row"
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        padding: "7px 9px",
-                        borderRadius: 7,
-                        background: isActive
-                          ? "rgba(255,140,0,.12)"
-                          : "rgba(255,255,255,.025)",
-                        border: `1px solid ${isActive ? "rgba(255,140,0,.4)" : "rgba(255,255,255,.05)"}`,
-                        cursor: "pointer",
-                        transition: "all .12s",
-                      }}
-                      onClick={() => {
-                        if (setMeasureUnit) setMeasureUnit(u.key);
-                      }}
-                      title={`Set display unit to ${u.label}`}
-                    >
-                      <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
-                        <span style={{ fontSize: 12 }}>{u.icon}</span>
-                        <div>
-                          <div style={{
-                            color: isActive ? "#fbbf24" : "#94a3b8",
-                            fontSize: 9, fontWeight: 700, letterSpacing: ".04em",
-                          }}>
-                            {u.label.toUpperCase()}
-                          </div>
-                          <div style={{
-                            color: isActive ? "#fde68a" : "#e2e8f0",
-                            fontSize: 12, fontWeight: 700,
-                            fontFamily: "'Courier New', monospace",
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            whiteSpace: "nowrap",
-                          }}>
-                            {val}
-                            <span style={{
-                              fontSize: 9,
-                              color: isActive ? "#92400e" : "#475569",
-                              marginLeft: 3,
-                            }}>
-                              {u.abbr}
-                            </span>
-                          </div>
+                      <div>
+                        <div style={{ color: "#64748b", fontSize: 9, fontWeight: 700, letterSpacing: ".07em", marginBottom: 3 }}>
+                          TOTAL DISTANCE · {measurePoints.length} POINTS
+                        </div>
+                        <div style={{ color: "#fbbf24", fontSize: 22, fontWeight: 800, fontFamily: "monospace", lineHeight: 1 }}>
+                          {fmtVal(totalMetres, measureUnit || "m")}
+                          <span style={{ fontSize: 13, color: "#92400e", marginLeft: 5 }}>
+                            {UNITS.find(u => u.key === (measureUnit || "m"))?.abbr}
+                          </span>
                         </div>
                       </div>
                       <button
-                        onClick={ev => { ev.stopPropagation(); copyVal(u.key, displayMetres); }}
+                        onClick={() => copyVal(measureUnit || "m", totalMetres)}
                         style={{
-                          padding: "2px 7px",
-                          borderRadius: 4,
-                          border: `1px solid ${copiedKey === u.key ? "rgba(74,222,128,.45)" : "rgba(255,255,255,.08)"}`,
-                          background: copiedKey === u.key ? "rgba(74,222,128,.1)" : "transparent",
-                          color: copiedKey === u.key ? "#4ade80" : "#334155",
-                          fontSize: 9, fontWeight: 700, cursor: "pointer",
-                          flexShrink: 0,
+                          padding: "5px 12px", borderRadius: 5,
+                          border: `1px solid ${copiedKey === (measureUnit || "m") ? "rgba(74,222,128,.4)" : "rgba(255,255,255,.1)"}`,
+                          background: copiedKey === (measureUnit || "m") ? "rgba(74,222,128,.1)" : "rgba(255,255,255,.04)",
+                          color: copiedKey === (measureUnit || "m") ? "#4ade80" : "#64748b",
+                          fontSize: 11, fontWeight: 600, cursor: "pointer",
                         }}>
-                        {copiedKey === u.key ? "✓" : "Copy"}
+                        {copiedKey === (measureUnit || "m") ? "✓ Copied" : "Copy"}
                       </button>
                     </div>
-                  );
-                })}
+
+                    {/* Per-segment breakdown */}
+                    {measurePoints.length >= 3 && (
+                      <div style={{
+                        marginBottom: 10,
+                        background: "rgba(255,255,255,.02)",
+                        border: "1px solid rgba(255,255,255,.05)",
+                        borderRadius: 7,
+                        padding: "8px 10px",
+                      }}>
+                        <div style={{ color: "#334155", fontSize: 9, fontWeight: 700, letterSpacing: ".07em", marginBottom: 6 }}>
+                          SEGMENT BREAKDOWN
+                        </div>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 3, maxHeight: 90, overflowY: "auto" }}>
+                          {measurePoints.slice(1).map((pt, i) => {
+                            const d = haversine(measurePoints[i], pt);
+                            return (
+                              <div key={i} style={{
+                                display: "flex", alignItems: "center", justifyContent: "space-between",
+                                padding: "2px 6px", borderRadius: 4,
+                                background: i % 2 === 0 ? "transparent" : "rgba(255,255,255,.02)",
+                              }}>
+                                <span style={{ color: "#475569", fontSize: 10, fontFamily: "monospace" }}>
+                                  Pt {i + 1} → {i + 2}
+                                </span>
+                                <span style={{ color: "#fbbf24", fontSize: 10, fontFamily: "monospace", fontWeight: 700 }}>
+                                  {fmtVal(d, measureUnit || "m")} {UNITS.find(u => u.key === (measureUnit || "m"))?.abbr}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
               </div>
+            )}
 
-              {/* Copy all button */}
-              <button
-                onClick={() => {
-                  const allText = UNITS.map(u =>
-                    `${u.label}: ${toUnit(displayMetres, u.key).toFixed(u.dp)} ${u.abbr}`
-                  ).join("\n");
-                  navigator.clipboard?.writeText(allText).catch(() => {});
-                  setCopiedKey("_all");
-                  setTimeout(() => setCopiedKey(""), 1800);
-                }}
-                style={{
-                  marginTop: 8,
-                  width: "100%",
-                  padding: "8px",
-                  borderRadius: 6,
-                  border: `1px solid ${copiedKey === "_all" ? "rgba(74,222,128,.4)" : "rgba(255,255,255,.07)"}`,
-                  background: copiedKey === "_all" ? "rgba(74,222,128,.07)" : "rgba(255,255,255,.02)",
-                  color: copiedKey === "_all" ? "#4ade80" : "#64748b",
-                  fontSize: 11, fontWeight: 600, cursor: "pointer",
+            {/* ── Manual entry tab ── */}
+            {activeTab === "manual" && (
+              <div style={{ padding: "12px 14px" }}>
+                <div style={{
+                  background: "rgba(167,139,250,.06)",
+                  border: "1px solid rgba(167,139,250,.18)",
+                  borderRadius: 8,
+                  padding: "10px 12px",
+                  marginBottom: 10,
                 }}>
-                {copiedKey === "_all" ? "✓ Copied All Units!" : "📋 Copy All Units"}
-              </button>
-            </div>
-          )}
-        </>
-      )}
+                  <div style={{ color: "#a78bfa", fontSize: 10, fontWeight: 700, letterSpacing: ".07em", marginBottom: 8 }}>
+                    ENTER A DISTANCE TO CONVERT
+                  </div>
+                  <div style={{ display: "flex", gap: 7, alignItems: "center" }}>
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      value={manualVal}
+                      onChange={e => setManualVal(e.target.value)}
+                      placeholder="e.g. 1500"
+                      style={{
+                        flex: 1, padding: "8px 10px", borderRadius: 6,
+                        border: "1px solid rgba(255,255,255,.1)",
+                        background: "rgba(255,255,255,.04)",
+                        color: "#e2e8f0", fontSize: 13, outline: "none",
+                        fontFamily: "monospace",
+                      }}
+                    />
+                    <select
+                      value={manualUnit}
+                      onChange={e => setManualUnit(e.target.value)}
+                      style={{
+                        padding: "8px 10px", borderRadius: 6,
+                        border: "1px solid rgba(255,255,255,.1)",
+                        background: "#1e2d45", color: "#e2e8f0",
+                        fontSize: 12, outline: "none", cursor: "pointer",
+                      }}>
+                      {UNITS.map(u => (
+                        <option key={u.key} value={u.key}>{u.abbr} — {u.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                  {manualVal && !isFinite(parseFloat(manualVal)) && (
+                    <div style={{ color: "#f87171", fontSize: 10, marginTop: 5 }}>
+                      ⚠ Please enter a valid number
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
 
-      {/* Collapsed summary bar when panel is folded */}
-      {!panelOpen && totalMetres > 0 && (
-        <div style={{
-          padding: "7px 14px",
-          background: "#0d1520",
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
-          flexWrap: "wrap",
-        }}>
-          {UNITS.slice(0, 5).map(u => (
-            <span key={u.key} style={{
-              color: u.key === (measureUnit || "m") ? "#fbbf24" : "#334155",
-              fontSize: 10,
-              fontFamily: "monospace",
-              fontWeight: u.key === (measureUnit || "m") ? 800 : 400,
-            }}>
-              {toUnit(totalMetres, u.key).toFixed(u.dp)}{u.abbr}
-            </span>
-          ))}
-        </div>
-      )}
+            {/* ── Unit conversion grid (shared by both tabs) ── */}
+            {(activeTab === "live" ? totalMetres > 0 : manualMetres !== null && manualMetres > 0) && (
+              <div style={{ padding: "0 14px 14px" }}>
+                <div style={{
+                  color: "#334155", fontSize: 9, fontWeight: 700,
+                  letterSpacing: ".07em", marginBottom: 7,
+                }}>
+                  ALL UNITS
+                </div>
+                <div style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr",
+                  gap: 5,
+                }}>
+                  {UNITS.map(u => {
+                    const val = toUnit(displayMetres, u.key).toFixed(u.dp);
+                    const isActive = u.key === (measureUnit || "m");
+                    return (
+                      <div
+                        key={u.key}
+                        className="mt-unit-row"
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          padding: "7px 9px",
+                          borderRadius: 7,
+                          background: isActive
+                            ? "rgba(255,140,0,.12)"
+                            : "rgba(255,255,255,.025)",
+                          border: `1px solid ${isActive ? "rgba(255,140,0,.4)" : "rgba(255,255,255,.05)"}`,
+                          cursor: "pointer",
+                          transition: "all .12s",
+                        }}
+                        onClick={() => {
+                          if (setMeasureUnit) setMeasureUnit(u.key);
+                        }}
+                        title={`Set display unit to ${u.label}`}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                          <span style={{ fontSize: 12 }}>{u.icon}</span>
+                          <div>
+                            <div style={{
+                              color: isActive ? "#fbbf24" : "#94a3b8",
+                              fontSize: 9, fontWeight: 700, letterSpacing: ".04em",
+                            }}>
+                              {u.label.toUpperCase()}
+                            </div>
+                            <div style={{
+                              color: isActive ? "#fde68a" : "#e2e8f0",
+                              fontSize: 12, fontWeight: 700,
+                              fontFamily: "'Courier New', monospace",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                            }}>
+                              {val}
+                              <span style={{
+                                fontSize: 9,
+                                color: isActive ? "#92400e" : "#475569",
+                                marginLeft: 3,
+                              }}>
+                                {u.abbr}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                        <button
+                          onClick={ev => { ev.stopPropagation(); copyVal(u.key, displayMetres); }}
+                          style={{
+                            padding: "2px 7px",
+                            borderRadius: 4,
+                            border: `1px solid ${copiedKey === u.key ? "rgba(74,222,128,.45)" : "rgba(255,255,255,.08)"}`,
+                            background: copiedKey === u.key ? "rgba(74,222,128,.1)" : "transparent",
+                            color: copiedKey === u.key ? "#4ade80" : "#334155",
+                            fontSize: 9, fontWeight: 700, cursor: "pointer",
+                            flexShrink: 0,
+                          }}>
+                          {copiedKey === u.key ? "✓" : "Copy"}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Copy all button */}
+                <button
+                  onClick={() => {
+                    const allText = UNITS.map(u =>
+                      `${u.label}: ${toUnit(displayMetres, u.key).toFixed(u.dp)} ${u.abbr}`
+                    ).join("\n");
+                    navigator.clipboard?.writeText(allText).catch(() => {});
+                    setCopiedKey("_all");
+                    setTimeout(() => setCopiedKey(""), 1800);
+                  }}
+                  style={{
+                    marginTop: 8,
+                    width: "100%",
+                    padding: "8px",
+                    borderRadius: 6,
+                    border: `1px solid ${copiedKey === "_all" ? "rgba(74,222,128,.4)" : "rgba(255,255,255,.07)"}`,
+                    background: copiedKey === "_all" ? "rgba(74,222,128,.07)" : "rgba(255,255,255,.02)",
+                    color: copiedKey === "_all" ? "#4ade80" : "#64748b",
+                    fontSize: 11, fontWeight: 600, cursor: "pointer",
+                  }}>
+                  {copiedKey === "_all" ? "✓ Copied All Units!" : "📋 Copy All Units"}
+                </button>
+              </div>
+            )}
+          </>
+        )}
+
+        {/* Collapsed summary bar when panel is folded */}
+        {!panelOpen && totalMetres > 0 && (
+          <div style={{
+            padding: "7px 14px",
+            background: "#0d1520",
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            flexWrap: "wrap",
+          }}>
+            {UNITS.slice(0, 5).map(u => (
+              <span key={u.key} style={{
+                color: u.key === (measureUnit || "m") ? "#fbbf24" : "#334155",
+                fontSize: 10,
+                fontFamily: "monospace",
+                fontWeight: u.key === (measureUnit || "m") ? 800 : 400,
+              }}>
+                {toUnit(totalMetres, u.key).toFixed(u.dp)}{u.abbr}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
