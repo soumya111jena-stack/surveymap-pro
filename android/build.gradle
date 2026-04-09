@@ -9,7 +9,7 @@ buildscript {
 
     dependencies {
         // ✅ Stable Android Gradle Plugin
-        classpath 'com.android.tools.build:gradle:8.2.2'
+        classpath 'com.android.tools.build:gradle:8.9.1'
 
         // ✅ Google services (keep if using Firebase)
         classpath 'com.google.gms:google-services:4.4.4'

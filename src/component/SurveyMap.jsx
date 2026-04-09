@@ -1,25 +1,16 @@
 /**
- * SurveyMap.jsx — SurveyMap Pro v5.9.1
+ * SurveyMap.jsx — SurveyMap Pro v5.9.9
  * ─────────────────────────────────────────────────────────────────────────────
- * CHANGES FROM v5.9 → v5.9.1:
+ * CHANGES IN v5.9.9 (patch applied):
  *
- *  1. DEMElevationDrape added — QGIS-style 2D elevation draping
- *     - KML / KMZ / SHP features are recoloured by DEM elevation
- *     - Uses same colour ramp + min/max as the DEM raster overlay
- *     - Tooltips show sampled elevation per feature
- *  2. demRasterData state added — stores raw Float32Array from DEMLoader
- *  3. kmlLayerRef / shpLayerRef refs added — expose Leaflet layers to drape
- *  4. KMLLoader & ShapefileLoader now accept onLayer callback
- *  5. DEMLoader onStats now receives (stats, rasterData) — second arg stored
+ *  PATCH — handleContextZoomTo: replaced `window.L` (undefined in bundled/Vite
+ *           apps) with the module-imported `L` from "leaflet".
  *
- * PATCH v5.9.1-p1: KML → DEM clipping
- *  6. kmlMask state added — polygon rings extracted from KML for DEM clip
- *  7. removeKML clears kmlMask on unload
- *  8. KMLLoader onLayer extracts polygon rings into kmlMask
- *  9. DEMLoader receives kmlMask prop for raster clipping
+ * All previous changes (v5.9 → v5.9.8) preserved unchanged.
  */
 
 import React, { useState, useRef, useCallback, useEffect } from "react";
+import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { MapContainer, TileLayer, WMSTileLayer, useMap } from "react-leaflet";
 
@@ -35,7 +26,7 @@ import KMZLoader          from "./loaders/KMZLoader";
 import CSVLoader          from "./loaders/CSVLoader";
 import ShapefileLoader    from "./loaders/ShapefileLoader";
 import DEMLoader          from "./loaders/Demloader";
-import DEMElevationDrape  from "./loaders/Demelevationdrape";   // ← NEW v5.9.1
+import DEMElevationDrape  from "./loaders/Demelevationdrape";
 import { exportShapefile } from "../utils/exportShapefile";
 import GeoJSONLoader      from "./loaders/GeoJSONLoader";
 import Globe3DView        from "./Globe3DView";
@@ -58,7 +49,15 @@ import { MAP_LAYERS, MENU_DEFS }  from "../constants/mapLayers.js";
 import { GLOBAL_STYLES }          from "../constants/globalStyles.js";
 import { toDMS, toUTM, zoomForType, geocodeForMap, reverseGeocode, toPlusCode } from "../utils/mapUtils.js";
 import { useCompassNav }          from "../hooks/useCompassNav.js";
+import { useOverlayLayers }       from "../hooks/useOverlayLayers.js";
 import { useGeoJSON }             from "../hooks/useGeoJSON.js";
+
+// ── v5.9.8: Properties panel + Context menu ──────────────────────────────────
+import FeaturePropertiesPanel from "./tools/Featurepropertiespanel";
+import FeatureContextMenu     from "./tools/FeatureContextMenu";
+// ── v5.9.4: KML / GeoJSON / SHP area analyzer ────────────────────────────────
+import KMLAreaAnalyzer from "./tools/Kmlareaanalyzer";
+
 import {
   SectionHeader, LayerItem, PrimaryButton,
   MobileBottomSheet, SheetHeader, SheetDivider,
@@ -128,12 +127,12 @@ function ZoomControl({ isMobile, leafletMapRef }) {
     transition: "background 0.12s, color 0.12s",
     outline: "none", padding: 0,
   };
-  const hov  = e => { e.currentTarget.style.background="rgba(74,158,255,0.22)"; e.currentTarget.style.color="#90c8ff"; };
-  const uhov = e => { e.currentTarget.style.background="rgba(5,12,24,0.92)";    e.currentTarget.style.color="rgba(200,225,255,0.75)"; };
+  const hov  = e => { e.currentTarget.style.background = "rgba(74,158,255,0.22)"; e.currentTarget.style.color = "#90c8ff"; };
+  const uhov = e => { e.currentTarget.style.background = "rgba(5,12,24,0.92)";    e.currentTarget.style.color = "rgba(200,225,255,0.75)"; };
 
   return (
     <div style={{ position:"fixed", top:TOP_H+100, right:10, zIndex:1050, display:"flex", flexDirection:"column", borderRadius:9, overflow:"hidden", border:"1px solid rgba(255,255,255,0.10)", boxShadow:"0 4px 20px rgba(0,0,0,0.55)", pointerEvents:"all" }}>
-      <button onClick={() => doZoom(1)} onMouseEnter={hov} onMouseLeave={uhov} title="Zoom in  ( + )" style={{ ...btn, borderBottom:"1px solid rgba(255,255,255,0.07)" }}>
+      <button onClick={() => doZoom(1)}  onMouseEnter={hov} onMouseLeave={uhov} title="Zoom in  ( + )" style={{ ...btn, borderBottom:"1px solid rgba(255,255,255,0.07)" }}>
         <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><line x1="6.5" y1="1.5" x2="6.5" y2="11.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/><line x1="1.5" y1="6.5" x2="11.5" y2="6.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
       </button>
       <button onClick={() => doZoom(-1)} onMouseEnter={hov} onMouseLeave={uhov} title="Zoom out ( − )" style={btn}>
@@ -159,11 +158,11 @@ export default function SurveyMap() {
   const measureLayersRef = useRef([]);
   const measureLineRef   = useRef(null);
   const leafletMapRef    = useRef(null);
-
-  // ── NEW v5.9.1: layer refs for DEM draping ──────────────────────────────
-  const kmlLayerRef      = useRef(null);   // populated by KMLLoader onLayer
-  const shpLayerRef      = useRef(null);   // populated by ShapefileLoader onLayer
-  const kmzLayerRef      = useRef(null);   // populated by KMZLoader onLayer
+  const kmlLayerRef      = useRef(null);
+  const shpLayerRef      = useRef(null);
+  const kmzLayerRef      = useRef(null);
+  // v5.9.9 — stable ref so Leaflet handlers never capture a stale closure
+  const stateRef = useRef({ setPropertiesGeoJSONFeature: ()=>{}, setContextMenu: ()=>{} });
 
   /* ── Responsive ────────────────────────────────────────────────────────── */
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 640);
@@ -202,6 +201,24 @@ export default function SurveyMap() {
   const [pendingPoints, setPendingPoints] = useState([]);
   const [pendingType,   setPendingType]   = useState("path");
 
+  /* ── Properties panel state ─────────────────────────────────────────────── */
+  const [propertiesDrawing,        setPropertiesDrawing]        = useState(null);
+  const [propertiesGeoJSONFeature, setPropertiesGeoJSONFeature] = useState(null);
+
+  /* ── v5.9.8: Context menu state ─────────────────────────────────────────── */
+  const [contextMenu, setContextMenu] = useState({
+    visible: false, x: 0, y: 0, feature: null,
+  });
+
+  // v5.9.9 — keep stateRef fresh every render so Leaflet handlers always call
+  // the current setter (no stale closure regardless of when layer.on() fired)
+  stateRef.current.setPropertiesGeoJSONFeature = setPropertiesGeoJSONFeature;
+  stateRef.current.setContextMenu              = setContextMenu;
+
+  /* ── KML Area Analyzer state ─────────────────────────────────────────────── */
+  const [kmlAnalyzerOpen, setKmlAnalyzerOpen] = useState(false);
+  const [kmlAnalyzerData, setKmlAnalyzerData] = useState(null);
+
   /* ── Measure ───────────────────────────────────────────────────────────── */
   const [measureMode,   setMeasureMode]   = useState(false);
   const [measurePoints, setMeasurePoints] = useState([]);
@@ -219,12 +236,10 @@ export default function SurveyMap() {
   const [extraFileType, setExtraFileType] = useState(null);
   const [csvValidCount, setCsvValidCount] = useState(0);
   const [csvTotalCount, setCsvTotalCount] = useState(0);
-  // GeoJSON
   const [geojsonFile,     setGeojsonFile]     = useState(null);
   const [geojsonLoading,  setGeojsonLoading]  = useState(false);
   const [geojsonFileName, setGeojsonFileName] = useState(null);
   const [geojsonTrigger,  setGeojsonTrigger]  = useState(null);
-  // Shapefile
   const [shpFile,     setShpFile]     = useState(null);
   const [shpTrigger,  setShpTrigger]  = useState(null);
   const [shpLoading,  setShpLoading]  = useState(false);
@@ -264,62 +279,177 @@ export default function SurveyMap() {
   const [activeSheet,   setActiveSheet]   = useState(null);
 
   /* ── Hooks ─────────────────────────────────────────────────────────────── */
-  const compass = useCompassNav(leafletMapRef);
+  const overlayControls = useOverlayLayers();
+  const compass = useCompassNav(leafletMapRef, overlayControls);
   const geoJSON = useGeoJSON(leafletMapRef);
 
   /* ── DEM hook ──────────────────────────────────────────────────────────── */
   const {
-    demFile,
-    demFileName,
-    demLoading,
-    demStats,
-    demOpacity,
-    demColorRamp,
-    demError,
-    handleDEMUpload,
-    handleDEMRemove,
-    handleDEMOpacity,
-    handleDEMColorRamp,
-    handleDEMDone,
-    handleDEMError,
-    handleDEMStats,
+    demFile, demFileName, demLoading, demStats, demOpacity, demColorRamp, demError,
+    handleDEMUpload, handleDEMRemove, handleDEMOpacity, handleDEMColorRamp,
+    handleDEMDone, handleDEMError, handleDEMStats,
   } = useDEM();
 
-  // ── NEW v5.9.1: raw raster data for elevation draping ───────────────────
   const [demRasterData, setDemRasterData] = useState(null);
+  const [kmlMask,       setKmlMask]       = useState(null);
 
-  // ── PATCH v5.9.1-p1 CHANGE 1: KML mask state for DEM clipping ──────────
-  const [kmlMask, setKmlMask] = useState(null);
-
-  // Combined onStats handler — stores stats + raw raster Float32Array
   const handleDEMStatsAndRaster = useCallback((stats, rasterData) => {
     handleDEMStats(stats);
     setDemRasterData(rasterData || null);
   }, [handleDEMStats]);
 
-  // Clear raster data when DEM is removed
   const handleDEMRemoveWithClear = useCallback(() => {
     handleDEMRemove();
     setDemRasterData(null);
   }, [handleDEMRemove]);
 
+  /* ── v5.9.9: attachFeatureClickHandlers ─────────────────────────────────────
+   *
+   *  THE ROOT CAUSE (why KML right-click never worked):
+   *  ─────────────────────────────────────────────────
+   *  1. `setContextMenu` was missing from the useCallback deps array, so every
+   *     Leaflet event handler captured a STALE no-op version of the setter.
+   *
+   *  2. KML parsed by leaflet-omnivore produces a nested structure:
+   *       L.LayerGroup
+   *         └─ L.LayerGroup  (one per KML <Folder>)
+   *              └─ L.Polygon / L.Polyline / L.Marker  (actual features)
+   *     The old code only went ONE level deep with eachLayer(), so it attached
+   *     handlers to the inner LayerGroups (which have no geometry events) and
+   *     never reached the actual Polygon/Polyline/Marker leaves.
+   *
+   *  THE FIX:
+   *  ────────
+   *  • All state mutations go through `stateRef.current` — a mutable ref
+   *    updated inline every render.  Handlers registered months ago still call
+   *    the live setter.  No stale closure is ever possible.
+   *  • Deep recursive walk: keep recursing until we hit a leaf layer that has
+   *    NO eachLayer method (i.e. an actual Polygon / Polyline / Marker / Circle).
+   *  • Deduplicate: stamp `_handlersAttached = true` on each leaf so calling
+   *    this function twice never registers duplicate listeners.
+   * ─────────────────────────────────────────────────────────────────────────── */
+  const attachFeatureClickHandlers = useCallback((lyr, fileType, fileName) => {
+    if (!lyr) return;
+
+    /* ── Recursively reach every leaf layer ── */
+    const walkLayer = (layer) => {
+      // If this layer has children, recurse into each child
+      if (typeof layer.eachLayer === "function") {
+        layer.eachLayer(child => walkLayer(child));
+        return;
+      }
+      // Leaf layer — attach handlers exactly once
+      if (layer._handlersAttached) return;
+      layer._handlersAttached = true;
+
+      /* ── Build a stamped GeoJSON feature ── */
+      const extractFeature = () => {
+        let f = null;
+        try { f = layer.toGeoJSON?.(); } catch (_) { return null; }
+        if (!f) return null;
+        if (f.type === "FeatureCollection") f = f.features?.[0] ?? null;
+        if (!f?.geometry?.type) return null;
+        f._fileType = fileType;
+        f._fileName = fileName;
+        f._name =
+          f.properties?.name  ||
+          f.properties?.Name  ||
+          f.properties?.NAME  ||
+          f.properties?.title ||
+          fileName || "Feature";
+        return f;
+      };
+
+      // Markers (L.Marker, L.CircleMarker) don't emit dblclick reliably
+      const isMarker = (
+        typeof layer.getLatLng  === "function" &&
+        typeof layer.getLatLngs !== "function"
+      );
+
+      /* double-click → Properties */
+      layer.on("dblclick", (e) => {
+        e.originalEvent?.stopPropagation();
+        e.originalEvent?.preventDefault();
+        const f = extractFeature();
+        if (f) stateRef.current.setPropertiesGeoJSONFeature(f);
+      });
+
+      /* single click on markers → Properties (dblclick not reliable on markers) */
+      if (isMarker) {
+        layer.on("click", (e) => {
+          e.originalEvent?.stopPropagation();
+          e.originalEvent?.preventDefault();
+          const f = extractFeature();
+          if (f) stateRef.current.setPropertiesGeoJSONFeature(f);
+        });
+      }
+
+      /* right-click → Context menu */
+      layer.on("contextmenu", (e) => {
+        e.originalEvent?.stopPropagation();
+        e.originalEvent?.preventDefault();
+        const f = extractFeature();
+        if (f) {
+          stateRef.current.setContextMenu({
+            visible: true,
+            x: e.originalEvent.clientX,
+            y: e.originalEvent.clientY,
+            feature: f,
+          });
+        }
+      });
+    };
+
+    walkLayer(lyr);
+  }, []); // [] is correct — stateRef is a stable ref, never changes identity
+
+  /* ── v5.9.9: Zoom-to handler for context menu ────────────────────────────
+   *
+   *  FIXED: use the module-imported L (from "leaflet" at the top of the file),
+   *  NOT window.L — which is undefined in Vite / bundled apps unless you
+   *  manually expose it as a global.
+   * ─────────────────────────────────────────────────────────────────────────── */
+  const handleContextZoomTo = useCallback((feature) => {
+    if (!feature || !leafletMapRef?.current) return;
+    try {
+      // ✅ FIXED: use the module-imported L, not window.L (which is undefined
+      //    in Vite / bundled apps unless you manually expose it as a global)
+      const bounds = L.geoJSON(feature).getBounds();
+      if (bounds && bounds.isValid()) {
+        leafletMapRef.current.fitBounds(bounds, { padding: [60, 60], maxZoom: 17, animate: true });
+      }
+    } catch (_) {}
+  }, [leafletMapRef]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* ── File visibility sync ───────────────────────────────────────────────── */
   useEffect(() => {
     geoJSON.importedGeoJSONLayers.forEach(l => {
       setFileVisibility(p => p[l.id] !== undefined ? p : { ...p, [l.id]: true });
     });
   }, [geoJSON.importedGeoJSONLayers]);
 
+  /* ── Wire GeoJSON layers from useGeoJSON hook → double-click + right-click ── */
+  useEffect(() => {
+    geoJSON.importedGeoJSONLayers.forEach(layer => {
+      if (!layer.leafletLayer || layer._clickHandlersAttached) return;
+      attachFeatureClickHandlers(layer.leafletLayer, "geojson", layer.name);
+      layer._clickHandlersAttached = true;
+    });
+  }, [geoJSON.importedGeoJSONLayers, attachFeatureClickHandlers]);
+
   /* ── Derived ───────────────────────────────────────────────────────────── */
   const totalDistance = measurePoints.length >= 2
-    ? measurePoints.reduce((sum,p,i) => i===0 ? 0 : sum + haversine(measurePoints[i-1], p), 0) : 0;
+    ? measurePoints.reduce((sum, p, i) => i === 0 ? 0 : sum + haversine(measurePoints[i - 1], p), 0)
+    : 0;
   const hasExportData = savedDrawings.length > 0 || route.length >= 2 || measurePoints.length >= 2;
 
-  const importedCount = (kmlName        ? 1 : 0)
-    + (extraFile       ? 1 : 0)
-    + (geojsonFileName ? 1 : 0)
-    + (shpFileName     ? 1 : 0)
-    + (demFileName     ? 1 : 0)
-    + geoJSON.importedGeoJSONLayers.length;
+  const importedCount =
+    (kmlName        ? 1 : 0) +
+    (extraFile      ? 1 : 0) +
+    (geojsonFileName ? 1 : 0) +
+    (shpFileName    ? 1 : 0) +
+    (demFileName    ? 1 : 0) +
+    geoJSON.importedGeoJSONLayers.length;
 
   /* ── Callbacks ─────────────────────────────────────────────────────────── */
   const onMouseMove  = useCallback(p => { setMousePos(p); if (p) getCursorElevation(p.lat, p.lng); }, [getCursorElevation]);
@@ -328,10 +458,10 @@ export default function SurveyMap() {
   const handleElevModeRequest = useCallback(async (mode) => {
     setElevMode(mode); setElevOpen(true); setElevProfileData([]); setElevSourceLabel("");
     let pts = [], label = "";
-    if      (mode==="survey"  && route.length>=2)         { pts=route.map(p=>({lat:p[0],lng:p[1]}));          label=`Survey Route · ${route.length} pts`; }
-    else if (mode==="measure" && measurePoints.length>=2) { pts=measurePoints.map(p=>({lat:p.lat,lng:p.lng})); label=`Measure · ${measurePoints.length} pts`; }
-    else if (mode==="draw"    && drawPoints.length>=2)    { pts=drawPoints.map(p=>({lat:p.lat,lng:p.lng}));    label=`Draw · ${drawPoints.length} pts`; }
-    else if (mode==="custom")                             { setCustomElevPts([]); setElevProfileData([]); setElevSourceLabel("Click map points"); return; }
+    if      (mode === "survey"  && route.length >= 2)         { pts = route.map(p => ({ lat: p[0], lng: p[1] }));          label = `Survey Route · ${route.length} pts`; }
+    else if (mode === "measure" && measurePoints.length >= 2) { pts = measurePoints.map(p => ({ lat: p.lat, lng: p.lng })); label = `Measure · ${measurePoints.length} pts`; }
+    else if (mode === "draw"    && drawPoints.length >= 2)    { pts = drawPoints.map(p => ({ lat: p.lat, lng: p.lng }));    label = `Draw · ${drawPoints.length} pts`; }
+    else if (mode === "custom")                               { setCustomElevPts([]); setElevProfileData([]); setElevSourceLabel("Click map points"); return; }
     if (pts.length < 2) { setElevSourceLabel("Not enough points"); return; }
     setElevSourceLabel(label);
     setElevProfileData(await getElevationProfile(pts));
@@ -339,7 +469,7 @@ export default function SurveyMap() {
 
   const handleMapClickForElev = useCallback(async (latlng) => {
     if (elevMode !== "custom" || !elevOpen) return;
-    const np = [...customElevPts, { lat:latlng.lat, lng:latlng.lng }];
+    const np = [...customElevPts, { lat: latlng.lat, lng: latlng.lng }];
     setCustomElevPts(np); setElevSourceLabel(`Custom · ${np.length} pts`);
     if (np.length >= 2) setElevProfileData(await getElevationProfile(np));
   }, [elevMode, elevOpen, customElevPts, getElevationProfile]);
@@ -373,6 +503,16 @@ export default function SurveyMap() {
     setGeojsonFile(f); setGeojsonFileName(f.name); setGeojsonLoading(true);
     setFileVisibility(p => ({ ...p, __geojson__: true }));
     setGeojsonTrigger(Date.now());
+
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const parsed = JSON.parse(ev.target.result);
+        setKmlAnalyzerData({ geojson: parsed, fileName: f.name });
+        setKmlAnalyzerOpen(true);
+      } catch (_) {}
+    };
+    reader.readAsText(f);
     e.target.value = "";
   };
 
@@ -393,61 +533,71 @@ export default function SurveyMap() {
   };
 
   /* ── Removal handlers ──────────────────────────────────────────────────── */
-  // PATCH v5.9.1-p1 CHANGE 2: setKmlMask(null) added to removeKML
   const removeKML = () => {
     setKmlFile(null); setKmlName(null); setKmlLoading(false);
-    kmlLayerRef.current = null;
-    setKmlMask(null);                                              // ← PATCH
-    setFileVisibility(p => { const n={...p}; delete n.__kml__; return n; });
+    kmlLayerRef.current = null; setKmlMask(null);
+    overlayControls.removeAllLayers();
+    setFileVisibility(p => { const n = { ...p }; delete n.__kml__; return n; });
   };
 
   const removeExtra = () => {
     setExtraFile(null); setExtraFileType(null); setCsvValidCount(0); setCsvTotalCount(0);
     kmzLayerRef.current = null;
-    setFileVisibility(p => { const n={...p}; delete n.__kmz__; delete n.__csv__; return n; });
+    overlayControls.removeAllLayers();
+    setFileVisibility(p => { const n = { ...p }; delete n.__kmz__; delete n.__csv__; return n; });
   };
+
   const removeGeojson = () => {
     setGeojsonFile(null); setGeojsonFileName(null); setGeojsonLoading(false); setGeojsonTrigger(null);
-    setFileVisibility(p => { const n={...p}; delete n.__geojson__; return n; });
+    setFileVisibility(p => { const n = { ...p }; delete n.__geojson__; return n; });
   };
+
   const removeShapefile = () => {
     setShpFile(null); setShpFileName(null); setShpLoading(false); setShpTrigger(null); setShpCount(0);
     shpLayerRef.current = null;
-    setFileVisibility(p => { const n={...p}; delete n.__shp__; return n; });
+    overlayControls.removeAllLayers();
+    setFileVisibility(p => { const n = { ...p }; delete n.__shp__; return n; });
   };
 
   /* ── Draw handlers ─────────────────────────────────────────────────────── */
   const handleToggleSurvey = () => {
-    if (surveyMode) { setRoute([]); if (polylineRef.current) { polylineRef.current.remove(); polylineRef.current=null; } }
+    if (surveyMode) { setRoute([]); if (polylineRef.current) { polylineRef.current.remove(); polylineRef.current = null; } }
     setSurveyMode(p => !p);
   };
+
   const finishDrawing = () => {
     if (!drawPoints.length) return;
     setPendingPoints([...drawPoints]); setPendingType(drawType); setPendingName(""); setShowNameModal(true);
   };
+
   const confirmDrawing = () => {
-    const name = pendingName.trim() || (pendingType==="marker"?"Marker":pendingType==="path"?"Path":"Polygon");
-    setSavedDrawings(p => [...p, { name, type:pendingType, points:pendingPoints }]);
+    const name = pendingName.trim() || (pendingType === "marker" ? "Marker" : pendingType === "path" ? "Path" : "Polygon");
+    const newDrawing = { name, type: pendingType, points: pendingPoints };
+    setSavedDrawings(p => [...p, newDrawing]);
     setDrawPoints([]);
-    if (previewLayerRef.current) { previewLayerRef.current.remove(); previewLayerRef.current=null; }
-    drawLayersRef.current.forEach(l=>l.remove()); drawLayersRef.current=[];
+    if (previewLayerRef.current) { previewLayerRef.current.remove(); previewLayerRef.current = null; }
+    drawLayersRef.current.forEach(l => l.remove()); drawLayersRef.current = [];
     setShowNameModal(false); setDrawMode(false);
+    setPropertiesDrawing(newDrawing);
   };
+
   const cancelDrawing = () => {
     setDrawPoints([]);
-    if (previewLayerRef.current) { previewLayerRef.current.remove(); previewLayerRef.current=null; }
-    drawLayersRef.current.forEach(l=>l.remove()); drawLayersRef.current=[];
+    if (previewLayerRef.current) { previewLayerRef.current.remove(); previewLayerRef.current = null; }
+    drawLayersRef.current.forEach(l => l.remove()); drawLayersRef.current = [];
     setShowNameModal(false); setDrawMode(false);
   };
+
   const clearMeasure = () => {
-    measureLayersRef.current.forEach(l=>l.remove()); measureLayersRef.current=[];
-    if (measureLineRef.current) { measureLineRef.current.remove(); measureLineRef.current=null; }
+    measureLayersRef.current.forEach(l => l.remove()); measureLayersRef.current = [];
+    if (measureLineRef.current) { measureLineRef.current.remove(); measureLineRef.current = null; }
     setMeasurePoints([]); setMeasureMode(false);
   };
+
   const resetMeasurePoints = () => {
     setMeasurePoints([]);
-    measureLayersRef.current.forEach(l=>l.remove()); measureLayersRef.current=[];
-    if (measureLineRef.current) { measureLineRef.current.remove(); measureLineRef.current=null; }
+    measureLayersRef.current.forEach(l => l.remove()); measureLayersRef.current = [];
+    if (measureLineRef.current) { measureLineRef.current.remove(); measureLineRef.current = null; }
   };
 
   /* ── Search ────────────────────────────────────────────────────────────── */
@@ -458,49 +608,49 @@ export default function SurveyMap() {
     try {
       const m = q.match(/^(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)$/);
       if (m) {
-        const lat=parseFloat(m[1]), lng=parseFloat(m[2]);
-        if (!isNaN(lat)&&!isNaN(lng)) { setFlyTarget({lat,lng,zoom:16,_ts:Date.now()}); setLocationInfo({lat,lng,name:`${lat.toFixed(5)}, ${lng.toFixed(5)}`,details:"Coordinates",loading:false}); return; }
+        const lat = parseFloat(m[1]), lng = parseFloat(m[2]);
+        if (!isNaN(lat) && !isNaN(lng)) { setFlyTarget({ lat, lng, zoom: 16, _ts: Date.now() }); setLocationInfo({ lat, lng, name: `${lat.toFixed(5)}, ${lng.toFixed(5)}`, details: "Coordinates", loading: false }); return; }
       }
       const result = await geocodeForMap(q);
       if (!result) { alert(`"${q}" — not found.`); return; }
-      setFlyTarget({lat:result.lat,lng:result.lng,zoom:zoomForType(result.type),bbox:result.bbox,_ts:Date.now()});
-      setLocationInfo({lat:result.lat,lng:result.lng,name:result.name,details:result.display_name,loading:false,description:null,wikiUrl:null,photo:null});
+      setFlyTarget({ lat: result.lat, lng: result.lng, zoom: zoomForType(result.type), bbox: result.bbox, _ts: Date.now() });
+      setLocationInfo({ lat: result.lat, lng: result.lng, name: result.name, details: result.display_name, loading: false, description: null, wikiUrl: null, photo: null });
       if (result.geojson) setBoundaryGeojson(result.geojson);
-      if (searchFnRef.current) { try { await searchFnRef.current(q); } catch(_){} }
+      if (searchFnRef.current) { try { await searchFnRef.current(q); } catch (_) {} }
       try {
-        const wr = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(result.name)}`,{signal:AbortSignal.timeout(5000)});
-        if (wr.ok) { const w=await wr.json(); if(w.type!=="disambiguation"&&w.extract?.length>30) setLocationInfo(prev=>prev?{...prev,description:w.extract,wikiUrl:w.content_urls?.desktop?.page,photo:w.thumbnail?.source||null}:null); }
-      } catch(_){}
-    } finally { setSearchLoading(false); if(isMobile) setActiveSheet(null); }
+        const wr = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(result.name)}`, { signal: AbortSignal.timeout(5000) });
+        if (wr.ok) { const w = await wr.json(); if (w.type !== "disambiguation" && w.extract?.length > 30) setLocationInfo(prev => prev ? { ...prev, description: w.extract, wikiUrl: w.content_urls?.desktop?.page, photo: w.thumbnail?.source || null } : null); }
+      } catch (_) {}
+    } finally { setSearchLoading(false); if (isMobile) setActiveSheet(null); }
   }
 
   const handleLocationFound = useCallback(async ({ lat, lng, label, raw }) => {
-    setLocationInfo({ lat,lng,label,loading:true,photo:null,description:null });
-    setFlyTarget({ lat,lng,zoom:15,_ts:Date.now() });
+    setLocationInfo({ lat, lng, label, loading: true, photo: null, description: null });
+    setFlyTarget({ lat, lng, zoom: 15, _ts: Date.now() });
     if (raw && !raw.display_name) {
       setBoundaryGeojson(null);
-      setLocationInfo({ lat,lng,label,name:`${lat.toFixed(5)}, ${lng.toFixed(5)}`,description:null,wikiUrl:null,photo:null,details:null,plusCode:toPlusCode(lat,lng),loading:true });
-      const place = await reverseGeocode(lat,lng);
+      setLocationInfo({ lat, lng, label, name: `${lat.toFixed(5)}, ${lng.toFixed(5)}`, description: null, wikiUrl: null, photo: null, details: null, plusCode: toPlusCode(lat, lng), loading: true });
+      const place = await reverseGeocode(lat, lng);
       if (place) {
-        const addr=place.address||{}, city=addr.city||addr.town||addr.village||addr.suburb||addr.county||"";
-        setLocationInfo({ lat,lng,label, name:addr.neighbourhood||addr.suburb||addr.quarter||addr.road||city||addr.state||`${lat.toFixed(4)}, ${lng.toFixed(4)}`, details:[city,addr.state,addr.country].filter(Boolean).join(", "), description:null,wikiUrl:null,photo:null,plusCode:toPlusCode(lat,lng),fullAddress:place.display_name,loading:false });
-      } else { setLocationInfo({ lat,lng,label,name:`${lat.toFixed(5)}, ${lng.toFixed(5)}`,details:null,description:null,wikiUrl:null,photo:null,plusCode:toPlusCode(lat,lng),loading:false }); }
+        const addr = place.address || {}, city = addr.city || addr.town || addr.village || addr.suburb || addr.county || "";
+        setLocationInfo({ lat, lng, label, name: addr.neighbourhood || addr.suburb || addr.quarter || addr.road || city || addr.state || `${lat.toFixed(4)}, ${lng.toFixed(4)}`, details: [city, addr.state, addr.country].filter(Boolean).join(", "), description: null, wikiUrl: null, photo: null, plusCode: toPlusCode(lat, lng), fullAddress: place.display_name, loading: false });
+      } else { setLocationInfo({ lat, lng, label, name: `${lat.toFixed(5)}, ${lng.toFixed(5)}`, details: null, description: null, wikiUrl: null, photo: null, plusCode: toPlusCode(lat, lng), loading: false }); }
       return;
     }
     try {
-      let gj=null, place=null;
-      const sn=label.split(",")[0].trim();
-      const nomUrl=`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(sn)}&format=json&limit=5&polygon_geojson=1&addressdetails=1&namedetails=1`;
-      for (const px of [`https://corsproxy.io/?url=${encodeURIComponent(nomUrl)}`,`https://api.allorigins.win/raw?url=${encodeURIComponent(nomUrl)}`]) {
-        try { const res=await fetch(px,{signal:AbortSignal.timeout(6000)}); if(!res.ok) continue; const data=await res.json(); if(!Array.isArray(data)||!data.length) continue; place=data.find(r=>r.geojson?.type==="MultiPolygon")||data.find(r=>r.geojson?.type==="Polygon")||data[0]; gj=place?.geojson||null; if(gj) break; } catch(_){}
+      let gj = null, place = null;
+      const sn = label.split(",")[0].trim();
+      const nomUrl = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(sn)}&format=json&limit=5&polygon_geojson=1&addressdetails=1&namedetails=1`;
+      for (const px of [`https://corsproxy.io/?url=${encodeURIComponent(nomUrl)}`, `https://api.allorigins.win/raw?url=${encodeURIComponent(nomUrl)}`]) {
+        try { const res = await fetch(px, { signal: AbortSignal.timeout(6000) }); if (!res.ok) continue; const data = await res.json(); if (!Array.isArray(data) || !data.length) continue; place = data.find(r => r.geojson?.type === "MultiPolygon") || data.find(r => r.geojson?.type === "Polygon") || data[0]; gj = place?.geojson || null; if (gj) break; } catch (_) {}
       }
       setBoundaryGeojson(gj);
-      let desc=null,wUrl=null,photo=null;
-      const pn=place?.namedetails?.name||place?.display_name?.split(",")?.[0]||sn;
-      try { const wr=await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(pn)}`); if(wr.ok){const w=await wr.json();if(w.type!=="disambiguation"&&w.extract?.length>30){desc=w.extract;wUrl=w.content_urls?.desktop?.page;photo=w.thumbnail?.source||null;}} } catch(_){}
-      const addr=place?.address||{};
-      setLocationInfo({ lat,lng,label,name:pn,description:desc,wikiUrl:wUrl,photo,details:[addr.city||addr.town||addr.village,addr.state,addr.country].filter(Boolean).join(", "),loading:false });
-    } catch { setLocationInfo(p=>({...p,loading:false,description:"Could not load info."})); }
+      let desc = null, wUrl = null, photo = null;
+      const pn = place?.namedetails?.name || place?.display_name?.split(",")?.[0] || sn;
+      try { const wr = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(pn)}`); if (wr.ok) { const w = await wr.json(); if (w.type !== "disambiguation" && w.extract?.length > 30) { desc = w.extract; wUrl = w.content_urls?.desktop?.page; photo = w.thumbnail?.source || null; } } } catch (_) {}
+      const addr = place?.address || {};
+      setLocationInfo({ lat, lng, label, name: pn, description: desc, wikiUrl: wUrl, photo, details: [addr.city || addr.town || addr.village, addr.state, addr.country].filter(Boolean).join(", "), loading: false });
+    } catch { setLocationInfo(p => ({ ...p, loading: false, description: "Could not load info." })); }
   }, []);
 
   const handleCloseLocationInfo = useCallback(() => { setLocationInfo(null); setBoundaryGeojson(null); }, []);
@@ -509,72 +659,61 @@ export default function SurveyMap() {
   const handleMenuAction = (action) => {
     setOpenMenu(null);
     const A = action;
-    if (A==="openKML")           { kmlInputRef.current?.click(); return; }
-    if (A==="openExtra")         { extraInputRef.current?.click(); return; }
-    if (A==="openGeoJSON")       { geojsonInputRef.current?.click(); return; }
-    if (A==="openShapefile")     { shpInputRef.current?.click(); return; }
-    if (A==="exportGeoJSON")     { exportGeoJSON(savedDrawings, route, measurePoints); return; }
-    if (A==="exportKML")         { exportKML(savedDrawings, route, measurePoints); return; }
-    if (A==="exportCSV")         { exportCSV(savedDrawings, route, measurePoints); return; }
-    if (A==="exportKMZ")         { exportKMZ(savedDrawings, route, measurePoints); return; }
-    if (A==="exportSHP")         { exportShapefile(savedDrawings, route, measurePoints); return; }
-    if (A==="resetAll")          { if(!window.confirm("Reset everything?")) return; setSavedDrawings([]); cancelDrawing(); clearMeasure(); setRoute([]); setSurveyMode(false); geoJSON.clearAllGeoJSONLayers(); handleDEMRemoveWithClear(); return; }
-    if (A==="startDraw")         { setDrawMode(true); setDrawPoints([]); setActiveSheet(null); return; }
-    if (A==="cancelDraw")        { cancelDrawing(); return; }
-    if (A==="startMeasure")      { setMeasureMode(true); return; }
-    if (A==="stopMeasure")       { clearMeasure(); return; }
-    if (A==="deleteDrawings")    { if(!savedDrawings.length){alert("No drawings.");return;} if(window.confirm(`Delete ${savedDrawings.length} drawing(s)?`)) setSavedDrawings([]); return; }
-    if (A==="layerSatellite")    { setActiveLayer("Satellite"); return; }
-    if (A==="layerStreet")       { setActiveLayer("Street"); return; }
-    if (A==="layerTerrain")      { setActiveLayer("Terrain"); return; }
-    if (A==="layerDark")         { setActiveLayer("Dark"); return; }
-    if (A==="layerLight")        { setActiveLayer("Light"); return; }
-    if (A==="layerSatLabels")    { setActiveLayer("Satellite + Labels"); return; }
-    if (A==="show3D")            { setShow3D(true); return; }
-    if (A==="toggleNight")       { setNightModeAuto(p=>!p); return; }
-    if (A==="drawMarker")        { setDrawMode(true); setDrawType("marker"); setDrawPoints([]); setActiveSheet(null); return; }
-    if (A==="drawPath")          { setDrawMode(true); setDrawType("path"); setDrawPoints([]); setActiveSheet(null); return; }
-    if (A==="drawPoly")          { setDrawMode(true); setDrawType("polygon"); setDrawPoints([]); setActiveSheet(null); return; }
-    if (A==="toggleSurvey")      { handleToggleSurvey(); return; }
-    if (A==="openTracker")       { setTrackerOpen(true); return; }
-    if (A==="openOffline")       { setOfflineOpen(true); return; }
-    if (A==="toggleOfflineMode") { setOfflineMode(p=>!p); return; }
-    if (A==="openElevation")     { if(isMobile) setActiveSheet("elevation"); else setElevOpen(true); return; }
-    if (A==="openCompassNav")    { compass.compassNavActive?compass.stopCompassNav():compass.startCompassNav(); return; }
-    if (A==="about")             { setShowAbout(true); return; }
-    if (A==="shortcuts")         { setShowShortcuts(true); return; }
-    if (A==="osmLink")           { window.open("https://www.openstreetmap.org","_blank"); return; }
-    if (A==="leafletLink")       { window.open("https://leafletjs.com/reference.html","_blank"); return; }
+    if (A === "openKML")           { kmlInputRef.current?.click(); return; }
+    if (A === "openExtra")         { extraInputRef.current?.click(); return; }
+    if (A === "openGeoJSON")       { geojsonInputRef.current?.click(); return; }
+    if (A === "openShapefile")     { shpInputRef.current?.click(); return; }
+    if (A === "exportGeoJSON")     { exportGeoJSON(savedDrawings, route, measurePoints); return; }
+    if (A === "exportKML")         { exportKML(savedDrawings, route, measurePoints); return; }
+    if (A === "exportCSV")         { exportCSV(savedDrawings, route, measurePoints); return; }
+    if (A === "exportKMZ")         { exportKMZ(savedDrawings, route, measurePoints); return; }
+    if (A === "exportSHP")         { exportShapefile(savedDrawings, route, measurePoints); return; }
+    if (A === "resetAll")          { if (!window.confirm("Reset everything?")) return; setSavedDrawings([]); cancelDrawing(); clearMeasure(); setRoute([]); setSurveyMode(false); geoJSON.clearAllGeoJSONLayers(); handleDEMRemoveWithClear(); return; }
+    if (A === "startDraw")         { setDrawMode(true); setDrawPoints([]); setActiveSheet(null); return; }
+    if (A === "cancelDraw")        { cancelDrawing(); return; }
+    if (A === "startMeasure")      { setMeasureMode(true); return; }
+    if (A === "stopMeasure")       { clearMeasure(); return; }
+    if (A === "deleteDrawings")    { if (!savedDrawings.length) { alert("No drawings."); return; } if (window.confirm(`Delete ${savedDrawings.length} drawing(s)?`)) setSavedDrawings([]); return; }
+    if (A === "layerSatellite")    { setActiveLayer("Satellite"); return; }
+    if (A === "layerStreet")       { setActiveLayer("Street"); return; }
+    if (A === "layerTerrain")      { setActiveLayer("Terrain"); return; }
+    if (A === "layerDark")         { setActiveLayer("Dark"); return; }
+    if (A === "layerLight")        { setActiveLayer("Light"); return; }
+    if (A === "layerSatLabels")    { setActiveLayer("Satellite + Labels"); return; }
+    if (A === "show3D")            { setShow3D(true); return; }
+    if (A === "toggleNight")       { setNightModeAuto(p => !p); return; }
+    if (A === "drawMarker")        { setDrawMode(true); setDrawType("marker"); setDrawPoints([]); setActiveSheet(null); return; }
+    if (A === "drawPath")          { setDrawMode(true); setDrawType("path"); setDrawPoints([]); setActiveSheet(null); return; }
+    if (A === "drawPoly")          { setDrawMode(true); setDrawType("polygon"); setDrawPoints([]); setActiveSheet(null); return; }
+    if (A === "toggleSurvey")      { handleToggleSurvey(); return; }
+    if (A === "openTracker")       { setTrackerOpen(true); return; }
+    if (A === "openOffline")       { setOfflineOpen(true); return; }
+    if (A === "toggleOfflineMode") { setOfflineMode(p => !p); return; }
+    if (A === "openElevation")     { if (isMobile) setActiveSheet("elevation"); else setElevOpen(true); return; }
+    if (A === "openCompassNav")    { compass.compassNavActive ? compass.stopCompassNav() : compass.startCompassNav(); return; }
+    if (A === "about")             { setShowAbout(true); return; }
+    if (A === "shortcuts")         { setShowShortcuts(true); return; }
+    if (A === "osmLink")           { window.open("https://www.openstreetmap.org", "_blank"); return; }
+    if (A === "leafletLink")       { window.open("https://leafletjs.com/reference.html", "_blank"); return; }
   };
 
-  if (show3D) return <Globe3DView savedDrawings={savedDrawings} onClose={() => setShow3D(false)}/>;
+  if (show3D) return <Globe3DView savedDrawings={savedDrawings} onClose={() => setShow3D(false)} />;
 
   const cfg = MAP_LAYERS[activeLayer] || {};
 
   /* ── Export buttons ────────────────────────────────────────────────────── */
   const ExportButtons = ({ compact = false }) => !hasExportData ? null : (
-    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap: compact ? 4 : 6 }}>
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: compact ? 4 : 6 }}>
       {[
-        ["GeoJSON", () => exportGeoJSON(savedDrawings, route, measurePoints),   "rgba(34,197,94,0.12)",  "rgba(34,197,94,0.3)",  "#4ade80"],
-        ["KML",     () => exportKML(savedDrawings, route, measurePoints),       "rgba(251,191,36,0.12)", "rgba(251,191,36,0.3)", "#fbbf24"],
-        ["CSV",     () => exportCSV(savedDrawings, route, measurePoints),       "rgba(56,189,248,0.12)", "rgba(56,189,248,0.3)", "#38bdf8"],
-        ["KMZ",     () => exportKMZ(savedDrawings, route, measurePoints),       "rgba(167,139,250,0.12)","rgba(167,139,250,0.3)","#c4b5fd"],
-        ["SHP/ZIP", () => exportShapefile(savedDrawings, route, measurePoints), "rgba(167,139,250,0.12)","rgba(167,139,250,0.3)","#a78bfa"],
-
-
-         // 🔥 NEW DEM EXPORT BUTTON
-  ["DEM (.tif)", () => exportDEM({
-    raster: demRasterData,
-    kmlMask: kmlMask,
-    filename: "survey_dem.tif"
-  }), "rgba(244,63,94,0.12)", "rgba(244,63,94,0.3)", "#fb7185"],
-
+        ["GeoJSON",   () => exportGeoJSON(savedDrawings, route, measurePoints),   "rgba(34,197,94,0.12)",   "rgba(34,197,94,0.3)",   "#4ade80"],
+        ["KML",       () => exportKML(savedDrawings, route, measurePoints),       "rgba(251,191,36,0.12)",  "rgba(251,191,36,0.3)",  "#fbbf24"],
+        ["CSV",       () => exportCSV(savedDrawings, route, measurePoints),       "rgba(56,189,248,0.12)",  "rgba(56,189,248,0.3)",  "#38bdf8"],
+        ["KMZ",       () => exportKMZ(savedDrawings, route, measurePoints),       "rgba(167,139,250,0.12)", "rgba(167,139,250,0.3)", "#c4b5fd"],
+        ["SHP/ZIP",   () => exportShapefile(savedDrawings, route, measurePoints), "rgba(167,139,250,0.12)", "rgba(167,139,250,0.3)", "#a78bfa"],
+        ["DEM (.tif)", () => exportDEM({ raster: demRasterData, kmlMask, filename: "survey_dem.tif" }), "rgba(244,63,94,0.12)", "rgba(244,63,94,0.3)", "#fb7185"],
       ].map(([label, fn, bg, border, color]) => (
         <button key={label} onClick={fn}
-          style={{ padding: compact ? "7px 4px" : "9px 6px", borderRadius:8, cursor:"pointer",
-            background:bg, border:`1px solid ${border}`, color,
-            fontSize: compact ? 10 : 11, fontWeight:700, fontFamily:"'DM Sans',sans-serif",
-            display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}>
+          style={{ padding: compact ? "7px 4px" : "9px 6px", borderRadius: 8, cursor: "pointer", background: bg, border: `1px solid ${border}`, color, fontSize: compact ? 10 : 11, fontWeight: 700, fontFamily: "'DM Sans',sans-serif", display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
           <span style={{ fontSize: compact ? 11 : 13 }}>↓</span>{label}
         </button>
       ))}
@@ -584,120 +723,96 @@ export default function SurveyMap() {
   /* ── File Folder panel ─────────────────────────────────────────────────── */
   const FileFolderPanel = ({ onClose }) => (
     <div>
-      <div style={{ marginBottom:14 }}>
-        <div style={{ fontSize:9.5, fontWeight:700, color:"rgba(255,255,255,0.25)", letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:8, fontFamily:"'DM Mono',monospace" }}>Import Files</div>
-
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr 1fr 1fr", gap:5, marginBottom:10 }}>
-          <label style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:4, padding:"9px 4px", borderRadius:10, cursor:"pointer", background:"rgba(74,158,255,0.08)", border:"1px solid rgba(74,158,255,0.2)", color:"#60a5fa", fontSize:10, fontWeight:600, textAlign:"center" }}>
-            <span style={{ fontSize:16 }}>📍</span>KML
-            <input type="file" accept=".kml" onChange={handleKMLUpload} style={{ display:"none" }}/>
-          </label>
-          <label style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:4, padding:"9px 4px", borderRadius:10, cursor:"pointer", background:"rgba(251,191,36,0.08)", border:"1px solid rgba(251,191,36,0.2)", color:"#fbbf24", fontSize:10, fontWeight:600, textAlign:"center" }}>
-            <span style={{ fontSize:16 }}>🗜</span>KMZ/CSV
-            <input type="file" accept=".kmz,.csv" onChange={handleExtraUpload} style={{ display:"none" }}/>
-          </label>
-          <label style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:4, padding:"9px 4px", borderRadius:10, cursor:"pointer", background:"rgba(20,184,166,0.08)", border:"1px solid rgba(20,184,166,0.2)", color:"#2dd4bf", fontSize:10, fontWeight:600, textAlign:"center" }}>
-            <span style={{ fontSize:16 }}>🌐</span>GeoJSON
-            <input type="file" accept=".geojson,.json" onChange={handleGeoJSONFileUpload} style={{ display:"none" }}/>
-          </label>
-          <label style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:4, padding:"9px 4px", borderRadius:10, cursor:"pointer", background:"rgba(167,139,250,0.08)", border:"1px solid rgba(167,139,250,0.2)", color:"#a78bfa", fontSize:10, fontWeight:600, textAlign:"center" }}>
-            <span style={{ fontSize:16 }}>🗺</span>SHP
-            <input type="file" accept=".zip,.shp" onChange={handleShapefileUpload} style={{ display:"none" }}/>
-          </label>
-          <label style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:4, padding:"9px 4px", borderRadius:10, cursor:"pointer", background:"rgba(251,113,133,0.08)", border:`1.5px ${demFileName?"solid":"dashed"} rgba(251,113,133,${demFileName?"0.45":"0.3"})`, color:"#fb7185", fontSize:10, fontWeight:600, textAlign:"center" }}>
-            <span style={{ fontSize:16 }}>🏔</span>DEM
-            <input type="file" accept=".tif,.tiff,.asc,.dem,.img" onChange={handleDEMFileInput} style={{ display:"none" }}/>
-          </label>
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ fontSize: 9.5, fontWeight: 700, color: "rgba(255,255,255,0.25)", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 8, fontFamily: "'DM Mono',monospace" }}>Import Files</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr 1fr", gap: 5, marginBottom: 10 }}>
+          {[
+            { label: "KML",     accept: ".kml",                  onChange: handleKMLUpload,         bg: "rgba(74,158,255,0.08)",   border: "rgba(74,158,255,0.2)",   color: "#60a5fa",  icon: "📍" },
+            { label: "KMZ/CSV", accept: ".kmz,.csv",             onChange: handleExtraUpload,       bg: "rgba(251,191,36,0.08)",   border: "rgba(251,191,36,0.2)",   color: "#fbbf24",  icon: "🗜" },
+            { label: "GeoJSON", accept: ".geojson,.json",        onChange: handleGeoJSONFileUpload, bg: "rgba(20,184,166,0.08)",   border: "rgba(20,184,166,0.2)",   color: "#2dd4bf",  icon: "🌐" },
+            { label: "SHP",     accept: ".zip,.shp",             onChange: handleShapefileUpload,   bg: "rgba(167,139,250,0.08)",  border: "rgba(167,139,250,0.2)",  color: "#a78bfa",  icon: "🗺" },
+            { label: "DEM",     accept: ".tif,.tiff,.asc,.dem,.img", onChange: handleDEMFileInput,  bg: "rgba(251,113,133,0.08)",  border: `1.5px ${demFileName ? "solid" : "dashed"} rgba(251,113,133,${demFileName ? "0.45" : "0.3"})`, color: "#fb7185", icon: "🏔" },
+          ].map(({ label, accept, onChange, bg, border, color, icon }) => (
+            <label key={label} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4, padding: "9px 4px", borderRadius: 10, cursor: "pointer", background: bg, border, color, fontSize: 10, fontWeight: 600, textAlign: "center" }}>
+              <span style={{ fontSize: 16 }}>{icon}</span>{label}
+              <input type="file" accept={accept} onChange={onChange} style={{ display: "none" }} />
+            </label>
+          ))}
         </div>
 
         {importedCount === 0 ? (
-          <div style={{ textAlign:"center", color:"rgba(255,255,255,0.18)", fontSize:11, fontStyle:"italic", padding:"8px 0" }}>No files imported yet</div>
+          <div style={{ textAlign: "center", color: "rgba(255,255,255,0.18)", fontSize: 11, fontStyle: "italic", padding: "8px 0" }}>No files imported yet</div>
         ) : (
-          <div style={{ display:"flex", flexDirection:"column", gap:5 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
             {kmlName && (
-              <div style={{ display:"flex", alignItems:"center", gap:8, padding:"8px 10px", background:"rgba(74,158,255,0.06)", border:"1px solid rgba(74,158,255,0.15)", borderRadius:8 }}>
-                <span style={{ fontSize:14 }}>📍</span>
-                <div style={{ flex:1, minWidth:0 }}>
-                  <div style={{ color:"#90c8ff", fontSize:11, fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{kmlName}</div>
-                  <div style={{ color:"rgba(74,158,255,0.4)", fontSize:9.5, fontFamily:"'DM Mono',monospace" }}>
-                    KML{kmlMask ? " · clip mask active 🎯" : ""}{demRasterData ? " · draped by DEM 🏔" : ""}
-                  </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", background: "rgba(74,158,255,0.06)", border: "1px solid rgba(74,158,255,0.15)", borderRadius: 8 }}>
+                <span style={{ fontSize: 14 }}>📍</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ color: "#90c8ff", fontSize: 11, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: kmlAnalyzerData ? "pointer" : "default" }} onClick={() => kmlAnalyzerData && setKmlAnalyzerOpen(true)}>{kmlName}</div>
+                  <div style={{ color: "rgba(74,158,255,0.4)", fontSize: 9.5, fontFamily: "'DM Mono',monospace" }}>KML{kmlMask ? " · clip mask active 🎯" : ""}{demRasterData ? " · draped 🏔" : ""}{kmlAnalyzerData ? " · 📐 click for area" : ""}</div>
                 </div>
-                <button onClick={removeKML} style={{ background:"none", border:"none", color:"rgba(239,68,68,0.45)", cursor:"pointer", fontSize:16, padding:0, flexShrink:0 }}>×</button>
+                {kmlAnalyzerData && <button onClick={() => setKmlAnalyzerOpen(true)} style={{ background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.3)", color: "#fbbf24", cursor: "pointer", fontSize: 12, padding: "3px 8px", borderRadius: 6, flexShrink: 0, fontWeight: 700 }}>📐</button>}
+                <button onClick={removeKML} style={{ background: "none", border: "none", color: "rgba(239,68,68,0.45)", cursor: "pointer", fontSize: 16, padding: 0, flexShrink: 0 }}>×</button>
               </div>
             )}
             {extraFile && (
-              <div style={{ display:"flex", alignItems:"center", gap:8, padding:"8px 10px", background:"rgba(251,191,36,0.06)", border:"1px solid rgba(251,191,36,0.15)", borderRadius:8 }}>
-                <span style={{ fontSize:14 }}>{extraFileType==="kmz"?"🗜":"📊"}</span>
-                <div style={{ flex:1, minWidth:0 }}>
-                  <div style={{ color:"#fcd34d", fontSize:11, fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{extraFile.name}</div>
-                  <div style={{ color:"rgba(251,191,36,0.4)", fontSize:9.5, fontFamily:"'DM Mono',monospace" }}>
-                    {extraFileType?.toUpperCase()}
-                    {extraFileType === "csv" && csvTotalCount > 0 ? ` · ${csvValidCount}/${csvTotalCount} valid rows` : ""}
-                    {extraFileType === "kmz" && demRasterData ? " · draped by DEM 🏔" : ""}
-                  </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", background: "rgba(251,191,36,0.06)", border: "1px solid rgba(251,191,36,0.15)", borderRadius: 8 }}>
+                <span style={{ fontSize: 14 }}>{extraFileType === "kmz" ? "🗜" : "📊"}</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ color: "#fcd34d", fontSize: 11, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{extraFile.name}</div>
+                  <div style={{ color: "rgba(251,191,36,0.4)", fontSize: 9.5, fontFamily: "'DM Mono',monospace" }}>{extraFileType?.toUpperCase()}{extraFileType === "csv" && csvTotalCount > 0 ? ` · ${csvValidCount}/${csvTotalCount} valid` : ""}</div>
                 </div>
-                <button onClick={removeExtra} style={{ background:"none", border:"none", color:"rgba(239,68,68,0.45)", cursor:"pointer", fontSize:16, padding:0, flexShrink:0 }}>×</button>
+                {extraFileType === "kmz" && kmlAnalyzerData && <button onClick={() => setKmlAnalyzerOpen(true)} style={{ background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.3)", color: "#fbbf24", cursor: "pointer", fontSize: 12, padding: "3px 8px", borderRadius: 6, flexShrink: 0, fontWeight: 700 }}>📐</button>}
+                <button onClick={removeExtra} style={{ background: "none", border: "none", color: "rgba(239,68,68,0.45)", cursor: "pointer", fontSize: 16, padding: 0, flexShrink: 0 }}>×</button>
               </div>
             )}
             {geojsonFileName && (
-              <div style={{ display:"flex", alignItems:"center", gap:8, padding:"8px 10px", background:"rgba(34,197,94,0.06)", border:"1px solid rgba(34,197,94,0.15)", borderRadius:8 }}>
-                <span style={{ fontSize:14 }}>🌐</span>
-                <div style={{ flex:1, minWidth:0 }}>
-                  <div style={{ color:"#4ade80", fontSize:11, fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{geojsonFileName}</div>
-                  <div style={{ color:"rgba(34,197,94,0.4)", fontSize:9.5, fontFamily:"'DM Mono',monospace" }}>GeoJSON</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", background: "rgba(34,197,94,0.06)", border: "1px solid rgba(34,197,94,0.15)", borderRadius: 8 }}>
+                <span style={{ fontSize: 14 }}>🌐</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ color: "#4ade80", fontSize: 11, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{geojsonFileName}</div>
+                  <div style={{ color: "rgba(34,197,94,0.4)", fontSize: 9.5, fontFamily: "'DM Mono',monospace" }}>GeoJSON{kmlAnalyzerData ? " · 📐 click for area" : ""}</div>
                 </div>
-                <button onClick={removeGeojson} style={{ background:"none", border:"none", color:"rgba(239,68,68,0.45)", cursor:"pointer", fontSize:16, padding:0, flexShrink:0 }}>×</button>
+                {kmlAnalyzerData && <button onClick={() => setKmlAnalyzerOpen(true)} style={{ background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.3)", color: "#fbbf24", cursor: "pointer", fontSize: 12, padding: "3px 8px", borderRadius: 6, flexShrink: 0, fontWeight: 700 }}>📐</button>}
+                <button onClick={removeGeojson} style={{ background: "none", border: "none", color: "rgba(239,68,68,0.45)", cursor: "pointer", fontSize: 16, padding: 0, flexShrink: 0 }}>×</button>
               </div>
             )}
             {shpFileName && (
-              <div style={{ display:"flex", alignItems:"center", gap:8, padding:"8px 10px", background:"rgba(167,139,250,0.06)", border:"1px solid rgba(167,139,250,0.15)", borderRadius:8 }}>
-                <span style={{ fontSize:14 }}>🗺</span>
-                <div style={{ flex:1, minWidth:0 }}>
-                  <div style={{ color:"#c4b5fd", fontSize:11, fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{shpFileName}</div>
-                  <div style={{ color:"rgba(167,139,250,0.4)", fontSize:9.5, fontFamily:"'DM Mono',monospace" }}>
-                    Shapefile · {shpCount} features{demRasterData ? " · draped by DEM 🏔" : ""}
-                  </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", background: "rgba(167,139,250,0.06)", border: "1px solid rgba(167,139,250,0.15)", borderRadius: 8 }}>
+                <span style={{ fontSize: 14 }}>🗺</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ color: "#c4b5fd", fontSize: 11, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{shpFileName}</div>
+                  <div style={{ color: "rgba(167,139,250,0.4)", fontSize: 9.5, fontFamily: "'DM Mono',monospace" }}>Shapefile · {shpCount} features{kmlAnalyzerData ? " · 📐" : ""}</div>
                 </div>
-                <button onClick={removeShapefile} style={{ background:"none", border:"none", color:"rgba(239,68,68,0.45)", cursor:"pointer", fontSize:16, padding:0, flexShrink:0 }}>×</button>
+                {kmlAnalyzerData && <button onClick={() => setKmlAnalyzerOpen(true)} style={{ background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.3)", color: "#fbbf24", cursor: "pointer", fontSize: 12, padding: "3px 8px", borderRadius: 6, flexShrink: 0, fontWeight: 700 }}>📐</button>}
+                <button onClick={removeShapefile} style={{ background: "none", border: "none", color: "rgba(239,68,68,0.45)", cursor: "pointer", fontSize: 16, padding: 0, flexShrink: 0 }}>×</button>
               </div>
             )}
             {geoJSON.importedGeoJSONLayers.map(layer => (
-              <div key={layer.id} style={{ display:"flex", alignItems:"center", gap:8, padding:"8px 10px", background:"rgba(20,184,166,0.06)", border:"1px solid rgba(20,184,166,0.15)", borderRadius:8 }}>
-                <span style={{ fontSize:14 }}>🌐</span>
-                <div style={{ flex:1, minWidth:0 }}>
-                  <div style={{ color:"#5eead4", fontSize:11, fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{layer.name}</div>
-                  <div style={{ color:"rgba(20,184,166,0.4)", fontSize:9.5, fontFamily:"'DM Mono',monospace" }}>{layer.featureCount} features</div>
+              <div key={layer.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", background: "rgba(20,184,166,0.06)", border: "1px solid rgba(20,184,166,0.15)", borderRadius: 8 }}>
+                <span style={{ fontSize: 14 }}>🌐</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ color: "#5eead4", fontSize: 11, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{layer.name}</div>
+                  <div style={{ color: "rgba(20,184,166,0.4)", fontSize: 9.5, fontFamily: "'DM Mono',monospace" }}>{layer.featureCount} features · dbl-click for properties</div>
                 </div>
-                <button onClick={() => geoJSON.removeGeoJSONLayer(layer.id)} style={{ background:"none", border:"none", color:"rgba(239,68,68,0.45)", cursor:"pointer", fontSize:16, padding:0, flexShrink:0 }}>×</button>
+                <button onClick={() => geoJSON.removeGeoJSONLayer(layer.id)} style={{ background: "none", border: "none", color: "rgba(239,68,68,0.38)", cursor: "pointer", padding: 3, display: "flex", flexShrink: 0 }}><Ico name="Trash" size={11} /></button>
               </div>
             ))}
           </div>
         )}
 
-        <div style={{ borderTop:"1px solid rgba(255,255,255,0.06)", marginTop:12, paddingTop:12 }}>
-          <DEMPanel
-            demFileName={demFileName}
-            demLoading={demLoading}
-            demStats={demStats}
-            demOpacity={demOpacity}
-            demColorRamp={demColorRamp}
-            demError={demError}
-            onUpload={handleDEMUpload}
-            onRemove={handleDEMRemoveWithClear}
-            onOpacity={handleDEMOpacity}
-            onColorRamp={handleDEMColorRamp}
-          />
+        <div style={{ borderTop: "1px solid rgba(255,255,255,0.06)", marginTop: 12, paddingTop: 12 }}>
+          <DEMPanel demFileName={demFileName} demLoading={demLoading} demStats={demStats} demOpacity={demOpacity} demColorRamp={demColorRamp} demError={demError} onUpload={handleDEMUpload} onRemove={handleDEMRemoveWithClear} onOpacity={handleDEMOpacity} onColorRamp={handleDEMColorRamp} />
         </div>
       </div>
 
-      <div style={{ borderTop:"1px solid rgba(255,255,255,0.06)", paddingTop:14 }}>
-        <div style={{ fontSize:9.5, fontWeight:700, color:"rgba(255,255,255,0.25)", letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:8, fontFamily:"'DM Mono',monospace" }}>
-          Export {!hasExportData && <span style={{ color:"rgba(255,255,255,0.15)", fontWeight:400, textTransform:"none", letterSpacing:0 }}>— draw or survey first</span>}
+      <div style={{ borderTop: "1px solid rgba(255,255,255,0.06)", paddingTop: 14 }}>
+        <div style={{ fontSize: 9.5, fontWeight: 700, color: "rgba(255,255,255,0.25)", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 8, fontFamily: "'DM Mono',monospace" }}>
+          Export {!hasExportData && <span style={{ color: "rgba(255,255,255,0.15)", fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>— draw or survey first</span>}
         </div>
         {hasExportData
-          ? <ExportButtons/>
-          : <div style={{ textAlign:"center", color:"rgba(255,255,255,0.18)", fontSize:11, fontStyle:"italic", padding:"8px 0" }}>No data to export yet</div>
+          ? <ExportButtons />
+          : <div style={{ textAlign: "center", color: "rgba(255,255,255,0.18)", fontSize: 11, fontStyle: "italic", padding: "8px 0" }}>No data to export yet</div>
         }
       </div>
     </div>
@@ -719,276 +834,265 @@ export default function SurveyMap() {
       `}</style>
       <style>{GLOBAL_STYLES}</style>
 
-      <div style={{ position:"fixed", inset:0, background:"#060e1a", fontFamily:"'DM Sans',sans-serif" }}>
+      <div style={{ position: "fixed", inset: 0, background: "#060e1a", fontFamily: "'DM Sans',sans-serif" }}>
 
         {/* Hidden file inputs */}
-        <input ref={kmlInputRef}     type="file" accept=".kml"           onChange={handleKMLUpload}         style={{ display:"none" }}/>
-        <input ref={extraInputRef}   type="file" accept=".kmz,.csv"      onChange={handleExtraUpload}       style={{ display:"none" }}/>
-        <input ref={geojsonInputRef} type="file" accept=".geojson,.json" onChange={handleGeoJSONFileUpload} style={{ display:"none" }}/>
-        <input ref={shpInputRef}     type="file" accept=".zip,.shp"      onChange={handleShapefileUpload}   style={{ display:"none" }}/>
+        <input ref={kmlInputRef}     type="file" accept=".kml"           onChange={handleKMLUpload}         style={{ display: "none" }} />
+        <input ref={extraInputRef}   type="file" accept=".kmz,.csv"      onChange={handleExtraUpload}       style={{ display: "none" }} />
+        <input ref={geojsonInputRef} type="file" accept=".geojson,.json" onChange={handleGeoJSONFileUpload} style={{ display: "none" }} />
+        <input ref={shpInputRef}     type="file" accept=".zip,.shp"      onChange={handleShapefileUpload}   style={{ display: "none" }} />
 
         {/* ══ DESKTOP MENU BAR ═══════════════════════════════════════════ */}
-        <div style={{ position:"absolute", top:0, left:0, right:0, height:MENU_H, zIndex:1200, background:"rgba(5,12,24,0.97)", backdropFilter:"blur(20px)", borderBottom:"1px solid rgba(255,255,255,0.055)", display:"flex", alignItems:"center", paddingLeft:12, gap:0 }}>
-          <div style={{ display:"flex", alignItems:"center", gap:8, marginRight:16, paddingRight:16, borderRight:"1px solid rgba(255,255,255,0.07)" }}>
-            <div style={{ width:20, height:20, borderRadius:5, background:"linear-gradient(135deg,#4a9eff,#2563eb)", display:"flex", alignItems:"center", justifyContent:"center" }}><Ico name="Compass" size={12} style={{ color:"#fff" }}/></div>
-            <span style={{ fontSize:12, fontWeight:700, color:"#c8e0f8", letterSpacing:"0.02em" }}>SurveyMap Pro</span>
+        <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: MENU_H, zIndex: 1200, background: "rgba(5,12,24,0.97)", backdropFilter: "blur(20px)", borderBottom: "1px solid rgba(255,255,255,0.055)", display: "flex", alignItems: "center", paddingLeft: 12, gap: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginRight: 16, paddingRight: 16, borderRight: "1px solid rgba(255,255,255,0.07)" }}>
+            <div style={{ width: 20, height: 20, borderRadius: 5, background: "linear-gradient(135deg,#4a9eff,#2563eb)", display: "flex", alignItems: "center", justifyContent: "center" }}><Ico name="Compass" size={12} style={{ color: "#fff" }} /></div>
+            <span style={{ fontSize: 12, fontWeight: 700, color: "#c8e0f8", letterSpacing: "0.02em" }}>SurveyMap Pro</span>
           </div>
           {Object.keys(MENU_DEFS).map(menuName => {
             const isOpen = openMenu === menuName;
             return (
-              <div key={menuName} style={{ position:"relative", height:"100%", display:"flex", alignItems:"center" }}>
-                <span onClick={() => setOpenMenu(isOpen?null:menuName)} onMouseEnter={() => { if(openMenu&&openMenu!==menuName) setOpenMenu(menuName); }}
-                  style={{ fontSize:12, color:isOpen?"#80c4ff":"rgba(241,237,235,0.9)", padding:"0 12px", cursor:"pointer", userSelect:"none", height:"100%", display:"flex", alignItems:"center", background:isOpen?"rgba(74,158,255,0.15)":"transparent", fontWeight:isOpen?500:400 }}>
+              <div key={menuName} style={{ position: "relative", height: "100%", display: "flex", alignItems: "center" }}>
+                <span onClick={() => setOpenMenu(isOpen ? null : menuName)} onMouseEnter={() => { if (openMenu && openMenu !== menuName) setOpenMenu(menuName); }}
+                  style={{ fontSize: 12, color: isOpen ? "#80c4ff" : "rgba(241,237,235,0.9)", padding: "0 12px", cursor: "pointer", userSelect: "none", height: "100%", display: "flex", alignItems: "center", background: isOpen ? "rgba(74,158,255,0.15)" : "transparent", fontWeight: isOpen ? 500 : 400 }}>
                   {menuName}
                 </span>
                 {isOpen && (
-                  <div style={{ position:"absolute", top:MENU_H, left:0, background:"rgba(5,12,24,0.98)", backdropFilter:"blur(24px)", border:"1px solid rgba(255,255,255,0.1)", borderTop:"1.5px solid rgba(74,158,255,0.5)", borderRadius:"0 0 10px 10px", minWidth:210, boxShadow:"0 12px 40px rgba(0,0,0,0.6)", zIndex:1300, overflow:"hidden" }}>
-                    {MENU_DEFS[menuName].map((item,idx) => item.divider
-                      ? <div key={idx} style={{ height:1, background:"rgba(255,255,255,0.06)", margin:"3px 0" }}/>
-                      : <div key={idx} className="menu-item" onClick={() => handleMenuAction(item.action)}><Ico name={item.icon} size={13}/>{item.label}</div>
+                  <div style={{ position: "absolute", top: MENU_H, left: 0, background: "rgba(5,12,24,0.98)", backdropFilter: "blur(24px)", border: "1px solid rgba(255,255,255,0.1)", borderTop: "1.5px solid rgba(74,158,255,0.5)", borderRadius: "0 0 10px 10px", minWidth: 210, boxShadow: "0 12px 40px rgba(0,0,0,0.6)", zIndex: 1300, overflow: "hidden" }}>
+                    {MENU_DEFS[menuName].map((item, idx) => item.divider
+                      ? <div key={idx} style={{ height: 1, background: "rgba(255,255,255,0.06)", margin: "3px 0" }} />
+                      : <div key={idx} className="menu-item" onClick={() => handleMenuAction(item.action)}><Ico name={item.icon} size={13} />{item.label}</div>
                     )}
                   </div>
                 )}
               </div>
             );
           })}
-          {openMenu && <div style={{ position:"fixed", inset:0, zIndex:1290 }} onClick={() => setOpenMenu(null)}/>}
-          <div style={{ flex:1 }}/>
+          {openMenu && <div style={{ position: "fixed", inset: 0, zIndex: 1290 }} onClick={() => setOpenMenu(null)} />}
+          <div style={{ flex: 1 }} />
           {compass.compassNavActive && (
-            <div style={{ display:"flex", alignItems:"center", gap:5, padding:"3px 10px", background:"rgba(14,165,233,0.14)", borderRadius:16, border:"1px solid rgba(14,165,233,0.4)", marginRight:8, cursor:"pointer" }} onClick={compass.stopCompassNav}>
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" strokeWidth="2" style={{ animation:"spin 3s linear infinite" }}><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76" fill="#38bdf8" stroke="none"/></svg>
-              <span style={{ fontSize:10, color:"#38bdf8", fontWeight:700, fontFamily:"'DM Mono',monospace" }}>{compass.compassHeading!=null?`${Math.round(((compass.compassHeading%360)+360)%360)}°`:"NAV"}</span>
+            <div style={{ display: "flex", alignItems: "center", gap: 5, padding: "3px 10px", background: "rgba(14,165,233,0.14)", borderRadius: 16, border: "1px solid rgba(14,165,233,0.4)", marginRight: 8, cursor: "pointer" }} onClick={compass.stopCompassNav}>
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" strokeWidth="2" style={{ animation: "spin 3s linear infinite" }}><circle cx="12" cy="12" r="10" /><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76" fill="#38bdf8" stroke="none" /></svg>
+              <span style={{ fontSize: 10, color: "#38bdf8", fontWeight: 700, fontFamily: "'DM Mono',monospace" }}>{compass.compassHeading != null ? `${Math.round(((compass.compassHeading % 360) + 360) % 360)}°` : "NAV"}</span>
             </div>
           )}
           {isTracking && (
-            <div style={{ display:"flex", alignItems:"center", gap:5, padding:"3px 10px", background:"rgba(239,68,68,0.14)", borderRadius:16, border:"1px solid rgba(239,68,68,0.35)", marginRight:8, cursor:"pointer" }} onClick={() => setTrackerOpen(true)}>
-              <div style={{ width:7, height:7, borderRadius:"50%", background:"#ef4444", animation:"blink 1s infinite" }}/><span style={{ fontSize:10, color:"#f87171", fontWeight:700, fontFamily:"'DM Mono',monospace" }}>REC</span>
+            <div style={{ display: "flex", alignItems: "center", gap: 5, padding: "3px 10px", background: "rgba(239,68,68,0.14)", borderRadius: 16, border: "1px solid rgba(239,68,68,0.35)", marginRight: 8, cursor: "pointer" }} onClick={() => setTrackerOpen(true)}>
+              <div style={{ width: 7, height: 7, borderRadius: "50%", background: "#ef4444", animation: "blink 1s infinite" }} /><span style={{ fontSize: 10, color: "#f87171", fontWeight: 700, fontFamily: "'DM Mono',monospace" }}>REC</span>
             </div>
           )}
-          <button style={{ display:"flex", alignItems:"center", gap:6, padding:"4px 12px", borderRadius:6, border:"1px solid rgba(74,158,255,0.3)", background:"rgba(74,158,255,0.12)", color:"#80c4ff", cursor:"pointer", fontSize:11, fontWeight:600, marginRight:10 }}>
-            <Ico name="User" size={12}/> Sign In
+          <button style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 12px", borderRadius: 6, border: "1px solid rgba(74,158,255,0.3)", background: "rgba(74,158,255,0.12)", color: "#80c4ff", cursor: "pointer", fontSize: 11, fontWeight: 600, marginRight: 10 }}>
+            <Ico name="User" size={12} /> Sign In
           </button>
         </div>
 
         {/* ══ DESKTOP TOOLBAR ════════════════════════════════════════════ */}
-        <div style={{ position:"absolute", top:MENU_H, left:0, right:0, height:TB_H, zIndex:1150, background:"rgba(5,12,24,0.90)", backdropFilter:"blur(20px)", borderBottom:"1px solid rgba(255,255,255,0.09)", display:"flex", alignItems:"center", padding:"0 10px", gap:5, overflowX:"auto" }}>
-          {[{key:"Satellite",icon:"Satellite",short:"Sat"},{key:"Street",icon:"Street",short:"Street"},{key:"Terrain",icon:"Terrain",short:"Terrain"},{key:"Satellite + Labels",icon:"SatLabels",short:"+Labels"},{key:"Dark",icon:"Dark",short:"Dark"},{key:"Light",icon:"Light",short:"Light"}].map(({key,icon,short}) => (
-            <button key={key} className={`tb-btn ${activeLayer===key?"active":"inactive"}`} onClick={() => setActiveLayer(key)}><Ico name={icon} size={14}/><span>{short}</span></button>
+        <div style={{ position: "absolute", top: MENU_H, left: 0, right: 0, height: TB_H, zIndex: 1150, background: "rgba(5,12,24,0.90)", backdropFilter: "blur(20px)", borderBottom: "1px solid rgba(255,255,255,0.09)", display: "flex", alignItems: "center", padding: "0 10px", gap: 5, overflowX: "auto" }}>
+          {[{ key: "Satellite", icon: "Satellite", short: "Sat" }, { key: "Street", icon: "Street", short: "Street" }, { key: "Terrain", icon: "Terrain", short: "Terrain" }, { key: "Satellite + Labels", icon: "SatLabels", short: "+Labels" }, { key: "Dark", icon: "Dark", short: "Dark" }, { key: "Light", icon: "Light", short: "Light" }].map(({ key, icon, short }) => (
+            <button key={key} className={`tb-btn ${activeLayer === key ? "active" : "inactive"}`} onClick={() => setActiveLayer(key)}><Ico name={icon} size={14} /><span>{short}</span></button>
           ))}
-          <div style={{ width:1, height:22, background:"rgba(255,255,255,0.08)", margin:"0 3px", flexShrink:0 }}/>
-          <button className={`tb-btn ${drawMode?"active":"inactive"}`} onClick={() => { setDrawMode(m=>!m); if(!drawMode) setDrawPoints([]); }}><Ico name="Draw" size={14}/><span>Draw</span></button>
-          <button className={`tb-btn ${measureMode?"active":"inactive"}`} onClick={() => setMeasureMode(m=>!m)}><Ico name="Measure" size={14}/><span>Measure</span></button>
-          <button className={`tb-btn ${surveyMode?"active":"inactive"}`} onClick={handleToggleSurvey}><Ico name="Survey" size={14}/><span>Survey</span></button>
-          <div style={{ width:1, height:22, background:"rgba(255,255,255,0.08)", margin:"0 3px", flexShrink:0 }}/>
-          <button className={`tb-btn ${isTracking?"tracker-active":"inactive"}`} onClick={() => setTrackerOpen(p=>!p)} style={{ position:"relative", minWidth:52 }}>
-            <Ico name="Record" size={14}/><span>Track</span>
-            {isTracking && <span style={{ position:"absolute", top:4, right:4, width:6, height:6, borderRadius:"50%", background:"#ef4444", animation:"blink 1s infinite" }}/>}
+          <div style={{ width: 1, height: 22, background: "rgba(255,255,255,0.08)", margin: "0 3px", flexShrink: 0 }} />
+          <button className={`tb-btn ${drawMode ? "active" : "inactive"}`} onClick={() => { setDrawMode(m => !m); if (!drawMode) setDrawPoints([]); }}><Ico name="Draw" size={14} /><span>Draw</span></button>
+          <button className={`tb-btn ${measureMode ? "active" : "inactive"}`} onClick={() => setMeasureMode(m => !m)}><Ico name="Measure" size={14} /><span>Measure</span></button>
+          <button className={`tb-btn ${surveyMode ? "active" : "inactive"}`} onClick={handleToggleSurvey}><Ico name="Survey" size={14} /><span>Survey</span></button>
+          <div style={{ width: 1, height: 22, background: "rgba(255,255,255,0.08)", margin: "0 3px", flexShrink: 0 }} />
+          <button className={`tb-btn ${isTracking ? "tracker-active" : "inactive"}`} onClick={() => setTrackerOpen(p => !p)} style={{ position: "relative", minWidth: 52 }}>
+            <Ico name="Record" size={14} /><span>Track</span>
+            {isTracking && <span style={{ position: "absolute", top: 4, right: 4, width: 6, height: 6, borderRadius: "50%", background: "#ef4444", animation: "blink 1s infinite" }} />}
           </button>
-          <div style={{ width:1, height:22, background:"rgba(255,255,255,0.08)", margin:"0 3px", flexShrink:0 }}/>
-          <label className="tb-btn inactive" style={{ cursor:"pointer" }}><Ico name="Upload" size={14}/><span>KML</span><input type="file" accept=".kml" onChange={handleKMLUpload} style={{ display:"none" }}/></label>
-          <label className="tb-btn inactive" style={{ cursor:"pointer" }}><Ico name="CSV" size={14}/><span>KMZ/CSV</span><input type="file" accept=".kmz,.csv" onChange={handleExtraUpload} style={{ display:"none" }}/></label>
-          <label className={`tb-btn ${(geoJSON.importedGeoJSONLayers.length||geojsonFileName)?"geojson-active":"inactive"}`} style={{ cursor:"pointer" }}><Ico name="GeoJSON" size={14}/><span>GeoJSON</span><input type="file" accept=".geojson,.json" onChange={handleGeoJSONFileUpload} style={{ display:"none" }}/></label>
-          <label className="tb-btn inactive" style={{ cursor:"pointer" }}><Ico name="GeoJSON" size={14}/><span>SHP/ZIP</span><input type="file" accept=".zip,.shp" onChange={handleShapefileUpload} style={{ display:"none" }}/></label>
-          {/* DEM button — glows pink when loaded */}
-          <label className={`tb-btn ${demFileName?"active":"inactive"}`} style={{ cursor:"pointer", background:demFileName?"rgba(251,113,133,0.18)":"", borderColor:demFileName?"rgba(251,113,133,0.4)":"", color:demFileName?"#fb7185":"" }}>
-            <span style={{ fontSize:13 }}>🏔</span><span>DEM</span>
-            <input type="file" accept=".tif,.tiff,.asc,.dem,.img" onChange={handleDEMFileInput} style={{ display:"none" }}/>
+          <div style={{ width: 1, height: 22, background: "rgba(255,255,255,0.08)", margin: "0 3px", flexShrink: 0 }} />
+          <label className="tb-btn inactive" style={{ cursor: "pointer" }}><Ico name="Upload" size={14} /><span>KML</span><input type="file" accept=".kml" onChange={handleKMLUpload} style={{ display: "none" }} /></label>
+          <label className="tb-btn inactive" style={{ cursor: "pointer" }}><Ico name="CSV" size={14} /><span>KMZ/CSV</span><input type="file" accept=".kmz,.csv" onChange={handleExtraUpload} style={{ display: "none" }} /></label>
+          <label className={`tb-btn ${(geoJSON.importedGeoJSONLayers.length || geojsonFileName) ? "geojson-active" : "inactive"}`} style={{ cursor: "pointer" }}><Ico name="GeoJSON" size={14} /><span>GeoJSON</span><input type="file" accept=".geojson,.json" onChange={handleGeoJSONFileUpload} style={{ display: "none" }} /></label>
+          <label className="tb-btn inactive" style={{ cursor: "pointer" }}><Ico name="GeoJSON" size={14} /><span>SHP/ZIP</span><input type="file" accept=".zip,.shp" onChange={handleShapefileUpload} style={{ display: "none" }} /></label>
+          <label className={`tb-btn ${demFileName ? "active" : "inactive"}`} style={{ cursor: "pointer", background: demFileName ? "rgba(251,113,133,0.18)" : "", borderColor: demFileName ? "rgba(251,113,133,0.4)" : "", color: demFileName ? "#fb7185" : "" }}>
+            <span style={{ fontSize: 13 }}>🏔</span><span>DEM</span>
+            <input type="file" accept=".tif,.tiff,.asc,.dem,.img" onChange={handleDEMFileInput} style={{ display: "none" }} />
           </label>
-          {/* Export buttons */}
-          <button className="tb-btn inactive" onClick={() => exportGeoJSON(savedDrawings, route, measurePoints)} style={{ background:"rgba(34,197,94,0.12)", borderColor:"rgba(34,197,94,0.3)", color:"#4ade80" }}><Ico name="Export" size={14}/><span>GeoJSON</span></button>
-          {hasExportData && <>
-            <button className="tb-btn inactive" onClick={() => exportKML(savedDrawings,route,measurePoints)}       style={{ background:"rgba(251,191,36,0.12)", borderColor:"rgba(251,191,36,0.3)", color:"#fbbf24" }}><Ico name="Export" size={14}/><span>KML</span></button>
-            <button className="tb-btn inactive" onClick={() => exportCSV(savedDrawings,route,measurePoints)}       style={{ background:"rgba(56,189,248,0.12)", borderColor:"rgba(56,189,248,0.3)", color:"#38bdf8" }}><Ico name="Export" size={14}/><span>CSV</span></button>
-            <button className="tb-btn inactive" onClick={() => exportKMZ(savedDrawings,route,measurePoints)}       style={{ background:"rgba(167,139,250,0.12)", borderColor:"rgba(167,139,250,0.3)", color:"#c4b5fd" }}><Ico name="Export" size={14}/><span>KMZ</span></button>
-            <button className="tb-btn inactive" onClick={() => exportShapefile(savedDrawings,route,measurePoints)} style={{ background:"rgba(167,139,250,0.12)", borderColor:"rgba(167,139,250,0.3)", color:"#a78bfa" }}><Ico name="Export" size={14}/><span>SHP</span></button>
-          </>}
-          <div style={{ width:1, height:22, background:"rgba(255,255,255,0.08)", margin:"0 3px", flexShrink:0 }}/>
-          <button className={`tb-btn ${!isOnline?"tracker-active":"inactive"}`} onClick={() => setOfflineOpen(p=>!p)}><Ico name="Offline" size={14}/><span>Offline</span></button>
-          <button className={`tb-btn ${offlineMode?"offline-active":"inactive"}`} onClick={() => setOfflineMode(p=>!p)}><span style={{ fontSize:13 }}>{offlineMode?"🗺":"🌐"}</span><span>{offlineMode?"Cached":"Cache"}</span></button>
-          <div style={{ width:1, height:22, background:"rgba(255,255,255,0.08)", margin:"0 3px", flexShrink:0 }}/>
-          <button className={`tb-btn ${elevOpen?"active":"inactive"}`} onClick={() => { setElevOpen(p=>!p); if(!elevOpen&&!elevMode) setElevMode("survey"); }}><Ico name="Mountain" size={14}/><span>Elevation</span></button>
-          <button className={`tb-btn ${compass.compassNavActive?"compass-active":"inactive"}`} onClick={() => compass.compassNavActive?compass.stopCompassNav():compass.startCompassNav()} style={{ position:"relative", minWidth:78 }}>
-            <Ico name="Navigation" size={14} style={{ animation:compass.compassNavActive?"spin 4s linear infinite":"none" }}/><span>Compass</span>
-            {compass.compassNavActive && <span style={{ position:"absolute", top:4, right:4, width:6, height:6, borderRadius:"50%", background:"#0ea5e9", animation:"blink 0.8s infinite" }}/>}
-          </button>
-          <button className="tb-btn" onClick={() => setShow3D(true)} style={{ background:"rgba(167,139,250,0.15)", borderColor:"rgba(167,139,250,0.4)", color:"#c4b5fd" }}><Ico name="Globe" size={14}/><span>3D</span></button>
-          <button className={`tb-btn ${nightModeAuto?"active":"inactive"}`} onClick={() => setNightModeAuto(p=>!p)}><Ico name={nightSwitchInfo?.isNight?"Night":"Day"} size={14}/><span>Night</span></button>
-          <div style={{ flex:1 }}/>
-          {/* Loading badges */}
-          {geoJSON.geojsonLoading && <span style={{ fontSize:11, color:"#2dd4bf", background:"rgba(20,184,166,0.12)", padding:"4px 10px", borderRadius:16, border:"1px solid rgba(20,184,166,0.25)", display:"flex", alignItems:"center", gap:5 }}><span style={{ animation:"blink 1s infinite" }}>●</span>Loading…</span>}
-          {geojsonLoading && <span style={{ fontSize:11, color:"#4ade80", background:"rgba(34,197,94,0.12)", padding:"4px 10px", borderRadius:16, border:"1px solid rgba(34,197,94,0.25)", display:"flex", alignItems:"center", gap:5 }}><span style={{ animation:"blink 1s infinite" }}>●</span>{geojsonFileName?.slice(0,14)}…</span>}
-          {kmlLoading && <span style={{ fontSize:11, color:"#60a0e8", background:"rgba(74,158,255,0.12)", padding:"4px 10px", borderRadius:16, border:"1px solid rgba(74,158,255,0.25)", display:"flex", alignItems:"center", gap:5 }}><span style={{ animation:"blink 1s infinite" }}>●</span>{kmlName?.slice(0,14)}…</span>}
-          {shpLoading && <span style={{ fontSize:11, color:"#a78bfa", background:"rgba(167,139,250,0.12)", padding:"4px 10px", borderRadius:16, border:"1px solid rgba(167,139,250,0.25)", display:"flex", alignItems:"center", gap:5 }}><span style={{ animation:"blink 1s infinite" }}>●</span>{shpFileName?.slice(0,14)}…</span>}
-          {demLoading && (
-            <span style={{ fontSize:11, color:"#fb7185", background:"rgba(251,113,133,0.12)", padding:"4px 10px", borderRadius:16, border:"1px solid rgba(251,113,133,0.25)", display:"flex", alignItems:"center", gap:5 }}>
-              <span style={{ animation:"blink 1s infinite" }}>●</span>{demFileName?.slice(0,12)}… DEM
-            </span>
+          {kmlAnalyzerData && (
+            <button className={`tb-btn ${kmlAnalyzerOpen ? "active" : "inactive"}`} onClick={() => setKmlAnalyzerOpen(p => !p)} style={{ background: "rgba(251,191,36,0.14)", borderColor: "rgba(251,191,36,0.4)", color: "#fbbf24" }}>
+              <span style={{ fontSize: 13 }}>📐</span><span>Area</span>
+            </button>
           )}
+          <button className="tb-btn inactive" onClick={() => exportGeoJSON(savedDrawings, route, measurePoints)} style={{ background: "rgba(34,197,94,0.12)", borderColor: "rgba(34,197,94,0.3)", color: "#4ade80" }}><Ico name="Export" size={14} /><span>GeoJSON</span></button>
+          {hasExportData && <>
+            <button className="tb-btn inactive" onClick={() => exportKML(savedDrawings, route, measurePoints)}       style={{ background: "rgba(251,191,36,0.12)", borderColor: "rgba(251,191,36,0.3)", color: "#fbbf24" }}><Ico name="Export" size={14} /><span>KML</span></button>
+            <button className="tb-btn inactive" onClick={() => exportCSV(savedDrawings, route, measurePoints)}       style={{ background: "rgba(56,189,248,0.12)", borderColor: "rgba(56,189,248,0.3)", color: "#38bdf8" }}><Ico name="Export" size={14} /><span>CSV</span></button>
+            <button className="tb-btn inactive" onClick={() => exportKMZ(savedDrawings, route, measurePoints)}       style={{ background: "rgba(167,139,250,0.12)", borderColor: "rgba(167,139,250,0.3)", color: "#c4b5fd" }}><Ico name="Export" size={14} /><span>KMZ</span></button>
+            <button className="tb-btn inactive" onClick={() => exportShapefile(savedDrawings, route, measurePoints)} style={{ background: "rgba(167,139,250,0.12)", borderColor: "rgba(167,139,250,0.3)", color: "#a78bfa" }}><Ico name="Export" size={14} /><span>SHP</span></button>
+          </>}
+          <div style={{ width: 1, height: 22, background: "rgba(255,255,255,0.08)", margin: "0 3px", flexShrink: 0 }} />
+          <button className={`tb-btn ${!isOnline ? "tracker-active" : "inactive"}`} onClick={() => setOfflineOpen(p => !p)}><Ico name="Offline" size={14} /><span>Offline</span></button>
+          <button className={`tb-btn ${offlineMode ? "offline-active" : "inactive"}`} onClick={() => setOfflineMode(p => !p)}><span style={{ fontSize: 13 }}>{offlineMode ? "🗺" : "🌐"}</span><span>{offlineMode ? "Cached" : "Cache"}</span></button>
+          <div style={{ width: 1, height: 22, background: "rgba(255,255,255,0.08)", margin: "0 3px", flexShrink: 0 }} />
+          <button className={`tb-btn ${elevOpen ? "active" : "inactive"}`} onClick={() => { setElevOpen(p => !p); if (!elevOpen && !elevMode) setElevMode("survey"); }}><Ico name="Mountain" size={14} /><span>Elevation</span></button>
+          <button className={`tb-btn ${compass.compassNavActive ? "compass-active" : "inactive"}`} onClick={() => compass.compassNavActive ? compass.stopCompassNav() : compass.startCompassNav()} style={{ position: "relative", minWidth: 78 }}>
+            <Ico name="Navigation" size={14} style={{ animation: compass.compassNavActive ? "spin 4s linear infinite" : "none" }} /><span>Compass</span>
+            {compass.compassNavActive && <span style={{ position: "absolute", top: 4, right: 4, width: 6, height: 6, borderRadius: "50%", background: "#0ea5e9", animation: "blink 0.8s infinite" }} />}
+          </button>
+          <button className="tb-btn" onClick={() => setShow3D(true)} style={{ background: "rgba(167,139,250,0.15)", borderColor: "rgba(167,139,250,0.4)", color: "#c4b5fd" }}><Ico name="Globe" size={14} /><span>3D</span></button>
+          <button className={`tb-btn ${nightModeAuto ? "active" : "inactive"}`} onClick={() => setNightModeAuto(p => !p)}><Ico name={nightSwitchInfo?.isNight ? "Night" : "Day"} size={14} /><span>Night</span></button>
+          <div style={{ flex: 1 }} />
+          {geoJSON.geojsonLoading && <span style={{ fontSize: 11, color: "#2dd4bf", background: "rgba(20,184,166,0.12)", padding: "4px 10px", borderRadius: 16, border: "1px solid rgba(20,184,166,0.25)", display: "flex", alignItems: "center", gap: 5 }}><span style={{ animation: "blink 1s infinite" }}>●</span>Loading…</span>}
+          {geojsonLoading && <span style={{ fontSize: 11, color: "#4ade80", background: "rgba(34,197,94,0.12)", padding: "4px 10px", borderRadius: 16, border: "1px solid rgba(34,197,94,0.25)", display: "flex", alignItems: "center", gap: 5 }}><span style={{ animation: "blink 1s infinite" }}>●</span>{geojsonFileName?.slice(0, 14)}…</span>}
+          {kmlLoading && <span style={{ fontSize: 11, color: "#60a0e8", background: "rgba(74,158,255,0.12)", padding: "4px 10px", borderRadius: 16, border: "1px solid rgba(74,158,255,0.25)", display: "flex", alignItems: "center", gap: 5 }}><span style={{ animation: "blink 1s infinite" }}>●</span>{kmlName?.slice(0, 14)}…</span>}
+          {shpLoading && <span style={{ fontSize: 11, color: "#a78bfa", background: "rgba(167,139,250,0.12)", padding: "4px 10px", borderRadius: 16, border: "1px solid rgba(167,139,250,0.25)", display: "flex", alignItems: "center", gap: 5 }}><span style={{ animation: "blink 1s infinite" }}>●</span>{shpFileName?.slice(0, 14)}…</span>}
+          {demLoading && <span style={{ fontSize: 11, color: "#fb7185", background: "rgba(251,113,133,0.12)", padding: "4px 10px", borderRadius: 16, border: "1px solid rgba(251,113,133,0.25)", display: "flex", alignItems: "center", gap: 5 }}><span style={{ animation: "blink 1s infinite" }}>●</span>{demFileName?.slice(0, 12)}… DEM</span>}
         </div>
 
         {/* ══ MOBILE CHROME ══════════════════════════════════════════════ */}
-        {isMobile && <div style={{ position:"absolute", top:0, left:0, right:0, zIndex:1330 }}><MobileSearchBar searchQuery={searchQuery} setSearchQuery={setSearchQuery} onSearch={handleSidebarSearch} searchLoading={searchLoading}/></div>}
-        {isMobile && <div style={{ position:"absolute", top:58, left:0, right:0, zIndex:1315, pointerEvents:"none" }}><CompactMobileHUD mousePos={mousePos} mapZoom={mapZoom} compassHeading={compass.compassHeading} compassNavActive={compass.compassNavActive} cursorElevation={cursorElevation}/></div>}
-        {isMobile && cacheStats?.tileCount>0 && (
-          <div onClick={() => setOfflineMode(p=>!p)} style={{ position:"absolute", top:160, left:12, zIndex:1310, display:"flex", alignItems:"center", gap:6, padding:"5px 12px 5px 8px", background:offlineMode?"rgba(4,10,20,0.95)":"rgba(4,10,20,0.80)", backdropFilter:"blur(16px)", border:`1.5px solid ${offlineMode?"rgba(34,197,94,0.6)":"rgba(255,255,255,0.12)"}`, borderRadius:20, cursor:"pointer", userSelect:"none" }}>
-            <div style={{ width:8, height:8, borderRadius:"50%", background:offlineMode?"#22c55e":"#94a3b8", flexShrink:0 }}/>
-            <span style={{ fontSize:11, fontWeight:700, color:offlineMode?"#4ade80":"rgba(200,220,255,0.55)", fontFamily:"'DM Mono',monospace" }}>{offlineMode?`📴 ${cacheStats.tileCount.toLocaleString()} tiles`:`🌐 ${cacheStats.tileCount.toLocaleString()} saved`}</span>
+        {isMobile && <div style={{ position: "absolute", top: 0, left: 0, right: 0, zIndex: 1330 }}><MobileSearchBar searchQuery={searchQuery} setSearchQuery={setSearchQuery} onSearch={handleSidebarSearch} searchLoading={searchLoading} /></div>}
+        {isMobile && <div style={{ position: "absolute", top: 58, left: 0, right: 0, zIndex: 1315, pointerEvents: "none" }}><CompactMobileHUD mousePos={mousePos} mapZoom={mapZoom} compassHeading={compass.compassHeading} compassNavActive={compass.compassNavActive} cursorElevation={cursorElevation} /></div>}
+        {isMobile && cacheStats?.tileCount > 0 && (
+          <div onClick={() => setOfflineMode(p => !p)} style={{ position: "absolute", top: 160, left: 12, zIndex: 1310, display: "flex", alignItems: "center", gap: 6, padding: "5px 12px 5px 8px", background: offlineMode ? "rgba(4,10,20,0.95)" : "rgba(4,10,20,0.80)", backdropFilter: "blur(16px)", border: `1.5px solid ${offlineMode ? "rgba(34,197,94,0.6)" : "rgba(255,255,255,0.12)"}`, borderRadius: 20, cursor: "pointer", userSelect: "none" }}>
+            <div style={{ width: 8, height: 8, borderRadius: "50%", background: offlineMode ? "#22c55e" : "#94a3b8", flexShrink: 0 }} />
+            <span style={{ fontSize: 11, fontWeight: 700, color: offlineMode ? "#4ade80" : "rgba(200,220,255,0.55)", fontFamily: "'DM Mono',monospace" }}>{offlineMode ? `📴 ${cacheStats.tileCount.toLocaleString()} tiles` : `🌐 ${cacheStats.tileCount.toLocaleString()} saved`}</span>
           </div>
         )}
-        {isMobile && <div style={{ position:"absolute", bottom:76, right:12, zIndex:1320, pointerEvents:"all" }}><MobileCompassWidget compassNavActive={compass.compassNavActive} compassHeading={compass.compassHeading} onCompassToggle={() => compass.compassNavActive?compass.stopCompassNav():compass.startCompassNav()} leafletMapRef={leafletMapRef}/></div>}
+        {isMobile && <div style={{ position: "absolute", bottom: 76, right: 12, zIndex: 1320, pointerEvents: "all" }}><MobileCompassWidget compassNavActive={compass.compassNavActive} compassHeading={compass.compassHeading} onCompassToggle={() => compass.compassNavActive ? compass.stopCompassNav() : compass.startCompassNav()} leafletMapRef={leafletMapRef} /></div>}
 
         {/* ══ MOBILE DRAW HUD PILL ═══════════════════════════════════════ */}
         {isMobile && drawMode && (
-          <div style={{ position:"absolute", bottom:80, left:"50%", transform:"translateX(-50%)", zIndex:1400, display:"flex", alignItems:"center", gap:0, background:"rgba(6,10,22,0.97)", backdropFilter:"blur(24px)", WebkitBackdropFilter:"blur(24px)", border:"1.5px solid rgba(245,158,11,0.45)", borderRadius:100, animation:"hudpulse 2s ease-in-out infinite", fontFamily:"'DM Sans',sans-serif", overflow:"hidden", pointerEvents:"all" }}>
-            <div style={{ display:"flex", alignItems:"center", gap:7, padding:"10px 14px" }}>
-              <div style={{ width:7, height:7, borderRadius:"50%", background:"#f59e0b", animation:"blink 1s infinite", flexShrink:0 }}/>
-              <span style={{ fontSize:13, fontWeight:700, color:"#fbbf24", fontFamily:"'DM Mono',monospace" }}>{drawPoints.length}</span>
-              <span style={{ fontSize:11, color:"rgba(255,255,255,0.4)" }}>{drawType==="marker"?"tap to place":drawPoints.length===0?"tap map to start":"pts · tap to add"}</span>
+          <div style={{ position: "absolute", bottom: 80, left: "50%", transform: "translateX(-50%)", zIndex: 1400, display: "flex", alignItems: "center", gap: 0, background: "rgba(6,10,22,0.97)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)", border: "1.5px solid rgba(245,158,11,0.45)", borderRadius: 100, animation: "hudpulse 2s ease-in-out infinite", fontFamily: "'DM Sans',sans-serif", overflow: "hidden", pointerEvents: "all" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 7, padding: "10px 14px" }}>
+              <div style={{ width: 7, height: 7, borderRadius: "50%", background: "#f59e0b", animation: "blink 1s infinite", flexShrink: 0 }} />
+              <span style={{ fontSize: 13, fontWeight: 700, color: "#fbbf24", fontFamily: "'DM Mono',monospace" }}>{drawPoints.length}</span>
+              <span style={{ fontSize: 11, color: "rgba(255,255,255,0.4)" }}>{drawType === "marker" ? "tap to place" : drawPoints.length === 0 ? "tap map to start" : "pts · tap to add"}</span>
             </div>
-            <div style={{ width:1, height:32, background:"rgba(255,255,255,0.1)", flexShrink:0 }}/>
-            <button onPointerDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();finishDrawing();}} disabled={drawPoints.length===0}
-              style={{ padding:"10px 16px", background:drawPoints.length>0?"rgba(34,197,94,0.15)":"transparent", border:"none", color:drawPoints.length>0?"#4ade80":"rgba(255,255,255,0.2)", fontWeight:700, fontSize:13, cursor:drawPoints.length>0?"pointer":"default", fontFamily:"'DM Sans',sans-serif", display:"flex", alignItems:"center", gap:5, transition:"all 0.15s" }}>
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>Done
+            <div style={{ width: 1, height: 32, background: "rgba(255,255,255,0.1)", flexShrink: 0 }} />
+            <button onPointerDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); finishDrawing(); }} disabled={drawPoints.length === 0}
+              style={{ padding: "10px 16px", background: drawPoints.length > 0 ? "rgba(34,197,94,0.15)" : "transparent", border: "none", color: drawPoints.length > 0 ? "#4ade80" : "rgba(255,255,255,0.2)", fontWeight: 700, fontSize: 13, cursor: drawPoints.length > 0 ? "pointer" : "default", fontFamily: "'DM Sans',sans-serif", display: "flex", alignItems: "center", gap: 5 }}>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12" /></svg>Done
             </button>
-            <div style={{ width:1, height:32, background:"rgba(255,255,255,0.1)", flexShrink:0 }}/>
-            <button onPointerDown={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();cancelDrawing();}}
-              style={{ padding:"10px 16px", background:"transparent", border:"none", color:"rgba(248,113,113,0.8)", fontWeight:700, fontSize:13, cursor:"pointer", fontFamily:"'DM Sans',sans-serif", display:"flex", alignItems:"center", gap:5 }}>
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Cancel
+            <div style={{ width: 1, height: 32, background: "rgba(255,255,255,0.1)", flexShrink: 0 }} />
+            <button onPointerDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); cancelDrawing(); }}
+              style={{ padding: "10px 16px", background: "transparent", border: "none", color: "rgba(248,113,113,0.8)", fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "'DM Sans',sans-serif", display: "flex", alignItems: "center", gap: 5 }}>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>Cancel
             </button>
           </div>
         )}
 
         {/* ══ MAP ════════════════════════════════════════════════════════ */}
-        <div style={{ position:"absolute", top:isMobile?58:TOP_H, left:isMobile?0:SB_W, right:0, bottom:isMobile?68:STAT_H, zIndex:1 }}>
-          <MapContainer center={[20.29, 85.82]} zoom={13} maxZoom={22} zoomControl={false} style={{ width:"100%", height:"100%" }}
-            whenReady={() => { setTimeout(() => { try { leafletMapRef.current?.invalidateSize?.(); } catch(_){} }, 200); }}>
-            {cfg.type==="wms"
-              ? <WMSTileLayer key={activeLayer} url={cfg.url} layers={cfg.layers} format={cfg.format||"image/png"} transparent={cfg.transparent??true} attribution={cfg.attribution} crossOrigin="anonymous"/>
+        <div style={{ position: "absolute", top: isMobile ? 58 : TOP_H, left: isMobile ? 0 : SB_W, right: 0, bottom: isMobile ? 68 : STAT_H, zIndex: 1 }}>
+          <MapContainer center={[20.29, 85.82]} zoom={13} maxZoom={22} zoomControl={false} style={{ width: "100%", height: "100%" }}
+            whenReady={() => { setTimeout(() => { try { leafletMapRef.current?.invalidateSize?.(); } catch (_) {} }, 200); }}>
+            {cfg.type === "wms"
+              ? <WMSTileLayer key={activeLayer} url={cfg.url} layers={cfg.layers} format={cfg.format || "image/png"} transparent={cfg.transparent ?? true} attribution={cfg.attribution} crossOrigin="anonymous" />
               : offlineMode
-                ? <><OfflineTileLayer key={activeLayer+"_off"} layerKey={activeLayer} url={cfg.url} attribution={cfg.attribution} offlineOnly={false} maxZoom={22} maxNativeZoom={cfg.maxNativeZoom||19}/>{cfg.overlayUrl&&<OfflineTileLayer key={activeLayer+"_ov_off"} layerKey={activeLayer+"_ov"} url={cfg.overlayUrl} offlineOnly={false} maxZoom={22} maxNativeZoom={19}/>}</>
-                : <><TileLayer key={activeLayer} url={cfg.url||"https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"} attribution={cfg.attribution||"© OpenStreetMap"} maxZoom={22} maxNativeZoom={cfg.maxNativeZoom||19} crossOrigin="anonymous"/>{cfg.overlayUrl&&<TileLayer key={activeLayer+"_ov"} url={cfg.overlayUrl} maxZoom={22} maxNativeZoom={19} opacity={0.85} crossOrigin="anonymous"/>}</>
+                ? <><OfflineTileLayer key={activeLayer + "_off"} layerKey={activeLayer} url={cfg.url} attribution={cfg.attribution} offlineOnly={false} maxZoom={22} maxNativeZoom={cfg.maxNativeZoom || 19} />{cfg.overlayUrl && <OfflineTileLayer key={activeLayer + "_ov_off"} layerKey={activeLayer + "_ov"} url={cfg.overlayUrl} offlineOnly={false} maxZoom={22} maxNativeZoom={19} />}</>
+                : <><TileLayer key={activeLayer} url={cfg.url || "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"} attribution={cfg.attribution || "© OpenStreetMap"} maxZoom={22} maxNativeZoom={cfg.maxNativeZoom || 19} crossOrigin="anonymous" />{cfg.overlayUrl && <TileLayer key={activeLayer + "_ov"} url={cfg.overlayUrl} maxZoom={22} maxNativeZoom={19} opacity={0.85} crossOrigin="anonymous" />}</>
             }
-            <MapSizeInvalidator/>
-            <MapRefCapture leafletMapRef={leafletMapRef} setMapRef={setMapRefForTracker}/>
-            <ElevationClickCapture elevOpen={elevOpen||activeSheet==="elevation"} activeSheet={activeSheet} elevMode={elevMode} onMapClick={handleMapClickForElev}/>
-            <MapFlyController flyTarget={flyTarget}/>
-            <AddSearch onLocationFound={handleLocationFound} searchRef={searchFnRef}/>
-            <LiveGPS/>
+            <MapSizeInvalidator />
+            <MapRefCapture leafletMapRef={leafletMapRef} setMapRef={setMapRefForTracker} />
+            <ElevationClickCapture elevOpen={elevOpen || activeSheet === "elevation"} activeSheet={activeSheet} elevMode={elevMode} onMapClick={handleMapClickForElev} />
+            <MapFlyController flyTarget={flyTarget} />
+            <AddSearch onLocationFound={handleLocationFound} searchRef={searchFnRef} />
+            <LiveGPS />
 
-            {/*
-             * PATCH v5.9.1-p1 CHANGE 3:
-             * KML onLayer now extracts polygon rings into kmlMask for DEM clipping
-             */}
+            {/* ── KMLLoader — dblclick → Properties, right-click → Context menu ── */}
             <KMLLoader
               file={kmlFile}
               onDone={() => setKmlLoading(false)}
               onLayer={(lyr) => {
                 kmlLayerRef.current = lyr;
-
-                // Extract polygon rings for DEM clip mask
+                attachFeatureClickHandlers(lyr, "kml", kmlName || "KML Layer");
                 const rings = [];
                 lyr.eachLayer(layer => {
                   if (layer.getLatLngs) {
                     const lls = layer.getLatLngs();
-                    // getLatLngs returns nested arrays for polygons
                     const flat = Array.isArray(lls[0]) ? lls : [lls];
                     rings.push(...flat);
                   }
                 });
-                // Use rings if found, otherwise fall back to full GeoJSON
                 setKmlMask(rings.length > 0 ? rings : lyr.toGeoJSON());
+                const geojson = lyr.toGeoJSON();
+                overlayControls.addLayerFeatures({ fileName: kmlName || "KML Layer", fileType: "kml", filePath: kmlName, geojson, leafletLayerGroup: lyr });
+                setKmlAnalyzerData({ geojson, fileName: kmlName || "KML Layer" });
+                setKmlAnalyzerOpen(true);
               }}
             />
 
-            {/* KMZ — onLayer stores ref for DEM draping */}
+            {/* ── KMZLoader — dblclick → Properties, right-click → Context menu ── */}
             {extraFileType === "kmz" && (
               <KMZLoader
                 file={extraFile}
                 onDone={() => {}}
-                onLayer={(lyr) => { kmzLayerRef.current = lyr; }}
+                onLayer={(lyr) => {
+                  kmzLayerRef.current = lyr;
+                  attachFeatureClickHandlers(lyr, "kmz", extraFile?.name || "KMZ Layer");
+                  const geojson = lyr.toGeoJSON ? lyr.toGeoJSON() : { type: "FeatureCollection", features: [] };
+                  overlayControls.addLayerFeatures({ fileName: extraFile?.name || "KMZ Layer", fileType: "kmz", filePath: extraFile?.name, geojson, leafletLayerGroup: lyr });
+                  setKmlAnalyzerData({ geojson, fileName: extraFile?.name || "KMZ Layer" });
+                  setKmlAnalyzerOpen(true);
+                }}
               />
             )}
+
             {extraFileType === "csv" && (
               <CSVLoader
                 file={extraFile}
-                onDone={() => {}}
+                onDone={(lyr) => {
+                  if (lyr && lyr.toGeoJSON) {
+                    const geojson = lyr.toGeoJSON();
+                    overlayControls.addLayerFeatures({ fileName: extraFile?.name || "CSV Layer", fileType: "csv", filePath: extraFile?.name, geojson, leafletLayerGroup: lyr });
+                  }
+                }}
                 onCount={(valid, total) => { setCsvValidCount(valid); setCsvTotalCount(total); }}
               />
             )}
 
-            <GeoJSONLoader
-              file={geojsonFile}
-              triggerKey={geojsonTrigger}
-              onDone={() => { setGeojsonLoading(false); setGeojsonFile(null); }}
-            />
+            <GeoJSONLoader file={geojsonFile} triggerKey={geojsonTrigger} onDone={() => { setGeojsonLoading(false); setGeojsonFile(null); }} />
 
-            {/* Shapefile — onLayer stores ref for DEM draping */}
+            {/* ── ShapefileLoader — dblclick → Properties, right-click → Context menu ── */}
             <ShapefileLoader
               file={shpFile}
               triggerKey={shpTrigger}
               onDone={() => setShpLoading(false)}
               onCount={(n) => setShpCount(n)}
-              onLayer={(lyr) => { shpLayerRef.current = lyr; }}
+              onLayer={(lyr) => {
+                shpLayerRef.current = lyr;
+                attachFeatureClickHandlers(lyr, "shp", shpFileName || "Shapefile");
+                const geojson = lyr.toGeoJSON ? lyr.toGeoJSON() : { type: "FeatureCollection", features: [] };
+                overlayControls.addLayerFeatures({ fileName: shpFileName || "Shapefile Layer", fileType: "shp", filePath: shpFileName, geojson, leafletLayerGroup: lyr });
+                setKmlAnalyzerData({ geojson, fileName: shpFileName || "Shapefile" });
+                setKmlAnalyzerOpen(true);
+              }}
             />
 
-            {/*
-             * PATCH v5.9.1-p1 CHANGE 4:
-             * DEMLoader now receives kmlMask prop for raster clipping
-             */}
-            <DEMLoader
-              file={demFile}
-              opacity={demOpacity}
-              colorRamp={demColorRamp}
-              kmlMask={kmlMask}                                             // ← PATCH
-              onDone={handleDEMDone}
-              onError={handleDEMError}
-              onStats={(stats, rasterData) => handleDEMStatsAndRaster(stats, rasterData)}
+            <DEMLoader file={demFile} opacity={demOpacity} colorRamp={demColorRamp} kmlMask={kmlMask} onDone={handleDEMDone} onError={handleDEMError} onStats={(stats, rasterData) => handleDEMStatsAndRaster(stats, rasterData)} />
+            <DEMElevationDrape enabled={!!(demFileName && demRasterData)} demRasterData={demRasterData} colorRamp={demColorRamp} minElev={demStats?.min} maxElev={demStats?.max} opacity={demOpacity} kmlLayerRef={kmlLayerRef} shpLayerRef={shpLayerRef} kmzLayerRef={kmzLayerRef} />
+            <SurveyClick surveyMode={surveyMode} route={route} setRoute={setRoute} setStart={() => {}} setEnd={() => {}} polylineRef={polylineRef} />
+            <DrawTool drawMode={drawMode} drawType={drawType} drawPoints={drawPoints} setDrawPoints={setDrawPoints} previewLayerRef={previewLayerRef} drawLayersRef={drawLayersRef} />
+            <BoundaryLayer geojson={boundaryGeojson} />
+            <MapTracker onMove={onMouseMove} onZoom={onZoomChange} />
+
+            <MeasureTool
+              measureMode={measureMode} measurePoints={measurePoints} setMeasurePoints={setMeasurePoints}
+              measureLayersRef={measureLayersRef} measureLineRef={measureLineRef}
+              measureUnit={measureUnit} setMeasureUnit={setMeasureUnit}
+              onFinish={clearMeasure} overlayLayers={overlayControls.overlayLayers}
+              onFeatureProperties={(geojsonFeature) => setPropertiesGeoJSONFeature(geojsonFeature)}
             />
 
-            {/*
-             * ── NEW v5.9.1: QGIS-style 2D elevation draping ──────────────
-             * When a DEM is loaded alongside KML / KMZ / SHP vector layers,
-             * this redraws every feature coloured by its sampled DEM elevation,
-             * using the same colour ramp and min/max as the raster overlay.
-             * Each feature gets a tooltip showing its elevation in metres.
-             */}
-            <DEMElevationDrape
-              enabled={!!(demFileName && demRasterData)}
-              demRasterData={demRasterData}
-              colorRamp={demColorRamp}
-              minElev={demStats?.min}
-              maxElev={demStats?.max}
-              opacity={demOpacity}
-              kmlLayerRef={kmlLayerRef}
-              shpLayerRef={shpLayerRef}
-              kmzLayerRef={kmzLayerRef}
-            />
-
-            <SurveyClick surveyMode={surveyMode} route={route} setRoute={setRoute} setStart={()=>{}} setEnd={()=>{}} polylineRef={polylineRef}/>
-            <DrawTool drawMode={drawMode} drawType={drawType} drawPoints={drawPoints} setDrawPoints={setDrawPoints} previewLayerRef={previewLayerRef} drawLayersRef={drawLayersRef}/>
-            <BoundaryLayer geojson={boundaryGeojson}/>
-            <MapTracker onMove={onMouseMove} onZoom={onZoomChange}/>
-            <MeasureTool measureMode={measureMode} measurePoints={measurePoints} setMeasurePoints={setMeasurePoints} measureLayersRef={measureLayersRef} measureLineRef={measureLineRef} measureUnit={measureUnit}/>
-            <div className="desktop-compass" style={{ position:"absolute", top:10, right:10, zIndex:1000, pointerEvents:"all" }}>
-              <ProfessionalCompassControl onBearingChange={setMapBearing} compassNavActive={compass.compassNavActive} compassHeading={compass.compassHeading} onCompassToggle={() => compass.compassNavActive?compass.stopCompassNav():compass.startCompassNav()}/>
+            <div className="desktop-compass" style={{ position: "absolute", top: 10, right: 10, zIndex: 1000, pointerEvents: "all" }}>
+              <ProfessionalCompassControl onBearingChange={setMapBearing} compassNavActive={compass.compassNavActive} compassHeading={compass.compassHeading} onCompassToggle={() => compass.compassNavActive ? compass.stopCompassNav() : compass.startCompassNav()} />
             </div>
           </MapContainer>
         </div>
 
         {/* ══ ZOOM CONTROL ═══════════════════════════════════════════════ */}
-        {!isMobile && <ZoomControl isMobile={isMobile} leafletMapRef={leafletMapRef}/>}
+        {!isMobile && <ZoomControl isMobile={isMobile} leafletMapRef={leafletMapRef} />}
 
         {/* ══ MOBILE BOTTOM NAV ══════════════════════════════════════════ */}
         {isMobile && (
-          <div style={{ position:"absolute", bottom:0, left:0, right:0, zIndex:1200 }}>
+          <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, zIndex: 1200 }}>
             <MobileBottomNav
               activeSheet={activeSheet}
               onOpen={(key) => {
-                if (key==="draw") { if (drawMode) return; setActiveSheet(activeSheet==="draw"?null:"draw"); return; }
-                if (key==="measure") { if (activeSheet==="measure") { clearMeasure(); setActiveSheet(null); return; } setMeasureMode(true); setActiveSheet("measure"); return; }
-                setActiveSheet(activeSheet===key?null:key);
+                if (key === "draw") { if (drawMode) return; setActiveSheet(activeSheet === "draw" ? null : "draw"); return; }
+                if (key === "measure") { if (activeSheet === "measure") { clearMeasure(); setActiveSheet(null); return; } setMeasureMode(true); setActiveSheet("measure"); return; }
+                setActiveSheet(activeSheet === key ? null : key);
               }}
-              onCompassToggle={() => compass.compassNavActive?compass.stopCompassNav():compass.startCompassNav()}
+              onCompassToggle={() => compass.compassNavActive ? compass.stopCompassNav() : compass.startCompassNav()}
               compassNavActive={compass.compassNavActive}
               drawMode={drawMode} measureMode={measureMode} surveyMode={surveyMode} isTracking={isTracking}
               kmlName={kmlName} extraFile={extraFile} importedGeoJSONLayers={geoJSON.importedGeoJSONLayers}
@@ -999,83 +1103,89 @@ export default function SurveyMap() {
         {/* ══ MOBILE BOTTOM SHEETS ═══════════════════════════════════════ */}
         <MobileBottomSheet activeSheet={activeSheet} onClose={() => setActiveSheet(null)}>
 
-          {activeSheet==="draw" && !drawMode && (
-            <div style={{ padding:"0 16px 28px" }}>
+          {activeSheet === "draw" && !drawMode && (
+            <div style={{ padding: "0 16px 28px" }}>
               <SheetHeader title="Draw Tool" sub="Choose type, then tap Start" onClose={() => setActiveSheet(null)} iconColor="#f59e0b"
-                icon={<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>}/>
-              <SheetDivider/>
-              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, margin:"14px 0" }}>
-                {[["path","Path","M3 17c3-3 5-5 5-9a4 4 0 018 0c0 4 2 6 5 9"],["polygon","Polygon","M12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5 12 2"],["marker","Marker","M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"]].map(([t,label,path]) => {
-                  const on = drawType===t;
+                icon={<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>} />
+              <SheetDivider />
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, margin: "14px 0" }}>
+                {[["path", "Path", "M3 17c3-3 5-5 5-9a4 4 0 018 0c0 4 2 6 5 9"], ["polygon", "Polygon", "M12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5 12 2"], ["marker", "Marker", "M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"]].map(([t, label, path]) => {
+                  const on = drawType === t;
                   return (
-                    <button key={t} onClick={() => setDrawType(t)} style={{ padding:"14px 8px", borderRadius:14, cursor:"pointer", display:"flex", flexDirection:"column", alignItems:"center", gap:7, background:on?"rgba(245,158,11,0.14)":"rgba(255,255,255,0.035)", border:`1.5px solid ${on?"rgba(245,158,11,0.45)":"rgba(255,255,255,0.07)"}`, color:on?"#fbbf24":"rgba(180,210,250,0.35)" }}>
-                      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d={path}/></svg>
-                      <span style={{ fontSize:12, fontWeight:on?700:400 }}>{label}</span>
+                    <button key={t} onClick={() => setDrawType(t)} style={{ padding: "14px 8px", borderRadius: 14, cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 7, background: on ? "rgba(245,158,11,0.14)" : "rgba(255,255,255,0.035)", border: `1.5px solid ${on ? "rgba(245,158,11,0.45)" : "rgba(255,255,255,0.07)"}`, color: on ? "#fbbf24" : "rgba(180,210,250,0.35)" }}>
+                      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d={path} /></svg>
+                      <span style={{ fontSize: 12, fontWeight: on ? 700 : 400 }}>{label}</span>
                     </button>
                   );
                 })}
               </div>
               <button onClick={() => { setDrawMode(true); setDrawPoints([]); setActiveSheet(null); }}
-                style={{ width:"100%", padding:"15px 0", borderRadius:14, cursor:"pointer", background:"linear-gradient(135deg,rgba(245,158,11,0.9),rgba(217,119,6,0.85))", border:"1px solid rgba(245,158,11,0.6)", color:"#fff", fontWeight:800, fontSize:15, display:"flex", alignItems:"center", justifyContent:"center", gap:10, fontFamily:"'DM Sans',sans-serif", boxShadow:"0 4px 20px rgba(245,158,11,0.3)" }}>
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                style={{ width: "100%", padding: "15px 0", borderRadius: 14, cursor: "pointer", background: "linear-gradient(135deg,rgba(245,158,11,0.9),rgba(217,119,6,0.85))", border: "1px solid rgba(245,158,11,0.6)", color: "#fff", fontWeight: 800, fontSize: 15, display: "flex", alignItems: "center", justifyContent: "center", gap: 10, fontFamily: "'DM Sans',sans-serif", boxShadow: "0 4px 20px rgba(245,158,11,0.3)" }}>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="5 3 19 12 5 21 5 3" /></svg>
                 Start Drawing — tap map
               </button>
-              {savedDrawings.length>0 && (
-                <div style={{ marginTop:18 }}>
-                  <div style={{ fontSize:10, fontWeight:700, color:"rgba(255,255,255,0.2)", letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:8 }}>Saved ({savedDrawings.length})</div>
-                  {savedDrawings.map((d,i) => (
-                    <div key={i} style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 14px", background:"rgba(255,255,255,0.028)", borderRadius:12, border:"1px solid rgba(255,255,255,0.055)", marginBottom:6 }}>
-                      <span style={{ fontSize:16 }}>{d.type==="marker"?"📌":d.type==="polygon"?"⬡":"〰"}</span>
-                      <span style={{ color:"rgba(200,225,255,0.7)", fontSize:13, flex:1 }}>{d.name}</span>
-                      <button onClick={() => setSavedDrawings(p=>p.filter((_,j)=>j!==i))} style={{ background:"none", border:"none", color:"rgba(239,68,68,0.5)", cursor:"pointer", fontSize:18, padding:0 }}>×</button>
+              {savedDrawings.length > 0 && (
+                <div style={{ marginTop: 18 }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, color: "rgba(255,255,255,0.2)", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 8 }}>Saved ({savedDrawings.length})</div>
+                  {savedDrawings.map((d, i) => (
+                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", background: "rgba(255,255,255,0.028)", borderRadius: 12, border: "1px solid rgba(255,255,255,0.055)", marginBottom: 6 }}>
+                      <span style={{ fontSize: 16 }}>{d.type === "marker" ? "📌" : d.type === "polygon" ? "⬡" : "〰"}</span>
+                      <span onClick={() => { setActiveSheet(null); setPropertiesDrawing(d); }} style={{ color: "rgba(200,225,255,0.7)", fontSize: 13, flex: 1, cursor: "pointer" }}>{d.name}</span>
+                      <button onClick={() => setSavedDrawings(p => p.filter((_, j) => j !== i))} style={{ background: "none", border: "none", color: "rgba(239,68,68,0.5)", cursor: "pointer", fontSize: 18, padding: 0 }}>×</button>
                     </div>
                   ))}
                 </div>
               )}
-              {hasExportData && <div style={{ marginTop:16 }}><div style={{ fontSize:10, fontWeight:700, color:"rgba(255,255,255,0.2)", letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:8 }}>Export</div><ExportButtons/></div>}
+              {kmlAnalyzerData && (
+                <button onClick={() => { setActiveSheet(null); setKmlAnalyzerOpen(true); }}
+                  style={{ width: "100%", marginTop: 12, padding: "13px 0", borderRadius: 12, cursor: "pointer", background: "rgba(251,191,36,0.1)", border: "1px solid rgba(251,191,36,0.3)", color: "#fbbf24", fontWeight: 700, fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+                  <span style={{ fontSize: 16 }}>📐</span> View Imported Layer Area
+                </button>
+              )}
+              {hasExportData && <div style={{ marginTop: 16 }}><div style={{ fontSize: 10, fontWeight: 700, color: "rgba(255,255,255,0.2)", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 8 }}>Export</div><ExportButtons /></div>}
             </div>
           )}
 
-          {activeSheet==="measure" && (
-            <div style={{ padding:"0 16px 28px" }}>
-              <SheetHeader title="Measure" sub={measureMode?`${measurePoints.length} pts · tap map`:"Tap points to measure"} onClose={() => setActiveSheet(null)} iconColor="#10b981"
-                icon={<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M21 6H3a1 1 0 00-1 1v3a1 1 0 001 1h18a1 1 0 001-1V7a1 1 0 00-1-1zM7 10v4M12 10v6M17 10v4"/></svg>}/>
-              <SheetDivider/>
-              <div style={{ padding:"24px 20px", background:"rgba(16,185,129,0.07)", borderRadius:16, border:"1px solid rgba(16,185,129,0.18)", textAlign:"center", margin:"14px 0" }}>
-                <div style={{ fontSize:9, fontWeight:800, color:"rgba(52,211,153,0.4)", letterSpacing:"0.12em", textTransform:"uppercase", marginBottom:6, fontFamily:"'DM Mono',monospace" }}>TOTAL DISTANCE</div>
-                <div style={{ fontSize:48, fontWeight:800, color:"#34d399", fontFamily:"'DM Mono',monospace", lineHeight:1 }}>{measurePoints.length<2?"—":formatDist(totalDistance,measureUnit)}</div>
-                <div style={{ fontSize:11, color:"rgba(52,211,153,0.32)", marginTop:6 }}>{measurePoints.length} points</div>
+          {activeSheet === "measure" && (
+            <div style={{ padding: "0 16px 28px" }}>
+              <SheetHeader title="Measure" sub={measureMode ? `${measurePoints.length} pts · tap map` : "Tap points to measure"} onClose={() => setActiveSheet(null)} iconColor="#10b981"
+                icon={<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M21 6H3a1 1 0 00-1 1v3a1 1 0 001 1h18a1 1 0 001-1V7a1 1 0 00-1-1zM7 10v4M12 10v6M17 10v4" /></svg>} />
+              <SheetDivider />
+              <div style={{ padding: "24px 20px", background: "rgba(16,185,129,0.07)", borderRadius: 16, border: "1px solid rgba(16,185,129,0.18)", textAlign: "center", margin: "14px 0" }}>
+                <div style={{ fontSize: 9, fontWeight: 800, color: "rgba(52,211,153,0.4)", letterSpacing: "0.12em", textTransform: "uppercase", marginBottom: 6, fontFamily: "'DM Mono',monospace" }}>TOTAL DISTANCE</div>
+                <div style={{ fontSize: 48, fontWeight: 800, color: "#34d399", fontFamily: "'DM Mono',monospace", lineHeight: 1 }}>{measurePoints.length < 2 ? "—" : formatDist(totalDistance, measureUnit)}</div>
+                <div style={{ fontSize: 11, color: "rgba(52,211,153,0.32)", marginTop: 6 }}>{measurePoints.length} points</div>
               </div>
-              <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:5, marginBottom:14 }}>
-                {[["auto","Auto"],["km","km"],["m","m"],["mi","mi"],["ft","ft"],["yd","yd"],["nmi","nmi"],["cm","cm"]].map(([u,lb]) => (
-                  <button key={u} onClick={() => setMeasureUnit(u)} style={{ padding:"9px 4px", borderRadius:10, cursor:"pointer", fontSize:12, fontWeight:600, background:measureUnit===u?"rgba(16,185,129,0.16)":"rgba(255,255,255,0.035)", border:`1px solid ${measureUnit===u?"rgba(16,185,129,0.38)":"rgba(255,255,255,0.07)"}`, color:measureUnit===u?"#34d399":"rgba(185,215,245,0.38)", fontFamily:"'DM Mono',monospace" }}>{lb}</button>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 5, marginBottom: 14 }}>
+                {[["auto", "Auto"], ["km", "km"], ["m", "m"], ["mi", "mi"], ["ft", "ft"], ["yd", "yd"], ["nmi", "nmi"], ["cm", "cm"]].map(([u, lb]) => (
+                  <button key={u} onClick={() => setMeasureUnit(u)} style={{ padding: "9px 4px", borderRadius: 10, cursor: "pointer", fontSize: 12, fontWeight: 600, background: measureUnit === u ? "rgba(16,185,129,0.16)" : "rgba(255,255,255,0.035)", border: `1px solid ${measureUnit === u ? "rgba(16,185,129,0.38)" : "rgba(255,255,255,0.07)"}`, color: measureUnit === u ? "#34d399" : "rgba(185,215,245,0.38)", fontFamily: "'DM Mono',monospace" }}>{lb}</button>
                 ))}
               </div>
               {!measureMode
-                ? <button onClick={() => setMeasureMode(true)} style={{ width:"100%", padding:"15px 0", borderRadius:14, cursor:"pointer", background:"linear-gradient(135deg,rgba(16,185,129,0.9),rgba(5,150,105,0.85))", border:"1px solid rgba(16,185,129,0.6)", color:"#fff", fontWeight:800, fontSize:15, display:"flex", alignItems:"center", justifyContent:"center", gap:10, fontFamily:"'DM Sans',sans-serif" }}>Start Measuring</button>
-                : <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
-                    <button onClick={resetMeasurePoints} style={{ padding:"14px 0", borderRadius:12, cursor:"pointer", background:"rgba(255,255,255,0.04)", border:"1px solid rgba(255,255,255,0.08)", color:"rgba(190,215,250,0.55)", fontWeight:700, fontSize:14, fontFamily:"'DM Sans',sans-serif" }}>↺ Reset</button>
-                    <button onClick={() => { clearMeasure(); setActiveSheet(null); }} style={{ padding:"14px 0", borderRadius:12, cursor:"pointer", background:"rgba(239,68,68,0.12)", border:"1px solid rgba(239,68,68,0.4)", color:"#f87171", fontWeight:700, fontSize:14, fontFamily:"'DM Sans',sans-serif" }}>⏹ Stop</button>
-                  </div>
+                ? <button onClick={() => setMeasureMode(true)} style={{ width: "100%", padding: "15px 0", borderRadius: 14, cursor: "pointer", background: "linear-gradient(135deg,rgba(16,185,129,0.9),rgba(5,150,105,0.85))", border: "1px solid rgba(16,185,129,0.6)", color: "#fff", fontWeight: 800, fontSize: 15, display: "flex", alignItems: "center", justifyContent: "center", gap: 10, fontFamily: "'DM Sans',sans-serif" }}>Start Measuring</button>
+                : <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                  <button onClick={resetMeasurePoints} style={{ padding: "14px 0", borderRadius: 12, cursor: "pointer", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", color: "rgba(190,215,250,0.55)", fontWeight: 700, fontSize: 14, fontFamily: "'DM Sans',sans-serif" }}>↺ Reset</button>
+                  <button onClick={() => { clearMeasure(); setActiveSheet(null); }} style={{ padding: "14px 0", borderRadius: 12, cursor: "pointer", background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.4)", color: "#f87171", fontWeight: 700, fontSize: 14, fontFamily: "'DM Sans',sans-serif" }}>⏹ Stop</button>
+                </div>
               }
             </div>
           )}
 
-          {activeSheet==="layers" && (
-            <div style={{ paddingBottom:28 }}>
+          {activeSheet === "layers" && (
+            <div style={{ paddingBottom: 28 }}>
               <SheetHeader title="Map Layers" sub="Choose basemap" onClose={() => setActiveSheet(null)} iconColor="#3b82f6"
-                icon={<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>}/>
-              <SheetDivider/>
-              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, padding:"4px 16px" }}>
-                {Object.entries(MAP_LAYERS).map(([name,layer]) => {
-                  const on = activeLayer===name;
+                icon={<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><polygon points="12 2 2 7 12 12 22 7 12 2" /><polyline points="2 17 12 22 22 17" /><polyline points="2 12 12 17 22 12" /></svg>} />
+              <SheetDivider />
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, padding: "4px 16px" }}>
+                {Object.entries(MAP_LAYERS).map(([name, layer]) => {
+                  const on = activeLayer === name;
                   return (
-                    <button key={name} onClick={() => { setActiveLayer(name); setActiveSheet(null); }} style={{ padding:"13px 12px", borderRadius:14, cursor:"pointer", background:on?"rgba(59,130,246,0.16)":"rgba(255,255,255,0.035)", border:`1.5px solid ${on?"rgba(59,130,246,0.5)":"rgba(255,255,255,0.07)"}`, display:"flex", flexDirection:"column", alignItems:"flex-start", gap:7 }}>
-                      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", width:"100%" }}>
-                        <Ico name={layer.icon} size={20} style={{ color:on?"#60a5fa":"rgba(180,210,250,0.35)" }}/>
-                        {on && <div style={{ width:7, height:7, borderRadius:"50%", background:"#3b82f6", boxShadow:"0 0 8px #3b82f6" }}/>}
+                    <button key={name} onClick={() => { setActiveLayer(name); setActiveSheet(null); }} style={{ padding: "13px 12px", borderRadius: 14, cursor: "pointer", background: on ? "rgba(59,130,246,0.16)" : "rgba(255,255,255,0.035)", border: `1.5px solid ${on ? "rgba(59,130,246,0.5)" : "rgba(255,255,255,0.07)"}`, display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 7 }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%" }}>
+                        <Ico name={layer.icon} size={20} style={{ color: on ? "#60a5fa" : "rgba(180,210,250,0.35)" }} />
+                        {on && <div style={{ width: 7, height: 7, borderRadius: "50%", background: "#3b82f6", boxShadow: "0 0 8px #3b82f6" }} />}
                       </div>
-                      <div style={{ fontSize:12, fontWeight:on?700:400, color:on?"#bfdbfe":"rgba(190,215,250,0.5)", lineHeight:1.3 }}>{name}</div>
+                      <div style={{ fontSize: 12, fontWeight: on ? 700 : 400, color: on ? "#bfdbfe" : "rgba(190,215,250,0.5)", lineHeight: 1.3 }}>{name}</div>
                     </button>
                   );
                 })}
@@ -1083,23 +1193,16 @@ export default function SurveyMap() {
             </div>
           )}
 
-          {activeSheet==="files" && (
-            <div style={{ padding:"0 16px 28px" }}>
-              <SheetHeader
-                title="File Folder"
-                sub={`${importedCount} file${importedCount!==1?"s":""} imported`}
-                onClose={() => setActiveSheet(null)}
-                iconColor="#60a5fa"
-                icon={<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>}
-              />
-              <SheetDivider/>
-              <div style={{ padding:"4px 0" }}>
-                <FileFolderPanel onClose={() => setActiveSheet(null)}/>
-              </div>
+          {activeSheet === "files" && (
+            <div style={{ padding: "0 16px 28px" }}>
+              <SheetHeader title="File Folder" sub={`${importedCount} file${importedCount !== 1 ? "s" : ""} imported`} onClose={() => setActiveSheet(null)} iconColor="#60a5fa"
+                icon={<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z" /></svg>} />
+              <SheetDivider />
+              <div style={{ padding: "4px 0" }}><FileFolderPanel onClose={() => setActiveSheet(null)} /></div>
             </div>
           )}
 
-          {activeSheet==="elevation" && (
+          {activeSheet === "elevation" && (
             <MobileElevationSheet
               elevMode={elevMode} elevProfileData={elevProfileData} elevLoading={elevLoading}
               elevSourceLabel={elevSourceLabel} customElevPts={customElevPts}
@@ -1110,114 +1213,127 @@ export default function SurveyMap() {
             />
           )}
 
-          {activeSheet==="more" && (
-            <div style={{ paddingBottom:28 }}>
+          {activeSheet === "more" && (
+            <div style={{ paddingBottom: 28 }}>
               <SheetHeader title="More Tools" sub="Advanced features" onClose={() => setActiveSheet(null)} iconColor="#8b5cf6"
-                icon={<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="5" cy="12" r="1.5" fill="currentColor"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/><circle cx="19" cy="12" r="1.5" fill="currentColor"/></svg>}/>
-              <SheetDivider/>
+                icon={<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="5" cy="12" r="1.5" fill="currentColor" /><circle cx="12" cy="12" r="1.5" fill="currentColor" /><circle cx="19" cy="12" r="1.5" fill="currentColor" /></svg>} />
+              <SheetDivider />
               {[
-                { label:"File Folder",         sub:`${importedCount} file(s) · import & export`,           color:"#60a5fa", action:()=>setActiveSheet("files") },
-                { label:"DEM Elevation Layer", sub:demFileName?`${demFileName} · ${demRasterData?"draping active":"loading…"}`:"Import .tif / .asc / .dem", color:"#fb7185", active:!!demFileName, action:()=>setActiveSheet("files") },
-                { label:"Elevation Profile",   sub:"Terrain elevation chart",   color:"#38bdf8", action:()=>{handleElevModeRequest(elevMode||"survey");setActiveSheet("elevation");} },
-                { label:"Compass Navigation",  sub:compass.compassNavActive?`Active · ${Math.round(((compass.compassHeading??0)%360+360)%360)}°`:"Map stays north-up", color:"#0ea5e9", active:compass.compassNavActive, action:()=>{setActiveSheet(null);compass.compassNavActive?compass.stopCompassNav():compass.startCompassNav();} },
-                { label:"Survey Route",        sub:surveyMode?`${route.length} pts · recording`:"Tap points for route", color:"#3b82f6", active:surveyMode, action:()=>{handleToggleSurvey();setActiveSheet(null);} },
-                { label:"3D Globe View",       sub:"Interactive 3D earth",      color:"#a78bfa", action:()=>{setShow3D(true);setActiveSheet(null);} },
-                { label:"Live Track Recorder", sub:isTracking?"Recording GPS track":"GPS · GPX/KML export", color:"#ef4444", active:isTracking, action:()=>{setTrackerOpen(true);setActiveSheet(null);} },
-                { label:offlineMode?"🗺 Go Live (Online)":"📴 Use Cached Map", sub:offlineMode?"Switch to live tiles":`${cacheStats?.tileCount??0} tiles cached`, color:offlineMode?"#4ade80":"#10b981", active:offlineMode, action:()=>{setOfflineMode(p=>!p);setActiveSheet(null);} },
-                { label:"Offline Map Manager", sub:"Download tiles for offline", color:"#14b8a6", action:()=>{setOfflineOpen(true);setActiveSheet(null);} },
-                { label:"Night Mode Auto",     sub:nightModeAuto?"Active — switches at sunset":"Off", color:"#818cf8", active:nightModeAuto, action:()=>{setNightModeAuto(p=>!p);setActiveSheet(null);} },
-              ].map(({label,sub,color,active,action}) => (
-                <button key={label} onClick={action} style={{ width:"100%", display:"flex", alignItems:"center", gap:14, padding:"13px 20px", background:"transparent", border:"none", borderBottom:"1px solid rgba(255,255,255,0.035)", cursor:"pointer", textAlign:"left" }}>
-                  <div style={{ width:44, height:44, borderRadius:14, flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center", background:active?`${color}18`:"rgba(255,255,255,0.04)", border:`1px solid ${active?color+"35":"rgba(255,255,255,0.07)"}` }}>
-                    <div style={{ width:8, height:8, borderRadius:"50%", background:active?color:"rgba(255,255,255,0.2)" }}/>
+                { label: "File Folder",         sub: `${importedCount} file(s) · import & export`,           color: "#60a5fa", action: () => setActiveSheet("files") },
+                ...(kmlAnalyzerData ? [{ label: "📐 Area Measurements", sub: `${kmlAnalyzerData.fileName} · polygons + merge`, color: "#fbbf24", active: true, action: () => { setActiveSheet(null); setKmlAnalyzerOpen(true); } }] : []),
+                { label: "DEM Elevation Layer", sub: demFileName ? `${demFileName} · ${demRasterData ? "draping active" : "loading…"}` : "Import .tif / .asc / .dem", color: "#fb7185", active: !!demFileName, action: () => setActiveSheet("files") },
+                { label: "Elevation Profile",   sub: "Terrain elevation chart",   color: "#38bdf8", action: () => { handleElevModeRequest(elevMode || "survey"); setActiveSheet("elevation"); } },
+                { label: "Compass Navigation",  sub: compass.compassNavActive ? `Active · ${Math.round(((compass.compassHeading ?? 0) % 360 + 360) % 360)}°` : "Map stays north-up", color: "#0ea5e9", active: compass.compassNavActive, action: () => { setActiveSheet(null); compass.compassNavActive ? compass.stopCompassNav() : compass.startCompassNav(); } },
+                { label: "Survey Route",        sub: surveyMode ? `${route.length} pts · recording` : "Tap points for route", color: "#3b82f6", active: surveyMode, action: () => { handleToggleSurvey(); setActiveSheet(null); } },
+                { label: "3D Globe View",       sub: "Interactive 3D earth", color: "#a78bfa", action: () => { setShow3D(true); setActiveSheet(null); } },
+                { label: "Live Track Recorder", sub: isTracking ? "Recording GPS track" : "GPS · GPX/KML export", color: "#ef4444", active: isTracking, action: () => { setTrackerOpen(true); setActiveSheet(null); } },
+                { label: offlineMode ? "🗺 Go Live (Online)" : "📴 Use Cached Map", sub: offlineMode ? "Switch to live tiles" : `${cacheStats?.tileCount ?? 0} tiles cached`, color: offlineMode ? "#4ade80" : "#10b981", active: offlineMode, action: () => { setOfflineMode(p => !p); setActiveSheet(null); } },
+                { label: "Offline Map Manager", sub: "Download tiles for offline", color: "#14b8a6", action: () => { setOfflineOpen(true); setActiveSheet(null); } },
+                { label: "Night Mode Auto",     sub: nightModeAuto ? "Active — switches at sunset" : "Off", color: "#818cf8", active: nightModeAuto, action: () => { setNightModeAuto(p => !p); setActiveSheet(null); } },
+              ].map(({ label, sub, color, active, action }) => (
+                <button key={label} onClick={action} style={{ width: "100%", display: "flex", alignItems: "center", gap: 14, padding: "13px 20px", background: "transparent", border: "none", borderBottom: "1px solid rgba(255,255,255,0.035)", cursor: "pointer", textAlign: "left" }}>
+                  <div style={{ width: 44, height: 44, borderRadius: 14, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", background: active ? `${color}18` : "rgba(255,255,255,0.04)", border: `1px solid ${active ? color + "35" : "rgba(255,255,255,0.07)"}` }}>
+                    <div style={{ width: 8, height: 8, borderRadius: "50%", background: active ? color : "rgba(255,255,255,0.2)" }} />
                   </div>
-                  <div style={{ flex:1, minWidth:0 }}>
-                    <div style={{ fontSize:14, fontWeight:active?700:500, color:active?"#e2eeff":"rgba(190,215,250,0.65)" }}>{label}</div>
-                    <div style={{ fontSize:11, color:"rgba(255,255,255,0.2)", marginTop:2, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{sub}</div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 14, fontWeight: active ? 700 : 500, color: active ? "#e2eeff" : "rgba(190,215,250,0.65)" }}>{label}</div>
+                    <div style={{ fontSize: 11, color: "rgba(255,255,255,0.2)", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sub}</div>
                   </div>
-                  {active && <div style={{ width:8, height:8, borderRadius:"50%", background:color, boxShadow:`0 0 10px ${color}`, flexShrink:0 }}/>}
+                  {active && <div style={{ width: 8, height: 8, borderRadius: "50%", background: color, boxShadow: `0 0 10px ${color}`, flexShrink: 0 }} />}
                 </button>
               ))}
             </div>
           )}
-
         </MobileBottomSheet>
 
         {/* ══ DESKTOP SIDEBAR ════════════════════════════════════════════ */}
-        <div className="sm-sidebar" style={{ position:"absolute", top:TOP_H, left:0, width:SB_W, bottom:STAT_H, zIndex:1100, background:"rgba(4,10,22,0.99)", borderRight:"1px solid rgba(255,255,255,0.07)", display:"flex", flexDirection:"column", overflowY:"auto", overflowX:"hidden" }}>
+        <div className="sm-sidebar" style={{ position: "absolute", top: TOP_H, left: 0, width: SB_W, bottom: STAT_H, zIndex: 1100, background: "rgba(4,10,22,0.99)", borderRight: "1px solid rgba(255,255,255,0.07)", display: "flex", flexDirection: "column", overflowY: "auto", overflowX: "hidden" }}>
 
-          <SectionHeader icon="Search" title="Search Location" collapsed={!searchOpen} onToggle={() => setSearchOpen(p=>!p)}/>
+          <SectionHeader icon="Search" title="Search Location" collapsed={!searchOpen} onToggle={() => setSearchOpen(p => !p)} />
           {searchOpen && (
-            <div style={{ padding:"12px 12px 10px", borderBottom:"1px solid rgba(255,255,255,0.05)", flexShrink:0 }}>
-              <form onSubmit={handleSidebarSearch} style={{ display:"flex", gap:6, marginBottom:8 }}>
-                <div style={{ flex:1, position:"relative" }}>
-                  <span style={{ position:"absolute", left:9, top:"50%", transform:"translateY(-50%)", color:"rgba(255,255,255,0.3)", pointerEvents:"none", display:"flex" }}><Ico name="Search" size={13}/></span>
-                  <input value={searchQuery} onChange={e=>setSearchQuery(e.target.value)} placeholder="Search location or lat, lng…" style={{ width:"100%", padding:"8px 10px 8px 30px", borderRadius:8, border:"1px solid rgba(255,255,255,0.1)", background:"rgba(255,255,255,0.055)", color:"#c8dff0", fontSize:11.5, outline:"none", fontFamily:"'DM Sans',sans-serif", boxSizing:"border-box" }} onFocus={e=>e.target.style.borderColor="rgba(74,158,255,0.4)"} onBlur={e=>e.target.style.borderColor="rgba(255,255,255,0.1)"}/>
+            <div style={{ padding: "12px 12px 10px", borderBottom: "1px solid rgba(255,255,255,0.05)", flexShrink: 0 }}>
+              <form onSubmit={handleSidebarSearch} style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+                <div style={{ flex: 1, position: "relative" }}>
+                  <span style={{ position: "absolute", left: 9, top: "50%", transform: "translateY(-50%)", color: "rgba(255,255,255,0.3)", pointerEvents: "none", display: "flex" }}><Ico name="Search" size={13} /></span>
+                  <input value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Search location or lat, lng…" style={{ width: "100%", padding: "8px 10px 8px 30px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.1)", background: "rgba(255,255,255,0.055)", color: "#c8dff0", fontSize: 11.5, outline: "none", fontFamily: "'DM Sans',sans-serif", boxSizing: "border-box" }} onFocus={e => e.target.style.borderColor = "rgba(74,158,255,0.4)"} onBlur={e => e.target.style.borderColor = "rgba(255,255,255,0.1)"} />
                 </div>
-                <button type="submit" disabled={searchLoading} style={{ padding:"8px 12px", borderRadius:8, border:"1px solid rgba(74,158,255,0.4)", background:"rgba(74,158,255,0.18)", color:"#80c4ff", cursor:searchLoading?"not-allowed":"pointer", fontSize:13, fontWeight:700, flexShrink:0 }}>{searchLoading?<span style={{ animation:"blink 0.8s infinite" }}>…</span>:"↵"}</button>
+                <button type="submit" disabled={searchLoading} style={{ padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(74,158,255,0.4)", background: "rgba(74,158,255,0.18)", color: "#80c4ff", cursor: searchLoading ? "not-allowed" : "pointer", fontSize: 13, fontWeight: 700, flexShrink: 0 }}>{searchLoading ? <span style={{ animation: "blink 0.8s infinite" }}>…</span> : "↵"}</button>
               </form>
               {locationInfo && (
-                <div style={{ padding:"9px 11px", background:"rgba(74,158,255,0.09)", borderRadius:8, border:"1px solid rgba(74,158,255,0.22)", position:"relative" }}>
-                  <div style={{ color:"#90c8ff", fontSize:11.5, fontWeight:600, marginBottom:2, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", paddingRight:18 }}>{locationInfo.loading?"Locating…":(locationInfo.name||"Unknown")}</div>
-                  {locationInfo.details && <div style={{ color:"rgba(255,255,255,0.32)", fontSize:10 }}>{locationInfo.details}</div>}
-                  <button onClick={handleCloseLocationInfo} style={{ position:"absolute", top:7, right:7, background:"none", border:"none", color:"rgba(255,255,255,0.32)", cursor:"pointer", display:"flex", padding:2 }}><Ico name="Close" size={10}/></button>
+                <div style={{ padding: "9px 11px", background: "rgba(74,158,255,0.09)", borderRadius: 8, border: "1px solid rgba(74,158,255,0.22)", position: "relative" }}>
+                  <div style={{ color: "#90c8ff", fontSize: 11.5, fontWeight: 600, marginBottom: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", paddingRight: 18 }}>{locationInfo.loading ? "Locating…" : (locationInfo.name || "Unknown")}</div>
+                  {locationInfo.details && <div style={{ color: "rgba(255,255,255,0.32)", fontSize: 10 }}>{locationInfo.details}</div>}
+                  <button onClick={handleCloseLocationInfo} style={{ position: "absolute", top: 7, right: 7, background: "none", border: "none", color: "rgba(255,255,255,0.32)", cursor: "pointer", display: "flex", padding: 2 }}><Ico name="Close" size={10} /></button>
                 </div>
               )}
             </div>
           )}
 
-          <SectionHeader icon="Layers" title="Map Layers" collapsed={!layersOpen} onToggle={() => setLayersOpen(p=>!p)}/>
+          <SectionHeader icon="Layers" title="Map Layers" collapsed={!layersOpen} onToggle={() => setLayersOpen(p => !p)} />
           {layersOpen && (
-            <div style={{ flexShrink:0 }}>
-              <div style={{ padding:"5px 0", maxHeight:200, overflowY:"auto" }}>
-                <LayerItem iconName={nightSwitchInfo?.isNight?"Night":"Day"} label="Auto Night Mode" checked={nightModeAuto} onCheck={() => setNightModeAuto(p=>!p)} onClick={() => setNightModeAuto(p=>!p)} badge={nightModeAuto&&nightSwitchInfo?(nightSwitchInfo.isNight?"Night":"Day"):null}/>
-                <div style={{ height:1, background:"rgba(255,255,255,0.05)", margin:"4px 12px" }}/>
-                {Object.entries(MAP_LAYERS).map(([name,layer]) => (
-                  <LayerItem key={name} iconName={layer.icon} label={name} checked={activeLayer===name} onCheck={() => setActiveLayer(name)} onClick={() => setActiveLayer(name)} active={activeLayer===name} indent={1}/>
+            <div style={{ flexShrink: 0 }}>
+              <div style={{ padding: "5px 0", maxHeight: 200, overflowY: "auto" }}>
+                <LayerItem iconName={nightSwitchInfo?.isNight ? "Night" : "Day"} label="Auto Night Mode" checked={nightModeAuto} onCheck={() => setNightModeAuto(p => !p)} onClick={() => setNightModeAuto(p => !p)} badge={nightModeAuto && nightSwitchInfo ? (nightSwitchInfo.isNight ? "Night" : "Day") : null} />
+                <div style={{ height: 1, background: "rgba(255,255,255,0.05)", margin: "4px 12px" }} />
+                {Object.entries(MAP_LAYERS).map(([name, layer]) => (
+                  <LayerItem key={name} iconName={layer.icon} label={name} checked={activeLayer === name} onCheck={() => setActiveLayer(name)} onClick={() => setActiveLayer(name)} active={activeLayer === name} indent={1} />
                 ))}
               </div>
             </div>
           )}
 
-          <SectionHeader icon="Star" title="My Places" collapsed={!placesOpen} onToggle={() => setPlacesOpen(p=>!p)}/>
+          <SectionHeader icon="Star" title="My Places" collapsed={!placesOpen} onToggle={() => setPlacesOpen(p => !p)} />
           {placesOpen && (
-            <div style={{ flexShrink:0 }}>
-              <div style={{ padding:"6px 0", maxHeight:130, overflowY:"auto" }}>
-                {savedDrawings.map((d,i) => (
-                  <div key={i} style={{ display:"flex", alignItems:"center" }}>
-                    <div style={{ flex:1, overflow:"hidden" }}><LayerItem iconName={d.type==="path"?"Path":d.type==="polygon"?"Polygon":"Pin"} label={d.name} indent={1}/></div>
-                    <span onClick={() => setSavedDrawings(p=>p.filter((_,j)=>j!==i))} style={{ color:"rgba(255,255,255,0.22)", cursor:"pointer", padding:"0 10px", display:"flex", flexShrink:0 }} onMouseEnter={e=>e.currentTarget.style.color="#f87171"} onMouseLeave={e=>e.currentTarget.style.color="rgba(255,255,255,0.22)"}><Ico name="Close" size={10}/></span>
+            <div style={{ flexShrink: 0 }}>
+              <div style={{ padding: "6px 0", maxHeight: 130, overflowY: "auto" }}>
+                {savedDrawings.map((d, i) => (
+                  <div key={i} style={{ display: "flex", alignItems: "center" }}>
+                    <div style={{ flex: 1, overflow: "hidden", cursor: "pointer" }} onClick={() => setPropertiesDrawing(d)} title="Double-click on map or click here for properties">
+                      <LayerItem iconName={d.type === "path" ? "Path" : d.type === "polygon" ? "Polygon" : "Pin"} label={d.name} indent={1} />
+                    </div>
+                    <span onClick={() => setSavedDrawings(p => p.filter((_, j) => j !== i))} style={{ color: "rgba(255,255,255,0.22)", cursor: "pointer", padding: "0 10px", display: "flex", flexShrink: 0 }} onMouseEnter={e => e.currentTarget.style.color = "#f87171"} onMouseLeave={e => e.currentTarget.style.color = "rgba(255,255,255,0.22)"}><Ico name="Close" size={10} /></span>
                   </div>
                 ))}
-                {savedDrawings.length===0 && <div style={{ paddingLeft:24, color:"rgba(255,255,255,0.18)", fontSize:10.5, fontStyle:"italic", paddingTop:4 }}>No saved drawings yet</div>}
-                {surveyMode&&route.length>0&&<LayerItem iconName="Survey" label={`Survey Route · ${route.length} pts`} active badge="LIVE" indent={1}/>}
-                {isTracking&&<LayerItem iconName="Record" label="Live Track Recording…" active badge="REC" indent={1}/>}
+                {savedDrawings.length === 0 && <div style={{ paddingLeft: 24, color: "rgba(255,255,255,0.18)", fontSize: 10.5, fontStyle: "italic", paddingTop: 4 }}>No saved drawings yet</div>}
+                {surveyMode && route.length > 0 && <LayerItem iconName="Survey" label={`Survey Route · ${route.length} pts`} active badge="LIVE" indent={1} />}
+                {isTracking && <LayerItem iconName="Record" label="Live Track Recording…" active badge="REC" indent={1} />}
+                {kmlAnalyzerData && (
+                  <div onClick={() => setKmlAnalyzerOpen(true)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 12px 6px 24px", cursor: "pointer", borderRadius: 7, margin: "4px 8px" }}
+                    onMouseEnter={e => e.currentTarget.style.background = "rgba(251,191,36,0.09)"}
+                    onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                    <span style={{ fontSize: 13 }}>📐</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ color: "#fbbf24", fontSize: 10.5, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{kmlAnalyzerData.fileName}</div>
+                      <div style={{ color: "rgba(251,191,36,0.4)", fontSize: 9, fontFamily: "'DM Mono',monospace" }}>Click to view area measurements</div>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}
 
-          <SectionHeader icon="GeoJSON" title="GeoJSON Layers" collapsed={!geojsonOpen} onToggle={() => setGeojsonOpen(p=>!p)}/>
+          <SectionHeader icon="GeoJSON" title="GeoJSON Layers" collapsed={!geojsonOpen} onToggle={() => setGeojsonOpen(p => !p)} />
           {geojsonOpen && (
-            <div style={{ flexShrink:0, borderBottom:"1px solid rgba(255,255,255,0.05)" }}>
-              <div style={{ padding:"8px 12px 6px" }}>
-                <div style={{ display:"flex", gap:5, marginBottom:8 }}>
-                  <label style={{ flex:1, display:"flex", alignItems:"center", justifyContent:"center", gap:6, padding:"7px 10px", borderRadius:8, cursor:"pointer", background:"rgba(20,184,166,0.12)", border:"1px solid rgba(20,184,166,0.3)", color:"#2dd4bf", fontSize:11.5, fontWeight:600 }}>
-                    <Ico name="Upload" size={12}/>Import<input type="file" accept=".geojson,.json" onChange={handleGeoJSONFileUpload} style={{ display:"none" }}/>
+            <div style={{ flexShrink: 0, borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
+              <div style={{ padding: "8px 12px 6px" }}>
+                <div style={{ display: "flex", gap: 5, marginBottom: 8 }}>
+                  <label style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "7px 10px", borderRadius: 8, cursor: "pointer", background: "rgba(20,184,166,0.12)", border: "1px solid rgba(20,184,166,0.3)", color: "#2dd4bf", fontSize: 11.5, fontWeight: 600 }}>
+                    <Ico name="Upload" size={12} />Import<input type="file" accept=".geojson,.json" onChange={handleGeoJSONFileUpload} style={{ display: "none" }} />
                   </label>
-                  <button onClick={() => exportGeoJSON(savedDrawings, route, measurePoints)} style={{ flex:1, display:"flex", alignItems:"center", justifyContent:"center", gap:6, padding:"7px 10px", borderRadius:8, cursor:"pointer", background:"rgba(34,197,94,0.12)", border:"1px solid rgba(34,197,94,0.3)", color:"#4ade80", fontSize:11.5, fontWeight:600 }}>
-                    <Ico name="Export" size={12}/>Export
+                  <button onClick={() => exportGeoJSON(savedDrawings, route, measurePoints)} style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "7px 10px", borderRadius: 8, cursor: "pointer", background: "rgba(34,197,94,0.12)", border: "1px solid rgba(34,197,94,0.3)", color: "#4ade80", fontSize: 11.5, fontWeight: 600 }}>
+                    <Ico name="Export" size={12} />Export
                   </button>
                 </div>
-                <div style={{ maxHeight:110, overflowY:"auto" }}>
-                  {geoJSON.importedGeoJSONLayers.length===0&&<div style={{ color:"rgba(255,255,255,0.18)", fontSize:10.5, fontStyle:"italic", paddingLeft:4, paddingTop:2 }}>No GeoJSON layers loaded</div>}
+                <div style={{ maxHeight: 110, overflowY: "auto" }}>
+                  {geoJSON.importedGeoJSONLayers.length === 0 && <div style={{ color: "rgba(255,255,255,0.18)", fontSize: 10.5, fontStyle: "italic", paddingLeft: 4, paddingTop: 2 }}>No GeoJSON layers loaded</div>}
                   {geoJSON.importedGeoJSONLayers.map(layer => (
-                    <div key={layer.id} style={{ display:"flex", alignItems:"center", gap:7, padding:"5px 4px 5px 6px", borderRadius:6, marginBottom:3, background:"rgba(20,184,166,0.07)", border:"1px solid rgba(20,184,166,0.15)" }}>
-                      <Ico name="GeoJSON" size={12} style={{ color:"#2dd4bf", flexShrink:0 }}/>
-                      <div style={{ flex:1, minWidth:0 }}>
-                        <div style={{ color:"#d0f0ec", fontSize:11, fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{layer.name}</div>
-                        <div style={{ color:"rgba(45,212,191,0.5)", fontSize:9.5, fontFamily:"'DM Mono',monospace" }}>{layer.featureCount} features</div>
+                    <div key={layer.id} style={{ display: "flex", alignItems: "center", gap: 7, padding: "5px 4px 5px 6px", borderRadius: 6, marginBottom: 3, background: "rgba(20,184,166,0.07)", border: "1px solid rgba(20,184,166,0.15)" }}>
+                      <Ico name="GeoJSON" size={12} style={{ color: "#2dd4bf", flexShrink: 0 }} />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ color: "#d0f0ec", fontSize: 11, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{layer.name}</div>
+                        <div style={{ color: "rgba(45,212,191,0.5)", fontSize: 9.5, fontFamily: "'DM Mono',monospace" }}>{layer.featureCount} features · dbl-click map</div>
                       </div>
-                      <button onClick={() => geoJSON.removeGeoJSONLayer(layer.id)} style={{ background:"none", border:"none", color:"rgba(239,68,68,0.38)", cursor:"pointer", padding:3, display:"flex", flexShrink:0 }} onMouseEnter={e=>e.currentTarget.style.color="#f87171"} onMouseLeave={e=>e.currentTarget.style.color="rgba(239,68,68,0.38)"}><Ico name="Trash" size={11}/></button>
+                      <button onClick={() => geoJSON.removeGeoJSONLayer(layer.id)} style={{ background: "none", border: "none", color: "rgba(239,68,68,0.38)", cursor: "pointer", padding: 3, display: "flex", flexShrink: 0 }} onMouseEnter={e => e.currentTarget.style.color = "#f87171"} onMouseLeave={e => e.currentTarget.style.color = "rgba(239,68,68,0.38)"}><Ico name="Trash" size={11} /></button>
                     </div>
                   ))}
                 </div>
@@ -1225,84 +1341,84 @@ export default function SurveyMap() {
             </div>
           )}
 
-          <SectionHeader icon="Eye" title="Tools" collapsed={!toolsOpen} onToggle={() => setToolsOpen(p=>!p)}/>
+          <SectionHeader icon="Eye" title="Tools" collapsed={!toolsOpen} onToggle={() => setToolsOpen(p => !p)} />
           {toolsOpen && (
-            <div style={{ flex:1, overflowY:"auto" }}>
-              <div style={{ padding:"12px 12px 10px", borderBottom:"1px solid rgba(255,255,255,0.05)" }}>
-                <div style={{ color:"rgba(255,255,255,0.28)", fontSize:9.5, fontWeight:700, letterSpacing:"0.1em", marginBottom:8, textTransform:"uppercase", fontFamily:"'DM Mono',monospace" }}>Draw Tool</div>
-                <div style={{ display:"flex", gap:4, marginBottom:8 }}>
-                  {[["path","Path","Path"],["polygon","Polygon","Poly"],["marker","Pin","Pin"]].map(([t,ico,lb]) => (
-                    <button key={t} onClick={() => setDrawType(t)} style={{ flex:1, padding:"7px 4px", borderRadius:7, cursor:"pointer", display:"flex", flexDirection:"column", alignItems:"center", gap:3, background:drawType===t?"rgba(74,158,255,0.16)":"rgba(255,255,255,0.035)", border:`1px solid ${drawType===t?"rgba(74,158,255,0.5)":"rgba(255,255,255,0.07)"}`, color:drawType===t?"#80c4ff":"rgba(255,255,255,0.45)", fontSize:10, fontWeight:600 }}>
-                      <Ico name={ico} size={15}/><span>{lb}</span>
+            <div style={{ flex: 1, overflowY: "auto" }}>
+              <div style={{ padding: "12px 12px 10px", borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
+                <div style={{ color: "rgba(255,255,255,0.28)", fontSize: 9.5, fontWeight: 700, letterSpacing: "0.1em", marginBottom: 8, textTransform: "uppercase", fontFamily: "'DM Mono',monospace" }}>Draw Tool</div>
+                <div style={{ display: "flex", gap: 4, marginBottom: 8 }}>
+                  {[["path", "Path", "Path"], ["polygon", "Polygon", "Poly"], ["marker", "Pin", "Pin"]].map(([t, ico, lb]) => (
+                    <button key={t} onClick={() => setDrawType(t)} style={{ flex: 1, padding: "7px 4px", borderRadius: 7, cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 3, background: drawType === t ? "rgba(74,158,255,0.16)" : "rgba(255,255,255,0.035)", border: `1px solid ${drawType === t ? "rgba(74,158,255,0.5)" : "rgba(255,255,255,0.07)"}`, color: drawType === t ? "#80c4ff" : "rgba(255,255,255,0.45)", fontSize: 10, fontWeight: 600 }}>
+                      <Ico name={ico} size={15} /><span>{lb}</span>
                     </button>
                   ))}
                 </div>
                 {!drawMode
-                  ? <PrimaryButton onClick={() => { setDrawMode(true); setDrawPoints([]); }} variant="amber"><Ico name="Play" size={13}/>Start Drawing</PrimaryButton>
-                  : <div style={{ display:"flex", flexDirection:"column", gap:5 }}>
-                      <div style={{ padding:"6px 10px", background:"rgba(251,191,36,0.09)", border:"1px solid rgba(251,191,36,0.25)", borderRadius:7, color:"#fbbf24", fontSize:11, textAlign:"center" }}>{drawType==="marker"?"Click map to place marker":`${drawPoints.length} pts — click to add`}</div>
-                      <div style={{ display:"flex", gap:5 }}>
-                        <PrimaryButton onClick={finishDrawing} variant="green" style={{ flex:1 }}><Ico name="Check" size={12}/>Done</PrimaryButton>
-                        <PrimaryButton onClick={cancelDrawing} variant="red"   style={{ flex:1 }}><Ico name="Close" size={12}/>Cancel</PrimaryButton>
-                      </div>
+                  ? <PrimaryButton onClick={() => { setDrawMode(true); setDrawPoints([]); }} variant="amber"><Ico name="Play" size={13} />Start Drawing</PrimaryButton>
+                  : <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                    <div style={{ padding: "6px 10px", background: "rgba(251,191,36,0.09)", border: "1px solid rgba(251,191,36,0.25)", borderRadius: 7, color: "#fbbf24", fontSize: 11, textAlign: "center" }}>{drawType === "marker" ? "Click map to place marker" : `${drawPoints.length} pts — click to add`}</div>
+                    <div style={{ display: "flex", gap: 5 }}>
+                      <PrimaryButton onClick={finishDrawing} variant="green" style={{ flex: 1 }}><Ico name="Check" size={12} />Done</PrimaryButton>
+                      <PrimaryButton onClick={cancelDrawing} variant="red"   style={{ flex: 1 }}><Ico name="Close" size={12} />Cancel</PrimaryButton>
                     </div>
+                  </div>
                 }
               </div>
 
-              <div style={{ padding:"12px 12px 10px", borderBottom:"1px solid rgba(255,255,255,0.05)" }}>
-                <div style={{ color:"rgba(255,255,255,0.28)", fontSize:9.5, fontWeight:700, letterSpacing:"0.1em", marginBottom:8, textTransform:"uppercase", fontFamily:"'DM Mono',monospace" }}>Measure Tool</div>
+              <div style={{ padding: "12px 12px 10px", borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
+                <div style={{ color: "rgba(255,255,255,0.28)", fontSize: 9.5, fontWeight: 700, letterSpacing: "0.1em", marginBottom: 8, textTransform: "uppercase", fontFamily: "'DM Mono',monospace" }}>Measure Tool</div>
                 {!measureMode
-                  ? <PrimaryButton onClick={() => setMeasureMode(true)} variant="blue"><Ico name="Measure" size={13}/>Start Measuring</PrimaryButton>
-                  : <div style={{ display:"flex", flexDirection:"column", gap:5 }}>
-                      <div style={{ padding:"10px 12px", background:"rgba(251,191,36,0.07)", border:"1px solid rgba(251,191,36,0.22)", borderRadius:8, textAlign:"center" }}>
-                        <div style={{ color:"rgba(251,191,36,0.48)", fontSize:9, fontWeight:700, letterSpacing:"0.1em", marginBottom:2, fontFamily:"'DM Mono',monospace" }}>DISTANCE</div>
-                        <div style={{ color:"#fbbf24", fontSize:22, fontWeight:700, fontFamily:"'DM Mono',monospace", lineHeight:1 }}>{measurePoints.length<2?"—":formatDist(totalDistance,measureUnit)}</div>
-                        <div style={{ color:"rgba(251,191,36,0.36)", fontSize:9.5, marginTop:2 }}>{measurePoints.length} pts</div>
-                      </div>
-                      <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:3 }}>
-                        {[["auto","Auto"],["km","km"],["m","m"],["mi","mi"],["ft","ft"],["yd","yd"],["nmi","nmi"],["cm","cm"]].map(([u,lb]) => (
-                          <button key={u} onClick={() => setMeasureUnit(u)} style={{ padding:"5px 2px", borderRadius:5, cursor:"pointer", fontSize:9.5, fontWeight:600, background:measureUnit===u?"rgba(74,158,255,0.18)":"rgba(255,255,255,0.035)", border:`1px solid ${measureUnit===u?"rgba(74,158,255,0.42)":"rgba(255,255,255,0.07)"}`, color:measureUnit===u?"#80c4ff":"rgba(255,255,255,0.42)", fontFamily:"'DM Mono',monospace" }}>{lb}</button>
-                        ))}
-                      </div>
-                      <div style={{ display:"flex", gap:4 }}>
-                        <button onClick={resetMeasurePoints} style={{ flex:1, padding:"6px", borderRadius:7, border:"1px solid rgba(255,255,255,0.07)", background:"rgba(255,255,255,0.035)", color:"rgba(255,255,255,0.38)", fontSize:11, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:4 }}><Ico name="Reset" size={11}/>Reset</button>
-                        <PrimaryButton onClick={clearMeasure} variant="red" style={{ flex:1, padding:"6px" }}><Ico name="Stop" size={11}/>Done</PrimaryButton>
-                      </div>
+                  ? <PrimaryButton onClick={() => setMeasureMode(true)} variant="blue"><Ico name="Measure" size={13} />Start Measuring</PrimaryButton>
+                  : <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                    <div style={{ padding: "10px 12px", background: "rgba(251,191,36,0.07)", border: "1px solid rgba(251,191,36,0.22)", borderRadius: 8, textAlign: "center" }}>
+                      <div style={{ color: "rgba(251,191,36,0.48)", fontSize: 9, fontWeight: 700, letterSpacing: "0.1em", marginBottom: 2, fontFamily: "'DM Mono',monospace" }}>DISTANCE</div>
+                      <div style={{ color: "#fbbf24", fontSize: 22, fontWeight: 700, fontFamily: "'DM Mono',monospace", lineHeight: 1 }}>{measurePoints.length < 2 ? "—" : formatDist(totalDistance, measureUnit)}</div>
+                      <div style={{ color: "rgba(251,191,36,0.36)", fontSize: 9.5, marginTop: 2 }}>{measurePoints.length} pts</div>
                     </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 3 }}>
+                      {[["auto", "Auto"], ["km", "km"], ["m", "m"], ["mi", "mi"], ["ft", "ft"], ["yd", "yd"], ["nmi", "nmi"], ["cm", "cm"]].map(([u, lb]) => (
+                        <button key={u} onClick={() => setMeasureUnit(u)} style={{ padding: "5px 2px", borderRadius: 5, cursor: "pointer", fontSize: 9.5, fontWeight: 600, background: measureUnit === u ? "rgba(74,158,255,0.18)" : "rgba(255,255,255,0.035)", border: `1px solid ${measureUnit === u ? "rgba(74,158,255,0.42)" : "rgba(255,255,255,0.07)"}`, color: measureUnit === u ? "#80c4ff" : "rgba(255,255,255,0.42)", fontFamily: "'DM Mono',monospace" }}>{lb}</button>
+                      ))}
+                    </div>
+                    <div style={{ display: "flex", gap: 4 }}>
+                      <button onClick={resetMeasurePoints} style={{ flex: 1, padding: "6px", borderRadius: 7, border: "1px solid rgba(255,255,255,0.07)", background: "rgba(255,255,255,0.035)", color: "rgba(255,255,255,0.38)", fontSize: 11, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}><Ico name="Reset" size={11} />Reset</button>
+                      <PrimaryButton onClick={clearMeasure} variant="red" style={{ flex: 1, padding: "6px" }}><Ico name="Stop" size={11} />Done</PrimaryButton>
+                    </div>
+                  </div>
                 }
               </div>
 
-              <div style={{ padding:"12px 12px 10px", borderBottom:"1px solid rgba(255,255,255,0.05)" }}>
-                <div style={{ color:"rgba(255,255,255,0.28)", fontSize:9.5, fontWeight:700, letterSpacing:"0.1em", marginBottom:10, textTransform:"uppercase", fontFamily:"'DM Mono',monospace" }}>File Folder</div>
-                <FileFolderPanel compact/>
+              <div style={{ padding: "12px 12px 10px", borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
+                <div style={{ color: "rgba(255,255,255,0.28)", fontSize: 9.5, fontWeight: 700, letterSpacing: "0.1em", marginBottom: 10, textTransform: "uppercase", fontFamily: "'DM Mono',monospace" }}>File Folder</div>
+                <FileFolderPanel compact />
               </div>
 
-              <div style={{ padding:"12px 12px 10px", borderBottom:"1px solid rgba(255,255,255,0.05)" }}>
-                <div style={{ color:"rgba(255,255,255,0.28)", fontSize:9.5, fontWeight:700, letterSpacing:"0.1em", marginBottom:8, textTransform:"uppercase", fontFamily:"'DM Mono',monospace" }}>Compass Navigation</div>
-                <PrimaryButton onClick={() => compass.compassNavActive?compass.stopCompassNav():compass.startCompassNav()} variant={compass.compassNavActive?"red":"cyan"}>
-                  <Ico name="Navigation" size={13} style={{ animation:compass.compassNavActive?"spin 3s linear infinite":"none" }}/>{compass.compassNavActive?"Stop Compass Nav":"Start Compass Nav"}
+              <div style={{ padding: "12px 12px 10px", borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
+                <div style={{ color: "rgba(255,255,255,0.28)", fontSize: 9.5, fontWeight: 700, letterSpacing: "0.1em", marginBottom: 8, textTransform: "uppercase", fontFamily: "'DM Mono',monospace" }}>Compass Navigation</div>
+                <PrimaryButton onClick={() => compass.compassNavActive ? compass.stopCompassNav() : compass.startCompassNav()} variant={compass.compassNavActive ? "red" : "cyan"}>
+                  <Ico name="Navigation" size={13} style={{ animation: compass.compassNavActive ? "spin 3s linear infinite" : "none" }} />{compass.compassNavActive ? "Stop Compass Nav" : "Start Compass Nav"}
                 </PrimaryButton>
               </div>
 
-              <div style={{ padding:"12px 12px 10px", borderBottom:"1px solid rgba(255,255,255,0.05)" }}>
-                <div style={{ color:"rgba(255,255,255,0.28)", fontSize:9.5, fontWeight:700, letterSpacing:"0.1em", marginBottom:8, textTransform:"uppercase", fontFamily:"'DM Mono',monospace" }}>Survey Route</div>
-                <PrimaryButton onClick={handleToggleSurvey} variant={surveyMode?"red":"blue"}><Ico name={surveyMode?"Stop":"Record"} size={13}/>{surveyMode?"Stop Survey":"Start Survey"}</PrimaryButton>
-                {surveyMode&&<div style={{ marginTop:6, padding:"6px 10px", background:"rgba(248,113,113,0.09)", border:"1px solid rgba(248,113,113,0.22)", borderRadius:7, color:"#f87171", fontSize:11, textAlign:"center", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}><span style={{ animation:"blink 1s infinite" }}>●</span>RECORDING · {route.length} pts</div>}
+              <div style={{ padding: "12px 12px 10px", borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
+                <div style={{ color: "rgba(255,255,255,0.28)", fontSize: 9.5, fontWeight: 700, letterSpacing: "0.1em", marginBottom: 8, textTransform: "uppercase", fontFamily: "'DM Mono',monospace" }}>Survey Route</div>
+                <PrimaryButton onClick={handleToggleSurvey} variant={surveyMode ? "red" : "blue"}><Ico name={surveyMode ? "Stop" : "Record"} size={13} />{surveyMode ? "Stop Survey" : "Start Survey"}</PrimaryButton>
+                {surveyMode && <div style={{ marginTop: 6, padding: "6px 10px", background: "rgba(248,113,133,0.09)", border: "1px solid rgba(248,113,133,0.22)", borderRadius: 7, color: "#f87171", fontSize: 11, textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}><span style={{ animation: "blink 1s infinite" }}>●</span>RECORDING · {route.length} pts</div>}
               </div>
 
-              <div style={{ padding:"12px 12px 10px", borderBottom:"1px solid rgba(255,255,255,0.05)" }}>
-                <div style={{ color:"rgba(255,255,255,0.28)", fontSize:9.5, fontWeight:700, letterSpacing:"0.1em", marginBottom:8, textTransform:"uppercase", fontFamily:"'DM Mono',monospace" }}>More Tools</div>
-                <div style={{ display:"flex", flexDirection:"column", gap:5 }}>
-                  <PrimaryButton onClick={() => setTrackerOpen(true)} variant="rose"><Ico name="Record" size={13}/>{isTracking?"Open Recorder":"Live Track Recorder"}</PrimaryButton>
-                  <PrimaryButton onClick={() => { setElevOpen(true); handleElevModeRequest(elevMode||"survey"); }} variant="blue"><Ico name="Mountain" size={13}/>Elevation Profile</PrimaryButton>
-                  <PrimaryButton onClick={() => setOfflineOpen(true)} variant="blue"><Ico name="Offline" size={13}/>Manage Offline Maps</PrimaryButton>
-                  <PrimaryButton onClick={() => setOfflineMode(p=>!p)} variant={offlineMode?"green":"blue"}><span style={{ fontSize:13 }}>{offlineMode?"🗺":"🌐"}</span>{offlineMode?"Go Live":"Use Cached Map"}</PrimaryButton>
+              <div style={{ padding: "12px 12px 10px", borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
+                <div style={{ color: "rgba(255,255,255,0.28)", fontSize: 9.5, fontWeight: 700, letterSpacing: "0.1em", marginBottom: 8, textTransform: "uppercase", fontFamily: "'DM Mono',monospace" }}>More Tools</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                  <PrimaryButton onClick={() => setTrackerOpen(true)} variant="rose"><Ico name="Record" size={13} />{isTracking ? "Open Recorder" : "Live Track Recorder"}</PrimaryButton>
+                  <PrimaryButton onClick={() => { setElevOpen(true); handleElevModeRequest(elevMode || "survey"); }} variant="blue"><Ico name="Mountain" size={13} />Elevation Profile</PrimaryButton>
+                  <PrimaryButton onClick={() => setOfflineOpen(true)} variant="blue"><Ico name="Offline" size={13} />Manage Offline Maps</PrimaryButton>
+                  <PrimaryButton onClick={() => setOfflineMode(p => !p)} variant={offlineMode ? "green" : "blue"}><span style={{ fontSize: 13 }}>{offlineMode ? "🗺" : "🌐"}</span>{offlineMode ? "Go Live" : "Use Cached Map"}</PrimaryButton>
                 </div>
               </div>
 
-              <div style={{ padding:"14px 12px 16px" }}>
-                <button onClick={() => setShow3D(true)} style={{ width:"100%", padding:"11px 14px", borderRadius:10, cursor:"pointer", background:"linear-gradient(135deg,rgba(167,139,250,0.18),rgba(109,40,217,0.18))", border:"1px solid rgba(167,139,250,0.32)", color:"#c4b5fd", fontWeight:600, fontSize:12.5, fontFamily:"'DM Sans',sans-serif", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
-                  <Ico name="Globe" size={18}/> Switch to 3D Globe
+              <div style={{ padding: "14px 12px 16px" }}>
+                <button onClick={() => setShow3D(true)} style={{ width: "100%", padding: "11px 14px", borderRadius: 10, cursor: "pointer", background: "linear-gradient(135deg,rgba(167,139,250,0.18),rgba(109,40,217,0.18))", border: "1px solid rgba(167,139,250,0.32)", color: "#c4b5fd", fontWeight: 600, fontSize: 12.5, fontFamily: "'DM Sans',sans-serif", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+                  <Ico name="Globe" size={18} /> Switch to 3D Globe
                 </button>
               </div>
             </div>
@@ -1310,105 +1426,176 @@ export default function SurveyMap() {
         </div>
 
         {/* ══ FLOATING OVERLAYS ══════════════════════════════════════════ */}
-        <LiveTrackRecorder map={mapRefForTracker} visible={trackerOpen} onClose={() => setTrackerOpen(false)} onRecordingChange={setIsTracking}/>
-        {!isMobile&&<ElevationProfile visible={elevOpen} onClose={() => setElevOpen(false)} profileData={elevProfileData} loading={elevLoading} isOnline={isOnline} sourceLabel={elevSourceLabel} leafletMap={mapRefForTracker} activeMode={elevMode} onRequestPoints={handleElevModeRequest}/>}
-        <OfflineMapManager visible={offlineOpen} onClose={() => setOfflineOpen(false)} leafletMap={mapRefForTracker} activeLayer={activeLayer} isOnline={isOnline} swReady={swReady} swError={swError} cacheStats={cacheStats} precaching={precaching} precacheProgress={precacheProgress} precacheCurrentView={precacheCurrentView} precacheRegion={precacheRegion} clearTileCache={clearTileCache} fetchCacheStats={fetchCacheStats} stopPrecache={stopPrecache}/>
-        <OfflineStatusBadge isOnline={isOnline} swReady={swReady} swError={swError} precaching={precaching} precacheProgress={precacheProgress} cacheStats={cacheStats} onClick={() => { setOfflineOpen(true); if(isMobile) setActiveSheet(null); }}/>
+        <LiveTrackRecorder map={mapRefForTracker} visible={trackerOpen} onClose={() => setTrackerOpen(false)} onRecordingChange={setIsTracking} />
+        {!isMobile && <ElevationProfile visible={elevOpen} onClose={() => setElevOpen(false)} profileData={elevProfileData} loading={elevLoading} isOnline={isOnline} sourceLabel={elevSourceLabel} leafletMap={mapRefForTracker} activeMode={elevMode} onRequestPoints={handleElevModeRequest} />}
+        <OfflineMapManager visible={offlineOpen} onClose={() => setOfflineOpen(false)} leafletMap={mapRefForTracker} activeLayer={activeLayer} isOnline={isOnline} swReady={swReady} swError={swError} cacheStats={cacheStats} precaching={precaching} precacheProgress={precacheProgress} precacheCurrentView={precacheCurrentView} precacheRegion={precacheRegion} clearTileCache={clearTileCache} fetchCacheStats={fetchCacheStats} stopPrecache={stopPrecache} />
+        <OfflineStatusBadge isOnline={isOnline} swReady={swReady} swError={swError} precaching={precaching} precacheProgress={precacheProgress} cacheStats={cacheStats} onClick={() => { setOfflineOpen(true); if (isMobile) setActiveSheet(null); }} />
 
         {offlineMode && (
-          <div style={{ position:"absolute", top:isMobile?160:TOP_H+10, left:isMobile?"50%":SB_W+20, transform:"translateX(-50%)", zIndex:1060, display:"flex", alignItems:"center", gap:10, padding:"9px 18px", background:"rgba(4,10,20,0.97)", backdropFilter:"blur(16px)", border:`1.5px solid ${isOnline?"rgba(34,197,94,0.5)":"rgba(239,68,68,0.5)"}`, borderRadius:28, fontFamily:"'DM Sans',sans-serif", whiteSpace:"nowrap" }}>
-            <span style={{ fontSize:18 }}>🗺</span>
-            <div><div style={{ color:isOnline?"#4ade80":"#f87171", fontWeight:700, fontSize:12 }}>{isOnline?"Cached Map Active":"📴 Offline — Cached Only"}</div><div style={{ color:"#475569", fontSize:10, marginTop:1 }}>{cacheStats?.tileCount?`${cacheStats.tileCount.toLocaleString()} tiles cached`:"No tiles cached yet"}</div></div>
-            {isOnline&&<button onClick={() => setOfflineMode(false)} style={{ marginLeft:6, padding:"5px 14px", borderRadius:14, border:"1px solid rgba(34,197,94,0.42)", background:"rgba(34,197,94,0.12)", color:"#4ade80", fontSize:11, fontWeight:700, cursor:"pointer" }}>Go Live ↗</button>}
+          <div style={{ position: "absolute", top: isMobile ? 160 : TOP_H + 10, left: isMobile ? "50%" : SB_W + 20, transform: "translateX(-50%)", zIndex: 1060, display: "flex", alignItems: "center", gap: 10, padding: "9px 18px", background: "rgba(4,10,20,0.97)", backdropFilter: "blur(16px)", border: `1.5px solid ${isOnline ? "rgba(34,197,94,0.5)" : "rgba(239,68,68,0.5)"}`, borderRadius: 28, fontFamily: "'DM Sans',sans-serif", whiteSpace: "nowrap" }}>
+            <span style={{ fontSize: 18 }}>🗺</span>
+            <div><div style={{ color: isOnline ? "#4ade80" : "#f87171", fontWeight: 700, fontSize: 12 }}>{isOnline ? "Cached Map Active" : "📴 Offline — Cached Only"}</div><div style={{ color: "#475569", fontSize: 10, marginTop: 1 }}>{cacheStats?.tileCount ? `${cacheStats.tileCount.toLocaleString()} tiles cached` : "No tiles cached yet"}</div></div>
+            {isOnline && <button onClick={() => setOfflineMode(false)} style={{ marginLeft: 6, padding: "5px 14px", borderRadius: 14, border: "1px solid rgba(34,197,94,0.42)", background: "rgba(34,197,94,0.12)", color: "#4ade80", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Go Live ↗</button>}
           </div>
         )}
 
         {locationInfo && !isMobile && (
-          <div style={{ position:"absolute", top:"calc(var(--top-h) + 14px)", right:60, width:310, zIndex:1050, borderRadius:14, overflow:"hidden", boxShadow:"0 20px 60px rgba(0,0,0,0.7)", border:"1px solid rgba(255,255,255,0.09)", animation:"fadeSlideIn 0.22s ease", background:"rgba(5,12,24,0.97)", backdropFilter:"blur(24px)", fontFamily:"'DM Sans',sans-serif" }}>
-            {locationInfo.photo&&(<div style={{ position:"relative", height:130, overflow:"hidden" }}><img src={locationInfo.photo} alt={locationInfo.name} style={{ width:"100%", height:"100%", objectFit:"cover" }}/><div style={{ position:"absolute", inset:0, background:"linear-gradient(to top,rgba(5,12,24,1) 0%,transparent 55%)" }}/><div style={{ position:"absolute", bottom:12, left:14, color:"#fff", fontWeight:700, fontSize:15 }}>{locationInfo.name}</div><button onClick={handleCloseLocationInfo} style={{ position:"absolute", top:10, right:10, background:"rgba(0,0,0,0.5)", border:"1px solid rgba(255,255,255,0.1)", color:"rgba(255,255,255,0.7)", borderRadius:6, width:26, height:26, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}><Ico name="Close" size={10}/></button></div>)}
-            <div style={{ padding:locationInfo.photo?"12px 16px 14px":"14px 16px" }}>
-              {!locationInfo.photo&&(<div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:10, borderBottom:"1px solid rgba(255,255,255,0.06)", paddingBottom:10 }}><div><div style={{ color:"#d0e8f8", fontWeight:700, fontSize:14.5 }}>{locationInfo.loading?"Locating…":(locationInfo.name||locationInfo.label?.split(",")?.[0])}</div>{locationInfo.details&&!locationInfo.loading&&<div style={{ color:"rgba(255,255,255,0.32)", fontSize:11, marginTop:2 }}>{locationInfo.details}</div>}</div><button onClick={handleCloseLocationInfo} style={{ background:"none", border:"none", color:"rgba(255,255,255,0.28)", cursor:"pointer", padding:2, display:"flex" }}><Ico name="Close" size={14}/></button></div>)}
-              <div style={{ display:"flex", alignItems:"center", gap:9, padding:"8px 11px", background:"rgba(74,158,255,0.07)", borderRadius:8, marginBottom:10, border:"1px solid rgba(74,158,255,0.14)" }}><Ico name="Pin" size={14} style={{ color:"#4a9eff" }}/><div style={{ color:"#c0daf0", fontSize:11, fontFamily:"'DM Mono',monospace" }}>{locationInfo.lat?.toFixed(6)}°, {locationInfo.lng?.toFixed(6)}°</div></div>
-              {locationInfo.loading?<div style={{ color:"rgba(255,255,255,0.28)", fontSize:11, fontStyle:"italic" }}>⏳ Fetching…</div>:locationInfo.description?<div style={{ color:"rgba(200,225,255,0.65)", fontSize:11.5, lineHeight:1.65, maxHeight:100, overflowY:"auto" }}>{locationInfo.description.slice(0,350)}{locationInfo.description.length>350?"…":""}</div>:null}
-              <div style={{ display:"flex", gap:6, marginTop:10 }}>
-                {locationInfo.wikiUrl&&<a href={locationInfo.wikiUrl} target="_blank" rel="noreferrer" style={{ flex:1, display:"inline-flex", alignItems:"center", justifyContent:"center", gap:6, padding:"7px 10px", background:"rgba(74,158,255,0.09)", borderRadius:7, color:"#60a8e8", fontSize:11, textDecoration:"none", fontWeight:600, border:"1px solid rgba(74,158,255,0.22)" }}><Ico name="Wikipedia" size={12}/> Wikipedia ↗</a>}
-                <button onClick={() => window.open(`https://www.google.com/maps/search/?api=1&query=${locationInfo.lat},${locationInfo.lng}`,"_blank")} style={{ flex:1, padding:"7px 10px", background:"rgba(52,211,153,0.09)", borderRadius:7, border:"1px solid rgba(52,211,153,0.22)", color:"#34d399", fontSize:11, cursor:"pointer", fontWeight:600, display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}><Ico name="Maps" size={12}/> Google Maps ↗</button>
+          <div style={{ position: "absolute", top: "calc(var(--top-h) + 14px)", right: 60, width: 310, zIndex: 1050, borderRadius: 14, overflow: "hidden", boxShadow: "0 20px 60px rgba(0,0,0,0.7)", border: "1px solid rgba(255,255,255,0.09)", animation: "fadeSlideIn 0.22s ease", background: "rgba(5,12,24,0.97)", backdropFilter: "blur(24px)", fontFamily: "'DM Sans',sans-serif" }}>
+            {locationInfo.photo && (<div style={{ position: "relative", height: 130, overflow: "hidden" }}><img src={locationInfo.photo} alt={locationInfo.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} /><div style={{ position: "absolute", inset: 0, background: "linear-gradient(to top,rgba(5,12,24,1) 0%,transparent 55%)" }} /><div style={{ position: "absolute", bottom: 12, left: 14, color: "#fff", fontWeight: 700, fontSize: 15 }}>{locationInfo.name}</div><button onClick={handleCloseLocationInfo} style={{ position: "absolute", top: 10, right: 10, background: "rgba(0,0,0,0.5)", border: "1px solid rgba(255,255,255,0.1)", color: "rgba(255,255,255,0.7)", borderRadius: 6, width: 26, height: 26, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><Ico name="Close" size={10} /></button></div>)}
+            <div style={{ padding: locationInfo.photo ? "12px 16px 14px" : "14px 16px" }}>
+              {!locationInfo.photo && (<div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10, borderBottom: "1px solid rgba(255,255,255,0.06)", paddingBottom: 10 }}><div><div style={{ color: "#d0e8f8", fontWeight: 700, fontSize: 14.5 }}>{locationInfo.loading ? "Locating…" : (locationInfo.name || locationInfo.label?.split(",")?.[0])}</div>{locationInfo.details && !locationInfo.loading && <div style={{ color: "rgba(255,255,255,0.32)", fontSize: 11, marginTop: 2 }}>{locationInfo.details}</div>}</div><button onClick={handleCloseLocationInfo} style={{ background: "none", border: "none", color: "rgba(255,255,255,0.28)", cursor: "pointer", padding: 2, display: "flex" }}><Ico name="Close" size={14} /></button></div>)}
+              <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "8px 11px", background: "rgba(74,158,255,0.07)", borderRadius: 8, marginBottom: 10, border: "1px solid rgba(74,158,255,0.14)" }}><Ico name="Pin" size={14} style={{ color: "#4a9eff" }} /><div style={{ color: "#c0daf0", fontSize: 11, fontFamily: "'DM Mono',monospace" }}>{locationInfo.lat?.toFixed(6)}°, {locationInfo.lng?.toFixed(6)}°</div></div>
+              {locationInfo.loading ? <div style={{ color: "rgba(255,255,255,0.28)", fontSize: 11, fontStyle: "italic" }}>⏳ Fetching…</div> : locationInfo.description ? <div style={{ color: "rgba(200,225,255,0.65)", fontSize: 11.5, lineHeight: 1.65, maxHeight: 100, overflowY: "auto" }}>{locationInfo.description.slice(0, 350)}{locationInfo.description.length > 350 ? "…" : ""}</div> : null}
+              <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
+                {locationInfo.wikiUrl && <a href={locationInfo.wikiUrl} target="_blank" rel="noreferrer" style={{ flex: 1, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "7px 10px", background: "rgba(74,158,255,0.09)", borderRadius: 7, color: "#60a8e8", fontSize: 11, textDecoration: "none", fontWeight: 600, border: "1px solid rgba(74,158,255,0.22)" }}><Ico name="Wikipedia" size={12} /> Wikipedia ↗</a>}
+                <button onClick={() => window.open(`https://www.google.com/maps/search/?api=1&query=${locationInfo.lat},${locationInfo.lng}`, "_blank")} style={{ flex: 1, padding: "7px 10px", background: "rgba(52,211,153,0.09)", borderRadius: 7, border: "1px solid rgba(52,211,153,0.22)", color: "#34d399", fontSize: 11, cursor: "pointer", fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}><Ico name="Maps" size={12} /> Google Maps ↗</button>
               </div>
             </div>
           </div>
         )}
 
         {showNameModal && (
-          <div style={{ position:"fixed", inset:0, zIndex:9000, background:"rgba(0,0,0,0.72)", display:"flex", alignItems:"center", justifyContent:"center", padding:"0 16px", backdropFilter:"blur(10px)" }}>
-            <div style={{ background:"rgba(7,18,32,0.98)", borderRadius:16, padding:26, width:"100%", maxWidth:300, boxShadow:"0 20px 60px rgba(0,0,0,0.8)", border:"1px solid rgba(74,158,255,0.18)", fontFamily:"'DM Sans',sans-serif" }}>
-              <div style={{ color:"#c8e0f8", fontWeight:700, fontSize:16, marginBottom:3 }}>Name this {pendingType}</div>
-              <div style={{ color:"rgba(255,255,255,0.28)", fontSize:11, marginBottom:14 }}>{pendingPoints.length} point{pendingPoints.length!==1?"s":""} recorded</div>
-              <input autoFocus value={pendingName} onChange={e=>setPendingName(e.target.value)} onKeyDown={e=>e.key==="Enter"&&confirmDrawing()} placeholder={pendingType==="marker"?"e.g. Survey Point A":"e.g. Survey Path A"} style={{ width:"100%", padding:"10px 13px", borderRadius:8, border:"1px solid rgba(74,158,255,0.28)", background:"rgba(74,158,255,0.06)", color:"#c8e0f8", fontSize:13, marginBottom:15, outline:"none", fontFamily:"'DM Sans',sans-serif", boxSizing:"border-box" }}/>
-              <div style={{ display:"flex", gap:8 }}>
-                <PrimaryButton onClick={confirmDrawing} variant="blue"><Ico name="Check" size={13}/>Save</PrimaryButton>
-                <PrimaryButton onClick={cancelDrawing} variant="red" style={{ background:"transparent" }}><Ico name="Close" size={13}/>Cancel</PrimaryButton>
+          <div style={{ position: "fixed", inset: 0, zIndex: 9000, background: "rgba(0,0,0,0.72)", display: "flex", alignItems: "center", justifyContent: "center", padding: "0 16px", backdropFilter: "blur(10px)" }}>
+            <div style={{ background: "rgba(7,18,32,0.98)", borderRadius: 16, padding: 26, width: "100%", maxWidth: 300, boxShadow: "0 20px 60px rgba(0,0,0,0.8)", border: "1px solid rgba(74,158,255,0.18)", fontFamily: "'DM Sans',sans-serif" }}>
+              <div style={{ color: "#c8e0f8", fontWeight: 700, fontSize: 16, marginBottom: 3 }}>Name this {pendingType}</div>
+              <div style={{ color: "rgba(255,255,255,0.28)", fontSize: 11, marginBottom: 14 }}>{pendingPoints.length} point{pendingPoints.length !== 1 ? "s" : ""} recorded</div>
+              <input autoFocus value={pendingName} onChange={e => setPendingName(e.target.value)} onKeyDown={e => e.key === "Enter" && confirmDrawing()} placeholder={pendingType === "marker" ? "e.g. Survey Point A" : "e.g. Survey Path A"} style={{ width: "100%", padding: "10px 13px", borderRadius: 8, border: "1px solid rgba(74,158,255,0.28)", background: "rgba(74,158,255,0.06)", color: "#c8e0f8", fontSize: 13, marginBottom: 15, outline: "none", fontFamily: "'DM Sans',sans-serif", boxSizing: "border-box" }} />
+              <div style={{ display: "flex", gap: 8 }}>
+                <PrimaryButton onClick={confirmDrawing} variant="blue"><Ico name="Check" size={13} />Save</PrimaryButton>
+                <PrimaryButton onClick={cancelDrawing} variant="red" style={{ background: "transparent" }}><Ico name="Close" size={13} />Cancel</PrimaryButton>
               </div>
             </div>
           </div>
         )}
 
         {showAbout && (
-          <div style={{ position:"fixed", inset:0, zIndex:3000, background:"rgba(0,0,0,0.75)", display:"flex", alignItems:"center", justifyContent:"center", padding:"0 16px", backdropFilter:"blur(12px)" }}>
-            <div style={{ background:"rgba(5,12,24,0.98)", borderRadius:16, padding:28, width:"100%", maxWidth:360, boxShadow:"0 24px 72px rgba(0,0,0,0.85)", border:"1px solid rgba(74,158,255,0.18)", fontFamily:"'DM Sans',sans-serif" }}>
-              <div style={{ display:"flex", alignItems:"center", justifyContent:"center", marginBottom:14 }}><div style={{ width:52, height:52, borderRadius:14, background:"linear-gradient(135deg,rgba(74,158,255,0.22),rgba(37,99,235,0.22))", border:"1px solid rgba(74,158,255,0.32)", display:"flex", alignItems:"center", justifyContent:"center" }}><Ico name="Compass" size={26} style={{ color:"#4a9eff" }}/></div></div>
-              <div style={{ color:"#c8e0f8", fontWeight:700, fontSize:20, textAlign:"center", marginBottom:5 }}>SurveyMap Pro</div>
-              <div style={{ color:"rgba(255,255,255,0.32)", fontSize:12, textAlign:"center", marginBottom:18 }}>Version 5.9.1 · QGIS-style DEM Elevation Draping + KML Clip Mask · KML/SHP/KMZ colour-coded by elevation</div>
-              <PrimaryButton onClick={() => setShowAbout(false)} variant="blue"><Ico name="Check" size={13}/>Close</PrimaryButton>
+          <div style={{ position: "fixed", inset: 0, zIndex: 3000, background: "rgba(0,0,0,0.75)", display: "flex", alignItems: "center", justifyContent: "center", padding: "0 16px", backdropFilter: "blur(12px)" }}>
+            <div style={{ background: "rgba(5,12,24,0.98)", borderRadius: 16, padding: 28, width: "100%", maxWidth: 360, boxShadow: "0 24px 72px rgba(0,0,0,0.85)", border: "1px solid rgba(74,158,255,0.18)", fontFamily: "'DM Sans',sans-serif" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 14 }}><div style={{ width: 52, height: 52, borderRadius: 14, background: "linear-gradient(135deg,rgba(74,158,255,0.22),rgba(37,99,235,0.22))", border: "1px solid rgba(74,158,255,0.32)", display: "flex", alignItems: "center", justifyContent: "center" }}><Ico name="Compass" size={26} style={{ color: "#4a9eff" }} /></div></div>
+              <div style={{ color: "#c8e0f8", fontWeight: 700, fontSize: 20, textAlign: "center", marginBottom: 5 }}>SurveyMap Pro</div>
+              <div style={{ color: "rgba(255,255,255,0.32)", fontSize: 12, textAlign: "center", marginBottom: 18 }}>Version 5.9.9 · Double-click for Properties</div>
+              <PrimaryButton onClick={() => setShowAbout(false)} variant="blue"><Ico name="Check" size={13} />Close</PrimaryButton>
             </div>
           </div>
         )}
 
         {showShortcuts && (
-          <div style={{ position:"fixed", inset:0, zIndex:3000, background:"rgba(0,0,0,0.75)", display:"flex", alignItems:"center", justifyContent:"center", padding:"0 16px", backdropFilter:"blur(12px)" }}>
-            <div style={{ background:"rgba(5,12,24,0.98)", borderRadius:16, padding:26, width:"100%", maxWidth:340, boxShadow:"0 24px 72px rgba(0,0,0,0.85)", border:"1px solid rgba(74,158,255,0.18)", fontFamily:"'DM Sans',sans-serif" }}>
-              <div style={{ display:"flex", alignItems:"center", gap:9, marginBottom:18 }}><Ico name="Keyboard" size={18} style={{ color:"#4a9eff" }}/><span style={{ color:"#c8e0f8", fontWeight:700, fontSize:16 }}>Keyboard Shortcuts</span></div>
-              {[["+ / =","Zoom in"],["−","Zoom out"],["Scroll","Zoom in / out"],["Click map","Add draw point"],["Enter","Save (name modal)"],["Escape","Cancel draw / measure"],["Drag","Pan map"]].map(([k,d]) => (
-                <div key={k} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"8px 0", borderBottom:"1px solid rgba(255,255,255,0.04)" }}>
-                  <code style={{ color:"#80c4ff", fontWeight:600, fontSize:11, fontFamily:"'DM Mono',monospace", background:"rgba(74,158,255,0.1)", padding:"3px 8px", borderRadius:5, border:"1px solid rgba(74,158,255,0.18)" }}>{k}</code>
-                  <span style={{ color:"rgba(200,225,255,0.45)", fontSize:11.5 }}>{d}</span>
+          <div style={{ position: "fixed", inset: 0, zIndex: 3000, background: "rgba(0,0,0,0.75)", display: "flex", alignItems: "center", justifyContent: "center", padding: "0 16px", backdropFilter: "blur(12px)" }}>
+            <div style={{ background: "rgba(5,12,24,0.98)", borderRadius: 16, padding: 26, width: "100%", maxWidth: 340, boxShadow: "0 24px 72px rgba(0,0,0,0.85)", border: "1px solid rgba(74,158,255,0.18)", fontFamily: "'DM Sans',sans-serif" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 18 }}><Ico name="Keyboard" size={18} style={{ color: "#4a9eff" }} /><span style={{ color: "#c8e0f8", fontWeight: 700, fontSize: 16 }}>Keyboard Shortcuts</span></div>
+              {[
+                ["+ / =", "Zoom in"],
+                ["−", "Zoom out"],
+                ["Scroll", "Zoom in / out"],
+                ["Double-click feature", "Open Properties"],
+                ["Right-click feature", "Context menu"],
+                ["Click map", "Add draw / measure point"],
+                ["Enter", "Save (name modal)"],
+                ["Escape", "Cancel draw / close panel"],
+                ["Drag", "Pan map"],
+              ].map(([k, d]) => (
+                <div key={k} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
+                  <code style={{ color: "#80c4ff", fontWeight: 600, fontSize: 11, fontFamily: "'DM Mono',monospace", background: "rgba(74,158,255,0.1)", padding: "3px 8px", borderRadius: 5, border: "1px solid rgba(74,158,255,0.18)" }}>{k}</code>
+                  <span style={{ color: "rgba(200,225,255,0.45)", fontSize: 11.5 }}>{d}</span>
                 </div>
               ))}
-              <PrimaryButton onClick={() => setShowShortcuts(false)} variant="blue" style={{ marginTop:18 }}><Ico name="Check" size={13}/>Close</PrimaryButton>
+              <PrimaryButton onClick={() => setShowShortcuts(false)} variant="blue" style={{ marginTop: 18 }}><Ico name="Check" size={13} />Close</PrimaryButton>
             </div>
           </div>
         )}
 
         {/* Desktop status bar */}
-        <div style={{ position:"absolute", bottom:0, left:0, right:0, height:STAT_H, zIndex:1100, background:"rgba(4,10,20,0.94)", backdropFilter:"blur(12px)", borderTop:"1px solid rgba(255,255,255,0.055)", display:"flex", alignItems:"center", padding:"0 14px", gap:10, userSelect:"none" }}>
-          <div style={{ display:"flex", alignItems:"center", gap:6, flex:1, minWidth:0, overflow:"hidden" }}>
-            <Ico name="Pin" size={11} style={{ color:"rgba(74,158,255,0.55)", flexShrink:0 }}/>
+        <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: STAT_H, zIndex: 1100, background: "rgba(4,10,20,0.94)", backdropFilter: "blur(12px)", borderTop: "1px solid rgba(255,255,255,0.055)", display: "flex", alignItems: "center", padding: "0 14px", gap: 10, userSelect: "none" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flex: 1, minWidth: 0, overflow: "hidden" }}>
+            <Ico name="Pin" size={11} style={{ color: "rgba(74,158,255,0.55)", flexShrink: 0 }} />
             {mousePos
-              ? <span style={{ color:"#c0d8f0", fontSize:10, fontFamily:"'DM Mono',monospace", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>
-                  {coordFmt==="dms"&&`${toDMS(mousePos.lat,"N","S")}  ${toDMS(mousePos.lng,"E","W")}`}
-                  {coordFmt==="dec"&&`${mousePos.lat.toFixed(6)}°,  ${mousePos.lng.toFixed(6)}°`}
-                  {coordFmt==="utm"&&<><span style={{ color:"rgba(255,255,255,0.35)", fontSize:9, marginRight:4, fontWeight:600 }}>UTM</span>{toUTM(mousePos.lat,mousePos.lng)}</>}
-                </span>
-              : <span style={{ color:"rgba(255,255,255,0.18)", fontSize:10, fontFamily:"'DM Mono',monospace" }}>—°——′——.——″</span>}
-            <button onClick={() => setCoordFmt(f=>f==="dms"?"dec":f==="dec"?"utm":"dms")} style={{ display:"flex", alignItems:"center", gap:2, padding:"2px 7px", borderRadius:6, cursor:"pointer", background:"rgba(74,158,255,0.09)", border:"1px solid rgba(74,158,255,0.25)", color:"rgba(130,185,255,0.8)", fontSize:9.5, fontWeight:600, flexShrink:0 }}>
-              {coordFmt==="dms"?"LatLng":coordFmt==="dec"?"UTM":"DMS"} <span style={{ fontSize:10, marginLeft:1 }}>↺</span>
+              ? <span style={{ color: "#c0d8f0", fontSize: 10, fontFamily: "'DM Mono',monospace", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                {coordFmt === "dms" && `${toDMS(mousePos.lat, "N", "S")}  ${toDMS(mousePos.lng, "E", "W")}`}
+                {coordFmt === "dec" && `${mousePos.lat.toFixed(6)}°,  ${mousePos.lng.toFixed(6)}°`}
+                {coordFmt === "utm" && <><span style={{ color: "rgba(255,255,255,0.35)", fontSize: 9, marginRight: 4, fontWeight: 600 }}>UTM</span>{toUTM(mousePos.lat, mousePos.lng)}</>}
+              </span>
+              : <span style={{ color: "rgba(255,255,255,0.18)", fontSize: 10, fontFamily: "'DM Mono',monospace" }}>—°——′——.——″</span>}
+            <button onClick={() => setCoordFmt(f => f === "dms" ? "dec" : f === "dec" ? "utm" : "dms")} style={{ display: "flex", alignItems: "center", gap: 2, padding: "2px 7px", borderRadius: 6, cursor: "pointer", background: "rgba(74,158,255,0.09)", border: "1px solid rgba(74,158,255,0.25)", color: "rgba(130,185,255,0.8)", fontSize: 9.5, fontWeight: 600, flexShrink: 0 }}>
+              {coordFmt === "dms" ? "LatLng" : coordFmt === "dec" ? "UTM" : "DMS"} <span style={{ fontSize: 10, marginLeft: 1 }}>↺</span>
             </button>
           </div>
-          <div style={{ flex:1 }}/>
-          <div style={{ display:"flex", alignItems:"center", gap:8, flexShrink:0 }}>
-            <span style={{ color:"rgba(255,255,255,0.38)", fontSize:10, fontFamily:"'DM Mono',monospace" }}>Z{mapZoom}</span>
-            {cursorElevation!=null&&<span onClick={() => setElevOpen(true)} style={{ color:"#38bdf8", fontSize:10, fontFamily:"'DM Mono',monospace", cursor:"pointer", background:"rgba(56,189,248,0.07)", padding:"2px 8px", borderRadius:10, border:"1px solid rgba(56,189,248,0.18)", display:"flex", alignItems:"center", gap:3 }}><Ico name="Mountain" size={10}/>{Math.round(cursorElevation)} m</span>}
-            {demFileName&&demStats&&<span style={{ color:"#fb7185", fontSize:10, background:"rgba(251,113,133,0.09)", padding:"2px 8px", borderRadius:12, border:"1px solid rgba(251,113,133,0.22)", display:"flex", alignItems:"center", gap:3 }}>🏔 {Math.round(demStats.min)}–{Math.round(demStats.max)} m{demRasterData?" · draped":""}{kmlMask?" · clipped":""}</span>}
-            {geoJSON.importedGeoJSONLayers.length>0&&<span style={{ color:"#2dd4bf", fontSize:10, background:"rgba(20,184,166,0.09)", padding:"2px 8px", borderRadius:12, border:"1px solid rgba(20,184,166,0.22)", display:"flex", alignItems:"center", gap:3 }}><Ico name="GeoJSON" size={10}/>{geoJSON.importedGeoJSONLayers.length} GeoJSON</span>}
-            {importedCount>0&&<span style={{ color:"#60a5fa", fontSize:10, background:"rgba(74,158,255,0.09)", padding:"2px 8px", borderRadius:12, border:"1px solid rgba(74,158,255,0.22)", display:"flex", alignItems:"center", gap:3 }}>📁 {importedCount} file{importedCount!==1?"s":""}</span>}
-            {compass.compassNavActive&&<span onClick={compass.stopCompassNav} style={{ color:"#38bdf8", fontSize:10, cursor:"pointer", background:"rgba(14,165,233,0.1)", padding:"2px 8px", borderRadius:12, border:"1px solid rgba(14,165,233,0.25)", display:"flex", alignItems:"center", gap:3 }}><span style={{ animation:"spin 2s linear infinite", display:"inline-block", width:8, height:8 }}>◈</span>{Math.round(((compass.compassHeading??0)%360+360)%360)}°</span>}
-            {isTracking&&<span onClick={() => setTrackerOpen(true)} style={{ color:"#f87171", fontSize:10, cursor:"pointer", background:"rgba(239,68,68,0.09)", padding:"2px 8px", borderRadius:12, border:"1px solid rgba(239,68,68,0.22)", display:"flex", alignItems:"center", gap:3 }}><span style={{ animation:"blink 1s infinite" }}>●</span>REC</span>}
-            {offlineMode&&<span onClick={() => setOfflineMode(false)} style={{ color:"#4ade80", fontSize:10, cursor:"pointer", background:"rgba(34,197,94,0.09)", padding:"2px 8px", borderRadius:12, border:"1px solid rgba(34,197,94,0.22)" }}>🗺</span>}
-            <div style={{ display:"flex", alignItems:"center", gap:4 }}>
-              <span style={{ animation:"blink 1.5s infinite", color:"#4a9eff", fontSize:8 }}>●</span>
-              <span style={{ color:"rgba(255,255,255,0.22)", fontSize:9.5 }}>Live</span>
+          <div style={{ flex: 1 }} />
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+            <span style={{ color: "rgba(255,255,255,0.38)", fontSize: 10, fontFamily: "'DM Mono',monospace" }}>Z{mapZoom}</span>
+            {cursorElevation != null && <span onClick={() => setElevOpen(true)} style={{ color: "#38bdf8", fontSize: 10, fontFamily: "'DM Mono',monospace", cursor: "pointer", background: "rgba(56,189,248,0.07)", padding: "2px 8px", borderRadius: 10, border: "1px solid rgba(56,189,248,0.18)", display: "flex", alignItems: "center", gap: 3 }}><Ico name="Mountain" size={10} />{Math.round(cursorElevation)} m</span>}
+            {demFileName && demStats && <span style={{ color: "#fb7185", fontSize: 10, background: "rgba(251,113,133,0.09)", padding: "2px 8px", borderRadius: 12, border: "1px solid rgba(251,113,133,0.22)", display: "flex", alignItems: "center", gap: 3 }}>🏔 {Math.round(demStats.min)}–{Math.round(demStats.max)} m{demRasterData ? " · draped" : ""}{kmlMask ? " · clipped" : ""}</span>}
+            {kmlAnalyzerData && <span onClick={() => setKmlAnalyzerOpen(true)} style={{ color: "#fbbf24", fontSize: 10, cursor: "pointer", background: "rgba(251,191,36,0.09)", padding: "2px 8px", borderRadius: 12, border: "1px solid rgba(251,191,36,0.22)", display: "flex", alignItems: "center", gap: 3 }}>📐 {kmlAnalyzerData.fileName?.slice(0, 14)}</span>}
+            {geoJSON.importedGeoJSONLayers.length > 0 && <span style={{ color: "#2dd4bf", fontSize: 10, background: "rgba(20,184,166,0.09)", padding: "2px 8px", borderRadius: 12, border: "1px solid rgba(20,184,166,0.22)", display: "flex", alignItems: "center", gap: 3 }}><Ico name="GeoJSON" size={10} />{geoJSON.importedGeoJSONLayers.length} GeoJSON</span>}
+            {importedCount > 0 && <span style={{ color: "#60a5fa", fontSize: 10, background: "rgba(74,158,255,0.09)", padding: "2px 8px", borderRadius: 12, border: "1px solid rgba(74,158,255,0.22)", display: "flex", alignItems: "center", gap: 3 }}>📁 {importedCount} file{importedCount !== 1 ? "s" : ""}</span>}
+            {compass.compassNavActive && <span onClick={compass.stopCompassNav} style={{ color: "#38bdf8", fontSize: 10, cursor: "pointer", background: "rgba(14,165,233,0.1)", padding: "2px 8px", borderRadius: 12, border: "1px solid rgba(14,165,233,0.25)", display: "flex", alignItems: "center", gap: 3 }}><span style={{ animation: "spin 2s linear infinite", display: "inline-block", width: 8, height: 8 }}>◈</span>{Math.round(((compass.compassHeading ?? 0) % 360 + 360) % 360)}°</span>}
+            {isTracking && <span onClick={() => setTrackerOpen(true)} style={{ color: "#f87171", fontSize: 10, cursor: "pointer", background: "rgba(239,68,68,0.09)", padding: "2px 8px", borderRadius: 12, border: "1px solid rgba(239,68,68,0.22)", display: "flex", alignItems: "center", gap: 3 }}><span style={{ animation: "blink 1s infinite" }}>●</span>REC</span>}
+            {offlineMode && <span onClick={() => setOfflineMode(false)} style={{ color: "#4ade80", fontSize: 10, cursor: "pointer", background: "rgba(34,197,94,0.09)", padding: "2px 8px", borderRadius: 12, border: "1px solid rgba(34,197,94,0.22)" }}>🗺</span>}
+            <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <span style={{ animation: "blink 1.5s infinite", color: "#4a9eff", fontSize: 8 }}>●</span>
+              <span style={{ color: "rgba(255,255,255,0.22)", fontSize: 9.5 }}>Live</span>
             </div>
           </div>
         </div>
+
+        {/* ══ PROPERTIES PANEL ═══════════════════════════════════════════
+            Opened by:
+              1. Double-click on any KML / KMZ / SHP / GeoJSON feature
+              2. Right-click → Properties from FeatureContextMenu
+              3. Clicking a saved drawing in My Places sidebar
+            Branding: "SurveyMap Pro" — not "Google Earth"
+        ══════════════════════════════════════════════════════════════════ */}
+        {propertiesDrawing && (
+          <FeaturePropertiesPanel
+            drawing={propertiesDrawing}
+            onClose={() => setPropertiesDrawing(null)}
+            onSave={(updated) => {
+              setSavedDrawings(p => p.map(d => d === propertiesDrawing ? updated : d));
+              setPropertiesDrawing(null);
+            }}
+          />
+        )}
+        {propertiesGeoJSONFeature && (
+          <FeaturePropertiesPanel
+            geojsonFeature={propertiesGeoJSONFeature}
+            onClose={() => setPropertiesGeoJSONFeature(null)}
+          />
+        )}
+
+        {/* ══ RIGHT-CLICK CONTEXT MENU ═══════════════════════════════════
+            Opened by right-click on any KML / KMZ / SHP / GeoJSON feature.
+            "Properties" option opens FeaturePropertiesPanel above.
+        ══════════════════════════════════════════════════════════════════ */}
+        {contextMenu.visible && (
+          <FeatureContextMenu
+            x={contextMenu.x}
+            y={contextMenu.y}
+            feature={contextMenu.feature}
+            onClose={() => setContextMenu(m => ({ ...m, visible: false }))}
+            onProperties={(f) => {
+              setContextMenu(m => ({ ...m, visible: false }));
+              setPropertiesGeoJSONFeature(f);
+            }}
+            onZoomTo={(f) => {
+              setContextMenu(m => ({ ...m, visible: false }));
+              handleContextZoomTo(f);
+            }}
+            onDelete={() => {
+              setContextMenu(m => ({ ...m, visible: false }));
+            }}
+            onRename={() => {
+              setContextMenu(m => ({ ...m, visible: false }));
+            }}
+          />
+        )}
+
+        {/* ══ KML AREA ANALYZER ══════════════════════════════════════════ */}
+        {kmlAnalyzerOpen && kmlAnalyzerData && (
+          <KMLAreaAnalyzer
+            geojson={kmlAnalyzerData.geojson}
+            fileName={kmlAnalyzerData.fileName}
+            onClose={() => setKmlAnalyzerOpen(false)}
+          />
+        )}
 
       </div>
     </>

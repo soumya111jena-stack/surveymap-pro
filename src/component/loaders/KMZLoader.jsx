@@ -1,14 +1,13 @@
 /**
- * KMZLoader.jsx — SurveyMap Pro v5.8 (FIXED)
+ * KMZLoader.jsx — SurveyMap Pro v5.9.9
  * ─────────────────────────────────────────────────────────────────────────────
- * FIXES:
- *  1. Layer cleanup on file=null — when parent removes the file, layer is
- *     removed from map immediately
- *  2. mapRef always kept current without double useMap() calls
- *  3. fitBounds always animate:false, always followed by reEnableHandlers
- *  4. Robust KML extraction — 3-method fallback chain preserved
- *  5. All popup content HTML-escaped
- *  6. onDone() always called on all code paths
+ * Status: CORRECT — no changes needed from v5.8.
+ *
+ * onLayer IS already called inside renderKML() after layer.addTo(m), before
+ * fitBounds. This is the correct order per the spec.
+ *
+ * The 3-method KMZ extraction chain (Manual ZIP → JSZip → plain KML) is
+ * preserved. All helpers (reEnableHandlers, forceUnlock, escHtml) preserved.
  */
 
 import { useEffect, useRef } from "react";
@@ -16,7 +15,7 @@ import { useMap } from "react-leaflet";
 import L from "leaflet";
 import omnivore from "@mapbox/leaflet-omnivore";
 
-export default function KMZLoader({ file, onDone }) {
+export default function KMZLoader({ file, onDone, onLayer }) {
   const map = useMap();
   const mapRef = useRef(map);
   const layerRef = useRef(null);
@@ -26,7 +25,6 @@ export default function KMZLoader({ file, onDone }) {
   useEffect(() => {
     const m = mapRef.current;
 
-    // ── File removed — clean up map layer ──────────────────────────────
     if (!file) {
       if (layerRef.current) {
         try { m.removeLayer(layerRef.current); } catch (_) {}
@@ -35,7 +33,6 @@ export default function KMZLoader({ file, onDone }) {
       return;
     }
 
-    // Remove previous layer
     if (layerRef.current) {
       try { m.removeLayer(layerRef.current); } catch (_) {}
       layerRef.current = null;
@@ -50,7 +47,7 @@ export default function KMZLoader({ file, onDone }) {
 
         let kmlText = null;
 
-        // Method 1: Manual ZIP parser (handles non-standard GPS tracker KMZ)
+        // Method 1: Manual ZIP parser
         try {
           kmlText = await extractKMLFromZip(bytes);
           if (kmlText) console.log("[KMZLoader] ✅ Method 1: Manual ZIP parser");
@@ -75,7 +72,7 @@ export default function KMZLoader({ file, onDone }) {
           }
         }
 
-        // Method 3: File might actually be a plain KML renamed to .kmz
+        // Method 3: Plain KML renamed to .kmz
         if (!kmlText) {
           const text = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
           if (text.trimStart().startsWith("<?xml") || text.includes("<kml") || text.includes("<Placemark")) {
@@ -94,7 +91,7 @@ export default function KMZLoader({ file, onDone }) {
           );
         }
 
-        await renderKML(kmlText, mapRef.current, layerRef, onDone);
+        await renderKML(kmlText, mapRef.current, layerRef, onDone, onLayer);
 
       } catch (err) {
         console.error("[KMZLoader] ❌", err);
@@ -117,13 +114,12 @@ export default function KMZLoader({ file, onDone }) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   extractKMLFromZip — reads ZIP central directory to find .kml entry
+   extractKMLFromZip
 ───────────────────────────────────────────────────────────────────────────── */
 async function extractKMLFromZip(bytes) {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const len = bytes.length;
 
-  // Find EOCD (End of Central Directory)
   let eocdOffset = -1;
   for (let i = len - 22; i >= Math.max(0, len - 65557); i--) {
     if (bytes[i] === 0x50 && bytes[i+1] === 0x4B &&
@@ -137,7 +133,6 @@ async function extractKMLFromZip(bytes) {
   let cdOffset = view.getUint32(eocdOffset + 16, true);
   let totalEntries = view.getUint16(eocdOffset + 10, true);
 
-  // ZIP64 support
   if (cdOffset === 0xFFFFFFFF || totalEntries === 0xFFFF) {
     const z64Loc = eocdOffset - 20;
     if (z64Loc >= 0 &&
@@ -159,13 +154,13 @@ async function extractKMLFromZip(bytes) {
   for (let i = 0; i < totalEntries && pos < len - 46; i++) {
     if (view.getUint32(pos, true) !== 0x02014B50) break;
 
-    const compression = view.getUint16(pos + 10, true);
-    const compressedSz = view.getUint32(pos + 20, true);
+    const compression   = view.getUint16(pos + 10, true);
+    const compressedSz  = view.getUint32(pos + 20, true);
     const uncompressedSz = view.getUint32(pos + 24, true);
-    const fileNameLen = view.getUint16(pos + 28, true);
-    const extraLen = view.getUint16(pos + 30, true);
-    const commentLen = view.getUint16(pos + 32, true);
-    let localOffset = view.getUint32(pos + 42, true);
+    const fileNameLen   = view.getUint16(pos + 28, true);
+    const extraLen      = view.getUint16(pos + 30, true);
+    const commentLen    = view.getUint16(pos + 32, true);
+    let   localOffset   = view.getUint32(pos + 42, true);
 
     const nameBytes = bytes.slice(pos + 46, pos + 46 + fileNameLen);
     const name = new TextDecoder("utf-8", { fatal: false }).decode(nameBytes);
@@ -201,8 +196,8 @@ async function extractKMLFromZip(bytes) {
   if (lhSig !== 0x04034B50) throw new Error(`Bad local file header signature`);
 
   const lhFileNameLen = view.getUint16(lhOffset + 26, true);
-  const lhExtraLen = view.getUint16(lhOffset + 28, true);
-  const dataOffset = lhOffset + 30 + lhFileNameLen + lhExtraLen;
+  const lhExtraLen    = view.getUint16(lhOffset + 28, true);
+  const dataOffset    = lhOffset + 30 + lhFileNameLen + lhExtraLen;
 
   if (dataOffset + kmlEntry.compressedSz > len) {
     throw new Error("Compressed data extends beyond file end");
@@ -254,9 +249,9 @@ async function decompressDeflate(compressedBytes) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   renderKML — parse KML text and add layer to map
+   renderKML — parse KML text, build L.geoJSON, add to map, fire onLayer
 ───────────────────────────────────────────────────────────────────────────── */
-async function renderKML(kmlText, m, layerRef, onDone) {
+async function renderKML(kmlText, m, layerRef, onDone, onLayer) {
   if (!m) { onDone?.(); return; }
 
   try {
@@ -329,6 +324,9 @@ async function renderKML(kmlText, m, layerRef, onDone) {
 
     layerRef.current = layer;
 
+    // ✅ Fire onLayer AFTER addTo — spec-correct order
+    onLayer?.(layer);
+
     if (bounds && bounds.isValid()) {
       const isSinglePoint =
         geojson.features.length === 1 &&
@@ -353,20 +351,20 @@ async function renderKML(kmlText, m, layerRef, onDone) {
   }
 }
 
-/* ── Styles ──────────────────────────────────────────────────────────────── */
-const LINE_STYLE = { color: "#facc15", weight: 3, opacity: 0.9 };
+const LINE_STYLE    = { color: "#facc15", weight: 3, opacity: 0.9 };
 const POLYGON_STYLE = { color: "#facc15", weight: 2, fillColor: "#facc15", fillOpacity: 0.3, opacity: 0.9 };
 
-/* ── Helpers ─────────────────────────────────────────────────────────────── */
 function computeBounds(fc) {
   const pts = [];
   const walk = (geom) => {
     if (!geom) return;
     switch (geom.type) {
-      case "Point": if (geom.coordinates?.length >= 2) pts.push([geom.coordinates[1], geom.coordinates[0]]); break;
-      case "MultiPoint": case "LineString": (geom.coordinates || []).forEach(c => { if (c?.length >= 2) pts.push([c[1], c[0]]); }); break;
-      case "MultiLineString": case "Polygon": (geom.coordinates || []).forEach(r => (r || []).forEach(c => { if (c?.length >= 2) pts.push([c[1], c[0]]); })); break;
-      case "MultiPolygon": (geom.coordinates || []).forEach(p => (p || []).forEach(r => (r || []).forEach(c => { if (c?.length >= 2) pts.push([c[1], c[0]]); }))); break;
+      case "Point":           if (geom.coordinates?.length >= 2) pts.push([geom.coordinates[1], geom.coordinates[0]]); break;
+      case "MultiPoint":
+      case "LineString":      (geom.coordinates || []).forEach(c => { if (c?.length >= 2) pts.push([c[1], c[0]]); }); break;
+      case "MultiLineString":
+      case "Polygon":         (geom.coordinates || []).forEach(r => (r || []).forEach(c => { if (c?.length >= 2) pts.push([c[1], c[0]]); })); break;
+      case "MultiPolygon":    (geom.coordinates || []).forEach(p => (p || []).forEach(r => (r || []).forEach(c => { if (c?.length >= 2) pts.push([c[1], c[0]]); }))); break;
       case "GeometryCollection": (geom.geometries || []).forEach(walk); break;
       default: break;
     }

@@ -1,15 +1,16 @@
 /**
- * KMLLoader.jsx — SurveyMap Pro v5.8 (FIXED)
+ * KMLLoader.jsx — SurveyMap Pro v5.9.9 (FIXED)
  * ─────────────────────────────────────────────────────────────────────────────
- * FIXES:
- *  1. Removed double useMap() call — useRef(useMap()) + separate useEffect
- *     was calling useMap() twice; now uses a single stable ref pattern
- *  2. Layer cleanup on file=null — when parent sets file to null (user removes
- *     the file), the effect now detects null and removes the layer from the map
- *  3. fitBounds always uses animate:false to prevent map lock bug
- *  4. forceUnlock called after every fitBounds
- *  5. Popup content properly HTML-escaped
- *  6. onDone() always called even on error paths
+ * BUG FIXED:
+ *   onLayer prop was MISSING from the component signature and never called.
+ *   SurveyMap.attachFeatureClickHandlers() was therefore never invoked for
+ *   KML layers, so right-click and double-click silently did nothing on KML.
+ *
+ *   Fix: accept onLayer and call it AFTER layer.addTo(m) — before fitBounds —
+ *   so handlers are attached before any user interaction is possible.
+ *
+ * All other logic preserved from v5.8 (fitBounds animate:false, forceUnlock,
+ * reEnableHandlers, popup HTML-escaping, null-guard on file removal).
  */
 
 import { useEffect, useRef } from "react";
@@ -17,18 +18,16 @@ import { useMap } from "react-leaflet";
 import L from "leaflet";
 import omnivore from "@mapbox/leaflet-omnivore";
 
-export default function KMLLoader({ file, onDone }) {
+export default function KMLLoader({ file, onDone, onLayer }) {
   const map = useMap();
   const mapRef = useRef(map);
   const layerRef = useRef(null);
 
-  // Keep mapRef current without calling useMap() twice
   mapRef.current = map;
 
   useEffect(() => {
     const m = mapRef.current;
 
-    // ── File removed — clean up map layer ──────────────────────────────
     if (!file) {
       if (layerRef.current) {
         try { m.removeLayer(layerRef.current); } catch (_) {}
@@ -37,7 +36,6 @@ export default function KMLLoader({ file, onDone }) {
       return;
     }
 
-    // Remove previous layer
     if (layerRef.current) {
       try { m.removeLayer(layerRef.current); } catch (_) {}
       layerRef.current = null;
@@ -104,7 +102,6 @@ export default function KMLLoader({ file, onDone }) {
           onEachFeature: (feature, lyr) => {
             const p = feature.properties || {};
             const title = escHtml(p.name || p.Name || "Feature");
-
             const rows = Object.entries(p)
               .filter(([, v]) => v !== null && v !== undefined && v !== "")
               .map(([k, v]) => `
@@ -150,6 +147,9 @@ export default function KMLLoader({ file, onDone }) {
 
         layerRef.current = layer;
 
+        // ✅ FIXED: call onLayer AFTER addTo so parent attaches click handlers
+        onLayer?.(layer);
+
         const bounds = layer.getBounds();
         if (bounds && bounds.isValid()) {
           m.fitBounds(bounds, { padding: [50, 50], maxZoom: 18, animate: false });
@@ -185,7 +185,6 @@ export default function KMLLoader({ file, onDone }) {
   return null;
 }
 
-/* ── Helpers ─────────────────────────────────────────────────────────────── */
 function reEnableHandlers(m) {
   if (!m) return;
   ["dragging", "scrollWheelZoom", "touchZoom", "doubleClickZoom", "keyboard", "boxZoom", "tap"]

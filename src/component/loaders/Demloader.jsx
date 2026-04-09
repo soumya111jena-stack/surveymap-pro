@@ -8,9 +8,11 @@
  * ✅ FIX 5 : Component-unmount cleanup — removes layer from map
  * ✅ FIX 6 : nodata -32767 now treated as NaN (was -32768 only — caused white canvas)
  *            GeoTIFF files commonly use -32767 as the sentinel nodata value.
- *            Previously pixels with value -32767 were rendered as valid elevation
- *            data (the lowest possible colour in the ramp) making large areas appear
- *            solid white (top of Terrain ramp) instead of transparent.
+ * ✅ FIX 7 : AlpineQuest-style color ramp added — vivid hypsometric tinting with
+ *            distinct blue → green → yellow → brown → white elevation bands.
+ * ✅ FIX 8 : Percentile contrast stretch (2–98%) applied before rendering.
+ *            Prevents outlier elevation values from washing out the color ramp.
+ *            Matches QGIS "Cumulative count cut" / AlpineQuest default behaviour.
  *
  * Dependencies:  npm install geotiff proj4
  */
@@ -19,8 +21,42 @@ import { useEffect, useRef, useCallback } from "react";
 import { useMap } from "react-leaflet";
 import L from "leaflet";
 
-/* ─── Colour ramps (identical to QGIS built-ins) ─────────────────────── */
+/* ─── Colour ramps (identical to QGIS built-ins + AlpineQuest) ────────── */
 export const COLOR_RAMPS = {
+  /**
+   * ✅ FIX 7: AlpineQuest hypsometric ramp.
+   *
+   * AlpineQuest renders elevation with vivid, high-contrast bands that make
+   * terrain immediately readable at a glance. The key differences from the
+   * default "Terrain" ramp:
+   *
+   *  - Deep blue-green at the very bottom (water / lowest ground)
+   *  - Bright, saturated greens for lowlands (not the muted green of "Terrain")
+   *  - A clear yellow band marking the mid-elevation transition
+   *  - Warm tan → orange-brown for highlands (absent from "Terrain")
+   *  - Reddish-brown for high ridges, mauve for bare rock
+   *  - White reserved only for the top few percent (actual snow / peaks)
+   *
+   * The ramp uses 10 stops (vs 6 for "Terrain") so transitions are smoother
+   * and each elevation zone has a distinctive hue, not just a lightness shift.
+   *
+   * Combined with the 2–98% percentile stretch (FIX 8 below) this produces
+   * the same punchy, fully-saturated look seen in AlpineQuest and QGIS when
+   * "Cumulative count cut" is enabled.
+   */
+  "AlpineQuest": [
+    [0.00, [ 32, 120, 180]], // deep blue      — water / absolute lowest
+    [0.05, [ 55, 165, 130]], // teal-green     — river valleys / coast
+    [0.15, [ 85, 195,  85]], // bright green   — lowland plains
+    [0.28, [165, 215,  75]], // yellow-green   — gentle hills
+    [0.42, [230, 210,  85]], // warm yellow    — uplands
+    [0.55, [215, 165,  65]], // tan / sand     — upper slopes
+    [0.68, [185, 108,  50]], // orange-brown   — highlands
+    [0.80, [152,  72,  42]], // reddish-brown  — high ridges
+    [0.90, [138,  88,  78]], // mauve / rock   — bare rock / scree
+    [1.00, [238, 238, 238]], // near-white     — snow / highest peaks
+  ],
+
   "Viridis": [
     [0,   [68,  1,  84]],
     [0.25,[59,  82, 139]],
@@ -103,6 +139,47 @@ function sampleRamp(ramp, t) {
 
 function geoBoundsToLeaflet(west, south, east, north) {
   return L.latLngBounds([south, west], [north, east]);
+}
+
+/**
+ * ✅ FIX 8: Percentile contrast stretch (2–98%).
+ *
+ * The "washed out" appearance occurs because the colour ramp is stretched
+ * from the absolute min to the absolute max of the dataset. A single noisy
+ * outlier pixel at -500 m or +8800 m compresses everything else into a tiny
+ * slice of the ramp, making the whole tile look like a single flat colour.
+ *
+ * AlpineQuest and QGIS ("Cumulative count cut", default 2–98%) both fix this
+ * by ignoring the extreme tails of the elevation distribution.
+ *
+ * This function collects every valid (non-NaN) elevation value, sorts them,
+ * and returns the values at the 2nd and 98th percentile positions.
+ * renderToImageData then clamps its normalisation to [lo, hi] instead of
+ * [minVal, maxVal], ensuring the full colour ramp is used across the range
+ * that contains 96% of the data — exactly matching AlpineQuest's behaviour.
+ *
+ * @param {Float32Array} data   — elevation raster (NaN = nodata)
+ * @param {number} loFrac       — lower percentile fraction (default 0.02)
+ * @param {number} hiFrac       — upper percentile fraction (default 0.98)
+ * @returns {{ lo: number, hi: number }}
+ */
+function percentileStretch(data, loFrac = 0.02, hiFrac = 0.98) {
+  // Collect only valid (non-NaN) values into a plain array for sorting
+  const valid = [];
+  for (let i = 0; i < data.length; i++) {
+    if (!isNaN(data[i])) valid.push(data[i]);
+  }
+  if (valid.length === 0) return { lo: 0, hi: 1 };
+
+  valid.sort((a, b) => a - b);
+
+  const lo = valid[Math.floor(valid.length * loFrac)];
+  const hi = valid[Math.floor(valid.length * hiFrac)];
+
+  // Guard: if lo === hi (flat raster), fall back to full range
+  if (lo === hi) return { lo: valid[0], hi: valid[valid.length - 1] };
+
+  return { lo, hi };
 }
 
 /* ─── Extract rings from any mask format ──────────────────────────────
@@ -203,23 +280,6 @@ async function parseASC(buffer) {
 }
 
 /* ─── GeoTIFF parser ─────────────────────────────────────────────────── */
-
-/**
- * ✅ FIX 6: Expanded nodata sentinel detection.
- *
- * Your screenshot showed "-32767-973 m" in the Leaflet status bar — the DEM
- * elevation range included -32767, which is the standard INT16 nodata sentinel
- * used by SRTM, Copernicus DEM, and many other DEM sources.
- *
- * Old code only checked: v === -32768
- * That missed -32767 pixels entirely, so they were rendered as valid (very low)
- * elevation data. In the "Terrain" colour ramp, elevation 0 is green and the
- * maximum is white — -32767 mapped to t≈0 which rendered as dark green, but
- * when the nodata region covers most of the tile the average pushed the valid
- * data range to near-maximum, causing everything to wash out to white/cream.
- *
- * Fix: treat -32767, -32768, AND the GDAL_NODATA tag value all as NaN.
- */
 async function parseGeoTIFF(buffer) {
   const GeoTIFF = await import("geotiff").catch(() => null);
   if (!GeoTIFF) throw new Error("geotiff not installed. Run: npm install geotiff");
@@ -232,20 +292,19 @@ async function parseGeoTIFF(buffer) {
   const rasters = await image.readRasters({ interleave: true });
   const data    = new Float32Array(width * height);
 
-  // ✅ FIX: Read the actual GDAL_NODATA tag from the file, then ALSO
-  //   treat the two most-common INT16 sentinel values as nodata.
+  // Read the actual GDAL_NODATA tag from the file
   const gdalNodata = image.fileDirectory.GDAL_NODATA
     ? Number(image.fileDirectory.GDAL_NODATA)
     : null;
 
-  // ✅ FIX: Added -32767 to the nodata sentinel set
-  //   -32767 = standard SRTM / Copernicus "void" value (INT16 min + 1)
-  //   -32768 = INT16 absolute minimum (also used by some providers)
-  //   -9999  = classic GIS nodata
+  // Treat all common nodata sentinels as NaN
+  // -32767 = standard SRTM / Copernicus "void" value (INT16 min + 1)
+  // -32768 = INT16 absolute minimum (also used by some providers)
+  // -9999  = classic GIS nodata
   const isNodata = (v) => {
     if (isNaN(v)) return true;
     if (gdalNodata !== null && v === gdalNodata) return true;
-    if (v === -32767) return true;  // ← was missing — THE root cause
+    if (v === -32767) return true;
     if (v === -32768) return true;
     if (v === -9999)  return true;
     return false;
@@ -263,7 +322,6 @@ async function parseGeoTIFF(buffer) {
     if (proj4mod) {
       const proj4 = proj4mod.default || proj4mod;
       let reprojected = false;
-      // FIX: Try zones in order and validate result stays within geographic bounds
       for (const zone of [44, 45, 43, 46]) {
         const utmProj = `+proj=utm +zone=${zone} +datum=WGS84 +units=m +no_defs`;
         try {
@@ -289,13 +347,23 @@ async function parseGeoTIFF(buffer) {
 }
 
 /* ─── Render raster → ImageData ──────────────────────────────────────── */
-function renderToImageData(data, width, height, ramp, minVal, maxVal, opacity) {
-  const range  = maxVal - minVal || 1;
+/**
+ * ✅ FIX 8 (continued): renderToImageData now accepts stretchLo / stretchHi
+ * instead of minVal / maxVal.  The caller passes the 2–98 percentile bounds
+ * so the colour ramp is mapped to the meaningful elevation range, not the
+ * full range including outliers.  Values outside [stretchLo, stretchHi] are
+ * clamped to the ramp ends (t=0 or t=1) — they get a colour, just the same
+ * extreme colour as the nearest in-range value.
+ */
+function renderToImageData(data, width, height, ramp, stretchLo, stretchHi, opacity) {
+  const range  = stretchHi - stretchLo || 1;
   const pixels = new Uint8ClampedArray(width * height * 4);
   for (let i = 0; i < width * height; i++) {
     const v = data[i];
     if (isNaN(v)) { pixels[i * 4 + 3] = 0; continue; }
-    const t   = (v - minVal) / range;
+    // t is clamped to [0,1] inside sampleRamp — values outside the stretch
+    // range map to the ramp endpoints instead of being clipped to transparent.
+    const t   = (v - stretchLo) / range;
     const col = sampleRamp(ramp, t);
     pixels[i * 4]     = col[0];
     pixels[i * 4 + 1] = col[1];
@@ -384,7 +452,7 @@ const DEMCanvasLayer = L.Layer.extend({
 export default function DEMLoader({
   file,
   opacity   = 0.75,
-  colorRamp = "Terrain",
+  colorRamp = "AlpineQuest",   // ✅ FIX 7: AlpineQuest is now the default ramp
   kmlMask   = null,
   onDone,
   onError,
@@ -398,9 +466,10 @@ export default function DEMLoader({
   const reRender = useCallback(() => {
     const r = rasterRef.current;
     if (!r || !layerRef.current) return;
-    const { data, width, height, minVal, maxVal } = r;
-    const ramp = COLOR_RAMPS[colorRamp] || COLOR_RAMPS["Terrain"];
-    const img  = renderToImageData(data, width, height, ramp, minVal, maxVal, opacity);
+    const { data, width, height, stretchLo, stretchHi } = r;
+    const ramp = COLOR_RAMPS[colorRamp] || COLOR_RAMPS["AlpineQuest"];
+    // ✅ FIX 8: use pre-computed percentile bounds, not raw min/max
+    const img  = renderToImageData(data, width, height, ramp, stretchLo, stretchHi, opacity);
     layerRef.current.updateImageData(img);
   }, [opacity, colorRamp]);
 
@@ -447,7 +516,7 @@ export default function DEMLoader({
 
         const { data, width, height, west, south, east, north } = parsed;
 
-        // ✅ Compute stats only over valid (non-NaN) pixels
+        // ✅ Compute true stats only over valid (non-NaN) pixels
         let minVal = Infinity, maxVal = -Infinity, sum = 0, count = 0;
         for (let i = 0; i < data.length; i++) {
           if (!isNaN(data[i])) {
@@ -458,14 +527,33 @@ export default function DEMLoader({
         }
         const meanVal = count ? sum / count : 0;
 
-        rasterRef.current = { data, width, height, minVal, maxVal, west, south, east, north };
+        // ✅ FIX 8: Compute 2–98 percentile bounds for contrast stretch.
+        //
+        // Using the absolute min/max causes the ramp to be mapped across the
+        // entire distribution including extreme outliers, which pushes all the
+        // "normal" terrain into a narrow band of nearly-identical colours.
+        //
+        // percentileStretch() sorts valid pixels and picks the 2nd percentile
+        // as stretchLo and the 98th percentile as stretchHi.  renderToImageData
+        // normalises elevation to [0,1] using these tighter bounds, so 96% of
+        // pixels use the full ramp and only the extreme tails are clamped to
+        // the ramp endpoints.  This is the same algorithm AlpineQuest and QGIS
+        // "Cumulative count cut" use to produce vivid, high-contrast DEM tiles.
+        const { lo: stretchLo, hi: stretchHi } = percentileStretch(data);
+
+        rasterRef.current = {
+          data, width, height,
+          minVal, maxVal,       // true data range (for onStats / elevation probe)
+          stretchLo, stretchHi, // percentile-clipped range (for rendering)
+          west, south, east, north,
+        };
 
         const rasterPayload = { data, width, height, west, south, east, north, minVal, maxVal };
-        // ✅ Pass both stats AND rasterPayload — useDEM.handleDEMStats needs both
         onStats?.({ min: minVal, max: maxVal, mean: meanVal, width, height }, rasterPayload);
 
-        const ramp   = COLOR_RAMPS[colorRamp] || COLOR_RAMPS["Terrain"];
-        const img    = renderToImageData(data, width, height, ramp, minVal, maxVal, opacity);
+        const ramp   = COLOR_RAMPS[colorRamp] || COLOR_RAMPS["AlpineQuest"];
+        // ✅ FIX 8: pass percentile bounds to renderer
+        const img    = renderToImageData(data, width, height, ramp, stretchLo, stretchHi, opacity);
         const bounds = geoBoundsToLeaflet(west, south, east, north);
 
         if (layerRef.current) { map.removeLayer(layerRef.current); layerRef.current = null; }
