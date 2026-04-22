@@ -41,7 +41,7 @@ function buildProvider(Cesium,layer){
 
 function dlFile(data,filename,mime){const blob=new Blob([data],{type:mime});const a=Object.assign(document.createElement("a"),{href:URL.createObjectURL(blob),download:filename});a.click();setTimeout(()=>URL.revokeObjectURL(a.href),5000);}
 function toGeoJSON(drawings){return{type:"FeatureCollection",features:drawings.map(d=>{if(d.type==="marker"){const[la,lo]=d.points[0];return{type:"Feature",properties:{name:d.name,type:"marker"},geometry:{type:"Point",coordinates:[lo,la]}};}if(d.type==="path")return{type:"Feature",properties:{name:d.name,type:"path"},geometry:{type:"LineString",coordinates:d.points.map(([la,lo])=>[lo,la])}};return{type:"Feature",properties:{name:d.name,type:"polygon"},geometry:{type:"Polygon",coordinates:[[...d.points.map(([la,lo])=>[lo,la]),d.points[0]?[d.points[0][1],d.points[0][0]]:null].filter(Boolean)]}};})}}
-function toKML(drawings){const pm=drawings.map(d=>{if(d.type==="marker"){const[la,lo]=d.points[0];return`<Placemark><name>${d.name}</name><Point><coordinates>${lo},${la},0</coordinates></Point></Placemark>`;}if(d.type==="path")return`<Placemark><name>${d.name}</name><LineString><coordinates>${d.points.map(([la,lo])=>`${lo},${la},0`).join(" ")}</coordinates></LineString></Placemark>`;const pts=[...d.points,d.points[0]];return`<Placemark><name>${d.name}</name><Polygon><outerBoundaryIs><LinearRing><coordinates>${pts.map(([la,lo])=>`${lo},${la},0`).join(" ")}</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark>`;});return`<?xml version="1.0" encoding="UTF-8"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>SurveyMap Pro</name>${pm.join("")}</Document></kml>`;}
+function toKML(drawings){const pm=drawings.map(d=>{if(d.type==="marker"){const[la,lo]=d.points[0];return`<Placemark><name>${d.name}</name><Point><coordinates>${lo},${la},0</coordinates></Point></Placemark>`;}if(d.type==="path")return`<Placemark><name>${d.name}</name><LineString><coordinates>${d.points.map(([la,lo])=>`${lo},${la},0`).join(" ")}</coordinates></LineString></Placemark>`;const pts=[...d.points,d.points[0]];return`<Placemark><name>${d.name}</name><Polygon><outerBoundaryIs><LinearRing><coordinates>${pts.map(([la,lo])=>`${lo},${la},0`).join(" ")}</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark>`;});return`<?xml version="1.0" encoding="UTF-8"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>Geoxis</name>${pm.join("")}</Document></kml>`;}
 function toCSV(drawings){const rows=["name,type,latitude,longitude"];drawings.forEach(d=>d.points.forEach(([lat,lng])=>rows.push(`"${d.name}","${d.type}",${lat},${lng}`)));return rows.join("\n");}
 
 const LAYERS=[
@@ -610,7 +610,7 @@ export default function Globe3DView({savedDrawings=[],onClose}){
         const Cesium=await import("cesium");
         await import("cesium/Build/Cesium/Widgets/widgets.css");
         CesiumRef.current=Cesium;
-        Cesium.Ion.defaultAccessToken="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiJjMjhhMGMwMi05MjY5LTQ5NzMtYjc2OC00OWZmZmVmZWQzNjIiLCJpZCI6Mzk4NDk3LCJpYXQiOjE3NzI3MDAwNzB9.tLRJbx3sOnKsgEm5Agr7QUVGWmVdYpzbYdNxP5105G0";
+        Cesium.Ion.defaultAccessToken="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiI1MzBjMzg2Zi05YWQ0LTQxZDUtYTlkOC1iNzIyYzA5Mzk1MWIiLCJpZCI6Mzk4NDk3LCJpYXQiOjE3NzU4MTE3MTF9.lczkYVARN6Yv0yCgFsp-4jb2VCxwyTo-OjDkoGOHrHQ";
         viewer=new Cesium.Viewer(containerRef.current,{
           terrainProvider:await Cesium.createWorldTerrainAsync({requestWaterMask:false,requestVertexNormals:true}),
           timeline:false,animation:false,baseLayerPicker:false,geocoder:false,
@@ -859,38 +859,256 @@ export default function Globe3DView({savedDrawings=[],onClose}){
     }catch(err){console.error("Search error:",err);}
     setSearchLoading(false);
   }
+function handleKML(e){
+  const file=e.target.files[0];if(!file||!ready)return;
+  const Cesium=CesiumRef.current,viewer=viewerRef.current;
+  const isKmz=file.name.toLowerCase().endsWith(".kmz");
+  setKmlName(file.name);setKmlStats(null);setKmlFlyIn(false);
+  if(orbitRef.current){orbitRef.current.active=false;if(orbitRef.current.animFrame){cancelAnimationFrame(orbitRef.current.animFrame);orbitRef.current.animFrame=null;}try{viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);}catch{}orbitRef.current=null;}
 
-  function handleKML(e){
-    const file=e.target.files[0];if(!file||!ready)return;
-    const Cesium=CesiumRef.current,viewer=viewerRef.current;
-    const isKmz=file.name.toLowerCase().endsWith(".kmz");
-    setKmlName(file.name);setKmlStats(null);setKmlFlyIn(false);
-    if(orbitRef.current){orbitRef.current.active=false;if(orbitRef.current.animFrame){cancelAnimationFrame(orbitRef.current.animFrame);orbitRef.current.animFrame=null;}try{viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);}catch{}orbitRef.current=null;}
-    Cesium.KmlDataSource.load(URL.createObjectURL(file),{camera:viewer.scene.camera,canvas:viewer.scene.canvas,clampToGround:true}).then(ds=>{
-      const STROKE=Cesium.Color.fromCssColorString("#f5f3ee");const STROKE_DARK=Cesium.Color.fromCssColorString("#ed1010").withAlpha(0.55);const FILL=Cesium.Color.fromCssColorString("#f6f4f0").withAlpha(0.18);const PT_COLOR=Cesium.Color.fromCssColorString("#f7f2f0");const PT_OUTLINE=Cesium.Color.fromCssColorString("#e52e0a").withAlpha(0.8);
-      for(const ent of ds.entities.values){try{
-        if(ent.polyline){ent.polyline.clampToGround=new Cesium.ConstantProperty(true);ent.polyline.arcType=new Cesium.ConstantProperty(Cesium.ArcType.GEODESIC);ent.polyline.width=new Cesium.ConstantProperty(3);ent.polyline.material=new Cesium.PolylineOutlineMaterialProperty({color:STROKE,outlineColor:STROKE_DARK,outlineWidth:2.5});}
-        if(ent.polygon){ent.polygon.material=new Cesium.ColorMaterialProperty(FILL);ent.polygon.outline=new Cesium.ConstantProperty(true);ent.polygon.outlineColor=new Cesium.ConstantProperty(STROKE);ent.polygon.outlineWidth=new Cesium.ConstantProperty(3);ent.polygon.classificationType=new Cesium.ConstantProperty(Cesium.ClassificationType.TERRAIN);}
-        if(ent.billboard){ent.billboard.heightReference=new Cesium.ConstantProperty(Cesium.HeightReference.CLAMP_TO_GROUND);ent.billboard.disableDepthTestDistance=new Cesium.ConstantProperty(Number.POSITIVE_INFINITY);}
-        if(ent.point){ent.point.color=new Cesium.ConstantProperty(PT_COLOR);ent.point.outlineColor=new Cesium.ConstantProperty(PT_OUTLINE);ent.point.outlineWidth=new Cesium.ConstantProperty(2);ent.point.pixelSize=new Cesium.ConstantProperty(11);ent.point.heightReference=new Cesium.ConstantProperty(Cesium.HeightReference.CLAMP_TO_GROUND);ent.point.disableDepthTestDistance=new Cesium.ConstantProperty(Number.POSITIVE_INFINITY);}
-        if(ent.label){ent.label.fillColor=new Cesium.ConstantProperty(Cesium.Color.WHITE);ent.label.outlineColor=new Cesium.ConstantProperty(Cesium.Color.BLACK);ent.label.outlineWidth=new Cesium.ConstantProperty(2.5);ent.label.style=new Cesium.ConstantProperty(Cesium.LabelStyle.FILL_AND_OUTLINE);ent.label.heightReference=new Cesium.ConstantProperty(Cesium.HeightReference.CLAMP_TO_GROUND);ent.label.disableDepthTestDistance=new Cesium.ConstantProperty(Number.POSITIVE_INFINITY);}
-      }catch(_){}}
-      viewer.dataSources.add(ds);
-      const entities=ds.entities.values;let sumLat=0,sumLng=0,minLat=90,maxLat=-90,minLng=180,maxLng=-180,ptCount=0;
-      const collectCoord=(lat,lng)=>{if(!isFinite(lat)||!isFinite(lng))return;if(lat<-90||lat>90||lng<-180||lng>180)return;sumLat+=lat;sumLng+=lng;minLat=Math.min(minLat,lat);maxLat=Math.max(maxLat,lat);minLng=Math.min(minLng,lng);maxLng=Math.max(maxLng,lng);ptCount++;};
-      for(const ent of entities){try{const pos=ent.position?.getValue(Cesium.JulianDate.now());if(pos){const c=Cesium.Cartographic.fromCartesian(pos);if(c)collectCoord(Cesium.Math.toDegrees(c.latitude),Cesium.Math.toDegrees(c.longitude));}if(ent.polygon){const h=ent.polygon.hierarchy?.getValue(Cesium.JulianDate.now());if(h?.positions)h.positions.forEach(p=>{try{const c=Cesium.Cartographic.fromCartesian(p);if(c)collectCoord(Cesium.Math.toDegrees(c.latitude),Cesium.Math.toDegrees(c.longitude));}catch{}});}if(ent.polyline){const pts=ent.polyline.positions?.getValue(Cesium.JulianDate.now());if(pts)pts.forEach(p=>{try{const c=Cesium.Cartographic.fromCartesian(p);if(c)collectCoord(Cesium.Math.toDegrees(c.latitude),Cesium.Math.toDegrees(c.longitude));}catch{}});}}catch{}}
-      if(ptCount===0){viewer.flyTo(ds,{duration:3});return;}
-      const cLat=sumLat/ptCount,cLng=sumLng/ptCount;if(!isFinite(cLat)||!isFinite(cLng)){viewer.flyTo(ds,{duration:3});return;}
-      const spanLat=Math.max(maxLat-minLat,0.005),spanLng=Math.max(maxLng-minLng,0.005);const spanDeg=Math.max(spanLat,spanLng);const spanKm=(spanDeg*111.32).toFixed(1);const rangeM=Math.min(Math.max(spanDeg*111320*1.6,400),5000000);const centerCart=Cesium.Cartesian3.fromDegrees(cLng,cLat,0);if(!centerCart||!isFinite(centerCart.x)||!isFinite(centerCart.y)||!isFinite(centerCart.z)){viewer.flyTo(ds,{duration:3});return;}
-      orbitRef.current={center:centerCart,range:rangeM,heading:0,pitch:-62,active:false};
-      setKmlStats({featureCount:entities.length,center:{lat:cLat,lng:cLng},spanKm,bbox:{minLat,maxLat,minLng,maxLng}});setKmlFlyIn(true);
-      viewer.camera.flyTo({destination:Cesium.Cartesian3.fromDegrees(cLng,cLat,rangeM*3.5),orientation:{heading:Cesium.Math.toRadians(0),pitch:Cesium.Math.toRadians(-90),roll:0},duration:2.2,easingFunction:Cesium.EasingFunction.CUBIC_IN_OUT,complete:()=>{
-        const orbitDown=(targetPitch,durationSec,onDone)=>{const o=orbitRef.current;if(!o)return;const startPitch=o.pitch,startHeading=o.heading,startTime=performance.now();const tick=()=>{if(!orbitRef.current){return;}const t=Math.min((performance.now()-startTime)/(durationSec*1000),1);const ease=t<0.5?4*t*t*t:(t-1)*(2*t-2)*(2*t-2)+1;o.pitch=startPitch+(targetPitch-startPitch)*ease;o.heading=startHeading+ease*8;try{viewer.camera.lookAt(o.center,new Cesium.HeadingPitchRange(Cesium.Math.toRadians(o.heading),Cesium.Math.toRadians(o.pitch),o.range));}catch{o.animFrame=null;if(onDone)onDone();return;}if(t<1){o.animFrame=requestAnimationFrame(tick);}else{o.animFrame=null;if(onDone)onDone();}};o.animFrame=requestAnimationFrame(tick);};
-        orbitDown(-62,1.8,()=>{setKmlFlyIn(false);const o=orbitRef.current;if(!o)return;o.active=true;let lastTime=performance.now();const passiveOrbit=()=>{if(!o.active||!orbitRef.current)return;const now=performance.now(),dt=(now-lastTime)/1000;lastTime=now;o.heading=(o.heading+3*dt)%360;try{viewer.camera.lookAt(o.center,new Cesium.HeadingPitchRange(Cesium.Math.toRadians(o.heading),Cesium.Math.toRadians(o.pitch),o.range));}catch{o.active=false;o.animFrame=null;try{viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);}catch{}return;}o.animFrame=requestAnimationFrame(passiveOrbit);};o.animFrame=requestAnimationFrame(passiveOrbit);const stopOrbit=()=>{if(orbitRef.current){orbitRef.current.active=false;if(orbitRef.current.animFrame){cancelAnimationFrame(orbitRef.current.animFrame);orbitRef.current.animFrame=null;}try{viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);}catch{}}};const canvas=viewer.scene.canvas;const once=()=>{stopOrbit();canvas.removeEventListener("mousedown",once);canvas.removeEventListener("touchstart",once);canvas.removeEventListener("wheel",once);};canvas.addEventListener("mousedown",once,{once:true});canvas.addEventListener("touchstart",once,{once:true,passive:true});canvas.addEventListener("wheel",once,{once:true,passive:true});setTimeout(()=>{if(orbitRef.current?.active)once();},12000);});
-      }});
-    }).catch(err=>{console.error("KML/KMZ load error:",err);alert("Failed to load "+(isKmz?"KMZ":"KML")+": "+err.message);});
-    e.target.value="";
+  // ── Helper: parse KML AABBGGRR hex → Cesium.Color ────────────────────────
+  function kmlColorToCesium(kmlHex,defaultColor){
+    if(!kmlHex||kmlHex.length<8)return defaultColor;
+    try{
+      const aa=kmlHex.slice(0,2),bb=kmlHex.slice(2,4),gg=kmlHex.slice(4,6),rr=kmlHex.slice(6,8);
+      const a=parseInt(aa,16)/255,r=parseInt(rr,16)/255,g=parseInt(gg,16)/255,b=parseInt(bb,16)/255;
+      if([a,r,g,b].some(isNaN))return defaultColor;
+      return new Cesium.Color(r,g,b,Math.max(a,0.15));
+    }catch{return defaultColor;}
   }
+
+  // ── Helper: sanitize KML text before parsing ──────────────────────────────
+  function sanitizeKML(raw){
+    let kml=raw;
+    kml=kml.replace(/<n>/gi,"<name>").replace(/<\/n>/gi,"</name>");
+    kml=kml.replace(/<desc>/gi,"<description>").replace(/<\/desc>/gi,"</description>");
+    kml=kml.replace(/<description\/>/gi,"<description></description>");
+    if(!kml.includes('xmlns=')&&!kml.includes('xmlns ')){
+      kml=kml.replace(/<kml/i,'<kml xmlns="http://www.opengis.net/kml/2.2"');
+    }
+    // Unwrap MultiGeometry into individual Placemarks
+    if(/<MultiGeometry/i.test(kml)){
+      kml=kml.replace(/(<Placemark[^>]*>)([\s\S]*?)<\/Placemark>/gi,(fullMatch,openTag,inner)=>{
+        if(!/<MultiGeometry/i.test(inner))return fullMatch;
+        const nameMatch=inner.match(/<name>([\s\S]*?)<\/name>/i);
+        const styleMatch=inner.match(/<Style[\s\S]*?<\/Style>/i);
+        const extMatch=inner.match(/<ExtendedData[\s\S]*?<\/ExtendedData>/i);
+        const idAttr=openTag.match(/id="([^"]+)"/i);
+        const namePart=nameMatch?nameMatch[0]:"";
+        const stylePart=styleMatch?styleMatch[0]:"";
+        const extPart=extMatch?extMatch[0]:"";
+        const baseId=idAttr?idAttr[1]:"mg";
+        const mgMatch=inner.match(/<MultiGeometry[^>]*>([\s\S]*?)<\/MultiGeometry>/i);
+        if(!mgMatch)return fullMatch;
+        const geomPattern=/<(Polygon|LineString|LinearRing|Point)([\s\S]*?)<\/\1>/gi;
+        const geometries=[];let gm;
+        while((gm=geomPattern.exec(mgMatch[1]))!==null)geometries.push(gm[0]);
+        if(!geometries.length)return fullMatch;
+        return geometries.map((geom,i)=>`<Placemark id="${baseId}_${i}">${namePart}${stylePart}${extPart}${geom}</Placemark>`).join("\n");
+      });
+    }
+    return kml;
+  }
+
+  const loadKML=(kmlText)=>{
+    const sanitized=sanitizeKML(kmlText);
+    const blob=new Blob([sanitized],{type:"application/vnd.google-earth.kml+xml"});
+    const url=URL.createObjectURL(blob);
+
+    Cesium.KmlDataSource.load(url,{
+      camera:viewer.scene.camera,
+      canvas:viewer.scene.canvas,
+      clampToGround:true,
+    }).then(ds=>{
+      // ── Apply styles: preserve KML colors, only fix rendering issues ───────
+      for(const ent of ds.entities.values){
+        try{
+          // POLYLINE: keep color, fix clamping + width
+          if(ent.polyline){
+            ent.polyline.clampToGround=new Cesium.ConstantProperty(true);
+            ent.polyline.arcType=new Cesium.ConstantProperty(Cesium.ArcType.GEODESIC);
+            // Only set width if not already set or too thin
+            const existingWidth=ent.polyline.width?.getValue(Cesium.JulianDate.now());
+            if(!existingWidth||existingWidth<2){
+              ent.polyline.width=new Cesium.ConstantProperty(3);
+            }
+            // If material is missing or is a default image, set a solid color
+            const mat=ent.polyline.material;
+            if(!mat){
+              ent.polyline.material=new Cesium.ColorMaterialProperty(Cesium.Color.fromCssColorString("#facc15").withAlpha(0.9));
+            }
+          }
+
+          // POLYGON: keep fill+outline colors, fix classification
+       if(ent.polygon){
+  ent.polygon.classificationType=new Cesium.ConstantProperty(Cesium.ClassificationType.TERRAIN);
+  
+  // ── Fill: always blue semi-transparent ──────────
+  ent.polygon.material=new Cesium.ColorMaterialProperty(
+    Cesium.Color.fromCssColorString("#1a6bb5").withAlpha(0.35)
+  );
+  
+  // ── Outline: always orange, always visible ──────
+  ent.polygon.outline=new Cesium.ConstantProperty(true);
+  ent.polygon.outlineColor=new Cesium.ConstantProperty(
+    Cesium.Color.fromCssColorString("#f97316")  // 🟠 change hex here for different color
+  );
+  ent.polygon.outlineWidth=new Cesium.ConstantProperty(4);
+  
+  // ── Polyline border fallback (terrain clamping fix) ──
+  try{
+    const hierarchy=ent.polygon.hierarchy?.getValue(Cesium.JulianDate.now());
+    if(hierarchy?.positions){
+      viewer.entities.add({
+        polyline:{
+          positions:[...hierarchy.positions, hierarchy.positions[0]],
+          width:3,
+          material:new Cesium.ColorMaterialProperty(
+            Cesium.Color.fromCssColorString("#f97316")  // 🟠 same color as outlineColor
+          ),
+          clampToGround:true,
+        }
+      });
+    }
+  }catch(_){}
+}
+
+          // BILLBOARD/POINT: fix depth + clamping only
+          if(ent.billboard){
+            ent.billboard.heightReference=new Cesium.ConstantProperty(Cesium.HeightReference.CLAMP_TO_GROUND);
+            ent.billboard.disableDepthTestDistance=new Cesium.ConstantProperty(Number.POSITIVE_INFINITY);
+          }
+          if(ent.point){
+            ent.point.heightReference=new Cesium.ConstantProperty(Cesium.HeightReference.CLAMP_TO_GROUND);
+            ent.point.disableDepthTestDistance=new Cesium.ConstantProperty(Number.POSITIVE_INFINITY);
+            if(!ent.point.pixelSize){
+              ent.point.pixelSize=new Cesium.ConstantProperty(10);
+            }
+          }
+
+          // LABEL: fix depth only, keep color
+          if(ent.label){
+            ent.label.heightReference=new Cesium.ConstantProperty(Cesium.HeightReference.CLAMP_TO_GROUND);
+            ent.label.disableDepthTestDistance=new Cesium.ConstantProperty(Number.POSITIVE_INFINITY);
+            if(!ent.label.fillColor){
+              ent.label.fillColor=new Cesium.ConstantProperty(Cesium.Color.WHITE);
+            }
+            if(!ent.label.outlineColor){
+              ent.label.outlineColor=new Cesium.ConstantProperty(Cesium.Color.BLACK);
+            }
+            ent.label.outlineWidth=new Cesium.ConstantProperty(2);
+            ent.label.style=new Cesium.ConstantProperty(Cesium.LabelStyle.FILL_AND_OUTLINE);
+          }
+        }catch(_){}
+      }
+
+      viewer.dataSources.add(ds);
+      URL.revokeObjectURL(url);
+
+      const entities=ds.entities.values;
+      let sumLat=0,sumLng=0,minLat=90,maxLat=-90,minLng=180,maxLng=-180,ptCount=0;
+      const collectCoord=(lat,lng)=>{
+        if(!isFinite(lat)||!isFinite(lng)||lat<-90||lat>90||lng<-180||lng>180)return;
+        sumLat+=lat;sumLng+=lng;
+        minLat=Math.min(minLat,lat);maxLat=Math.max(maxLat,lat);
+        minLng=Math.min(minLng,lng);maxLng=Math.max(maxLng,lng);ptCount++;
+      };
+      for(const ent of entities){
+        try{
+          const pos=ent.position?.getValue(Cesium.JulianDate.now());
+          if(pos){const c=Cesium.Cartographic.fromCartesian(pos);if(c)collectCoord(Cesium.Math.toDegrees(c.latitude),Cesium.Math.toDegrees(c.longitude));}
+          if(ent.polygon){const h=ent.polygon.hierarchy?.getValue(Cesium.JulianDate.now());if(h?.positions)h.positions.forEach(p=>{try{const c=Cesium.Cartographic.fromCartesian(p);if(c)collectCoord(Cesium.Math.toDegrees(c.latitude),Cesium.Math.toDegrees(c.longitude));}catch{}});}
+          if(ent.polyline){const pts=ent.polyline.positions?.getValue(Cesium.JulianDate.now());if(pts)pts.forEach(p=>{try{const c=Cesium.Cartographic.fromCartesian(p);if(c)collectCoord(Cesium.Math.toDegrees(c.latitude),Cesium.Math.toDegrees(c.longitude));}catch{}});}
+        }catch{}
+      }
+
+      if(ptCount===0){viewer.flyTo(ds,{duration:3});return;}
+      const cLat=sumLat/ptCount,cLng=sumLng/ptCount;
+      if(!isFinite(cLat)||!isFinite(cLng)){viewer.flyTo(ds,{duration:3});return;}
+      const spanLat=Math.max(maxLat-minLat,0.005),spanLng=Math.max(maxLng-minLng,0.005);
+      const spanDeg=Math.max(spanLat,spanLng);
+      const spanKm=(spanDeg*111.32).toFixed(1);
+      const rangeM=Math.min(Math.max(spanDeg*111320*1.6,400),5000000);
+      const centerCart=Cesium.Cartesian3.fromDegrees(cLng,cLat,0);
+      if(!centerCart||!isFinite(centerCart.x)){viewer.flyTo(ds,{duration:3});return;}
+      orbitRef.current={center:centerCart,range:rangeM,heading:0,pitch:-62,active:false};
+      setKmlStats({featureCount:entities.length,center:{lat:cLat,lng:cLng},spanKm,bbox:{minLat,maxLat,minLng,maxLng}});
+      setKmlFlyIn(true);
+
+      viewer.camera.flyTo({
+        destination:Cesium.Cartesian3.fromDegrees(cLng,cLat,rangeM*3.5),
+        orientation:{heading:Cesium.Math.toRadians(0),pitch:Cesium.Math.toRadians(-90),roll:0},
+        duration:2.2,
+        easingFunction:Cesium.EasingFunction.CUBIC_IN_OUT,
+        complete:()=>{
+          const orbitDown=(targetPitch,durationSec,onDone)=>{
+            const o=orbitRef.current;if(!o)return;
+            const startPitch=o.pitch,startHeading=o.heading,startTime=performance.now();
+            const tick=()=>{
+              if(!orbitRef.current){return;}
+              const t=Math.min((performance.now()-startTime)/(durationSec*1000),1);
+              const ease=t<0.5?4*t*t*t:(t-1)*(2*t-2)*(2*t-2)+1;
+              o.pitch=startPitch+(targetPitch-startPitch)*ease;
+              o.heading=startHeading+ease*8;
+              try{viewer.camera.lookAt(o.center,new Cesium.HeadingPitchRange(Cesium.Math.toRadians(o.heading),Cesium.Math.toRadians(o.pitch),o.range));}
+              catch{o.animFrame=null;if(onDone)onDone();return;}
+              if(t<1){o.animFrame=requestAnimationFrame(tick);}
+              else{o.animFrame=null;if(onDone)onDone();}
+            };
+            o.animFrame=requestAnimationFrame(tick);
+          };
+          orbitDown(-62,1.8,()=>{
+            setKmlFlyIn(false);
+            const o=orbitRef.current;if(!o)return;
+            o.active=true;let lastTime=performance.now();
+            const passiveOrbit=()=>{
+              if(!o.active||!orbitRef.current)return;
+              const now=performance.now(),dt=(now-lastTime)/1000;lastTime=now;
+              o.heading=(o.heading+3*dt)%360;
+              try{viewer.camera.lookAt(o.center,new Cesium.HeadingPitchRange(Cesium.Math.toRadians(o.heading),Cesium.Math.toRadians(o.pitch),o.range));}
+              catch{o.active=false;o.animFrame=null;try{viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);}catch{}return;}
+              o.animFrame=requestAnimationFrame(passiveOrbit);
+            };
+            o.animFrame=requestAnimationFrame(passiveOrbit);
+            const stopOrbit=()=>{
+              if(orbitRef.current){orbitRef.current.active=false;if(orbitRef.current.animFrame){cancelAnimationFrame(orbitRef.current.animFrame);orbitRef.current.animFrame=null;}try{viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);}catch{}}
+            };
+            const canvas=viewer.scene.canvas;
+            const once=()=>{stopOrbit();canvas.removeEventListener("mousedown",once);canvas.removeEventListener("touchstart",once);canvas.removeEventListener("wheel",once);};
+            canvas.addEventListener("mousedown",once,{once:true});
+            canvas.addEventListener("touchstart",once,{once:true,passive:true});
+            canvas.addEventListener("wheel",once,{once:true,passive:true});
+            setTimeout(()=>{if(orbitRef.current?.active)once();},12000);
+          });
+        }
+      });
+    }).catch(err=>{
+      console.error("KML/KMZ load error:",err);
+      URL.revokeObjectURL(url);
+      alert("Failed to load "+(isKmz?"KMZ":"KML")+": "+err.message);
+    });
+  };
+
+  // Read file — for KMZ use Cesium directly with blob URL
+  if(isKmz){
+    const url=URL.createObjectURL(file);
+    Cesium.KmlDataSource.load(url,{camera:viewer.scene.camera,canvas:viewer.scene.canvas,clampToGround:true})
+      .then(ds=>{
+        viewer.dataSources.add(ds);URL.revokeObjectURL(url);
+        viewer.flyTo(ds,{duration:2.5});
+        const entities=ds.entities.values;
+        setKmlStats({featureCount:entities.length,center:{lat:0,lng:0},spanKm:"?",bbox:{}});
+      })
+      .catch(err=>{URL.revokeObjectURL(url);alert("KMZ load failed: "+err.message);});
+  }else{
+    const reader=new FileReader();
+    reader.onload=evt=>loadKML(evt.target.result);
+    reader.onerror=()=>alert("Could not read KML file.");
+    reader.readAsText(file);
+  }
+  e.target.value="";
+}
+  
 
   function handleCSV(e){
     const file=e.target.files[0];if(!file||!ready)return;e.target.value="";
@@ -953,7 +1171,7 @@ export default function Globe3DView({savedDrawings=[],onClose}){
             <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:20}}>🌍</div>
           </div>
           <div style={{textAlign:"center"}}>
-            <div style={{color:"var(--text-primary)",fontSize:16,fontWeight:600,fontFamily:"var(--font-ui)",letterSpacing:".02em"}}>SurveyMap Pro</div>
+            <div style={{color:"var(--text-primary)",fontSize:16,fontWeight:600,fontFamily:"var(--font-ui)",letterSpacing:".02em"}}>Geoxis</div>
             <div style={{color:"var(--text-dim)",fontSize:12,fontFamily:"var(--font-ui)",marginTop:4}}>Initializing 3D engine…</div>
           </div>
         </div>
@@ -971,10 +1189,11 @@ export default function Globe3DView({savedDrawings=[],onClose}){
       <div className="g3-toolbar">
         <div className="g3-toolbar-inner">
           <div className="g3-logo">
-            <div style={{width:28,height:28,borderRadius:7,background:"linear-gradient(135deg,#1d4ed8,#0891b2)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,boxShadow:"0 0 12px rgba(59,130,246,0.4)",flexShrink:0}}>🌍</div>
+            <img src="/geoxis-logo.png.png" alt="Logo" 
+  style={{width:130,height:28,borderRadius:7,objectFit:"contain",flexShrink:0}}/>
             <div style={{flexShrink:0}}>
-              <div style={{color:"var(--text-primary)",fontWeight:700,fontSize:13,letterSpacing:".01em",lineHeight:1.1,whiteSpace:"nowrap"}}>SurveyMap</div>
-              <div style={{color:"rgba(96,165,250,0.9)",fontSize:9,fontWeight:700,letterSpacing:".12em",lineHeight:1}}>PRO</div>
+              <div style={{color:"var(--text-primary)",fontWeight:700,fontSize:13,letterSpacing:".01em",lineHeight:1.1,whiteSpace:"nowrap"}}></div>
+              <div style={{color:"rgba(96,165,250,0.9)",fontSize:9,fontWeight:700,letterSpacing:".12em",lineHeight:1}}></div>
             </div>
           </div>
 

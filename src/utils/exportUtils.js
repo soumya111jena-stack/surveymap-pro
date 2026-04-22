@@ -1,5 +1,5 @@
 /**
- * exportUtils.js — SurveyMap Pro v5.8 (FIXED)
+ * exportUtils.js — Geoxic (FIXED)
  * ─────────────────────────────────────────────────────────────────────────────
  * FIXES:
  *
@@ -162,9 +162,9 @@ export async function downloadFile(content, filename, mime) {
     try {
       const cs = await Share.canShare();
       if (cs?.value !== false) {
-        await Share.share({ title: filename, text: `SurveyMap Pro — ${filename}`, url: fileUri });
+        await Share.share({ title: filename, text: `Geoxis — ${filename}`, url: fileUri });
       } else {
-        alert(`File saved!\nFiles app → Documents → SurveyMapPro → ${filename}`);
+        alert(`File saved!\nFiles app → Documents → Geoxis  → ${filename}`);
       }
     } catch (shareErr) {
       const dismissed = ["Share canceled", "shareSheet: canceled"].some(m => shareErr?.message?.includes(m));
@@ -330,8 +330,8 @@ export function drawingsToKML(savedDrawings = [], route = [], measurePoints = []
 <kml xmlns="http://www.opengis.net/kml/2.2"
      xmlns:gx="http://www.google.com/kml/ext/2.2">
   <Document>
-    <name>SurveyMap Pro Export</name>
-    <description>Exported from SurveyMap Pro on ${new Date().toISOString()}</description>
+    <name>Geoxis Pro Map </name>
+    <description>Exported from Geoxison ${new Date().toISOString()}</description>
 ${placemarks.join("\n")}
   </Document>
 </kml>`;
@@ -437,7 +437,7 @@ export function exportKML(savedDrawings, route, measurePoints) {
   if (!kml) { alert("No data to export."); return; }
   return downloadFile(
     kml,
-    `surveymap-${stamp()}.kml`,
+    `Geoxis-${stamp()}.kml`,
     "application/vnd.google-earth.kml+xml"
   );
 }
@@ -448,7 +448,7 @@ export function exportCSV(savedDrawings, route, measurePoints) {
   if (lineCount === 0) { alert("No data to export."); return; }
   return downloadFile(
     csv,
-    `surveymap-${stamp()}.csv`,
+    `Geoxis-${stamp()}.csv`,
     "text/csv;charset=utf-8"
   );
 }
@@ -462,7 +462,7 @@ export async function exportKMZ(savedDrawings, route, measurePoints) {
   const bytes = await zip.generateAsync({ type: "uint8array", compression: "DEFLATE" });
   return downloadFile(
     bytes,
-    `surveymap-${stamp()}.kmz`,
+    `Geoxis-${stamp()}.kmz`,
     "application/vnd.google-earth.kmz"
   );
 }
@@ -472,7 +472,7 @@ export function exportGeoJSON(savedDrawings, route, measurePoints) {
   if (fc.features.length === 0) { alert("No data to export."); return; }
   return downloadFile(
     JSON.stringify(fc, null, 2),
-    `surveymap-${stamp()}.geojson`,
+    `Geoxis-${stamp()}.geojson`,
     "application/geo+json"
   );
 }

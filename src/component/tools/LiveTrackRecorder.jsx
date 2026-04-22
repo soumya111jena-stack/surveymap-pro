@@ -1,14 +1,15 @@
 /**
- * LiveTrackRecorder.jsx -- SurveyMap Pro v5.3.0
+ * LiveTrackRecorder.jsx -- SurveyMap Pro v5.4.0
  * ─────────────────────────────────────────────────────────────────────────────
- * CHANGES FROM v5.2.0:
+ * CHANGES FROM v5.3.1:
  *
- *  ✅ syncTrack prop — when recording stops, uploads track to backend with:
- *       - name, startedAt, endedAt, distanceMeters
- *       - first photo taken during tracking (if any) as multipart upload
- *  ✅ sessionClientId prop — links track to the active survey session
- *  ✅ All export formats unchanged (GPX, KML, KMZ, GeoJSON, CSV)
- *  ✅ All existing UI, GPS, waypoint, auto-pause logic unchanged
+ *  ✅ REMOVED: Auto-pause logic entirely (AUTO_PAUSE_SPEED, AUTO_PAUSE_SECS,
+ *     stillSinceRef, autoPaused state, autoPaused banner, autoPaused pill badge)
+ *
+ *  ✅ KEPT: Manual pause / resume only — status switches between
+ *     "recording" → "paused" → "recording" via Pause / Resume buttons.
+ *
+ *  All other features unchanged from v5.3.1.
  */
 
 import React, { useState, useRef, useEffect, useCallback } from "react";
@@ -16,8 +17,6 @@ import L from "leaflet";
 
 /* --- Constants ------------------------------------------------------------ */
 const MIN_DISTANCE_M   = 3;
-const AUTO_PAUSE_SPEED = 0.3;
-const AUTO_PAUSE_SECS  = 8;
 const DB_NAME          = "SurveyMapPro";
 const DB_VERSION       = 2;
 const STORE_TRACKS     = "tracks";
@@ -518,26 +517,31 @@ function MActions({ onConfirm, onCancel, confirmLabel="Save", confirmColor=T.blu
 export default function LiveTrackRecorder({
   map: mapProp, leafletMapRef,
   visible, onClose, onRecordingChange,
-  syncTrack,        // ← NEW: called on stopRecording to upload to backend
-  sessionClientId,  // ← NEW: active session link (informational, syncTrack handles it)
+  syncTrack,
+  sessionClientId,
 }) {
   const internalRef = useRef(null);
   useEffect(()=>{ internalRef.current = mapProp??null; },[mapProp]);
   const mapRef = leafletMapRef ?? internalRef;
   const getMap = () => mapRef.current;
 
+  // Stable ref always pointing to latest syncTrack prop
+  const syncTrackRef = useRef(syncTrack);
+  useEffect(() => {
+    syncTrackRef.current = syncTrack;
+  }, [syncTrack]);
+
   const [status,       setStatus]       = useState("idle");
   const [trackName,    setTrackName]    = useState("");
   const [trackColor,   setTrackColor]   = useState(TRACK_COLORS[0].hex);
   const [editingName,  setEditingName]  = useState(false);
   const [showColors,   setShowColors]   = useState(false);
-  const [autoPaused,   setAutoPaused]   = useState(false);
   const [minimised,    setMinimised]    = useState(false);
   const [confirmStop,  setConfirmStop]  = useState(false);
   const [tab,          setTab]          = useState("stats");
   const [showExport,   setShowExport]   = useState(false);
   const [exporting,    setExporting]    = useState(null);
-  const [uploading,    setUploading]    = useState(false); // ← NEW: upload indicator
+  const [uploading,    setUploading]    = useState(false);
 
   const [stats, setStats] = useState({
     distance:0, totalDuration:0, movingDuration:0, stoppedDuration:0,
@@ -569,7 +573,8 @@ export default function LiveTrackRecorder({
   const trackColorRef  = useRef(TRACK_COLORS[0].hex);
   const movingMsRef    = useRef(0);
   const lastMoveRef    = useRef(null);
-  const stillSinceRef  = useRef(null);
+
+  // NOTE: stillSinceRef removed — was only used for auto-pause
 
   const layerGroupRef = useRef(null);
   const polylineRef   = useRef(null);
@@ -605,6 +610,9 @@ export default function LiveTrackRecorder({
     } catch (e) { console.warn("persist:", e); }
   },[]);
 
+  // ── Timer: runs every second during recording only ───────────────────
+  // Manual pause stops the timer via the status check.
+  // No auto-pause logic here — purely tracks time and speed stats.
   useEffect(()=>{
     if (status==="recording") {
       timerRef.current = setInterval(async ()=>{
@@ -616,16 +624,15 @@ export default function LiveTrackRecorder({
           const dt = (new Date(pts.at(-1).time) - new Date(pts.at(-2).time)) / 1000;
           if (dt > 0) curSpeed = haversine(pts.at(-2), pts.at(-1)) / dt;
         }
-        if (curSpeed < AUTO_PAUSE_SPEED) {
-          if (!stillSinceRef.current) stillSinceRef.current = now;
-          if (now - stillSinceRef.current > AUTO_PAUSE_SECS*1000) {
-            setAutoPaused(true); lastMoveRef.current = null;
-          }
-        } else {
-          stillSinceRef.current = null; setAutoPaused(false);
+
+        // Track moving time: accumulate whenever we have actual speed
+        if (curSpeed >= 0.1) {
           if (lastMoveRef.current) movingMsRef.current += now - lastMoveRef.current;
           lastMoveRef.current = now;
+        } else {
+          lastMoveRef.current = null;
         }
+
         if (curSpeed > maxSpeedRef.current) maxSpeedRef.current = curSpeed;
         const movMs = movingMsRef.current;
         const dist  = pts.reduce((s,_,i,a)=>i===0?0:s+haversine(a[i-1],a[i]),0);
@@ -697,11 +704,9 @@ export default function LiveTrackRecorder({
     maxSpeedRef.current  = 0;
     movingMsRef.current  = 0;
     lastMoveRef.current  = null;
-    stillSinceRef.current= null;
     lastPtRef.current    = null;
     setTrackName(name);
     setWaypoints([]);
-    setAutoPaused(false);
     setConfirmStop(false);
     setShowExport(false);
     setUploading(false);
@@ -725,25 +730,30 @@ export default function LiveTrackRecorder({
     );
   },[handleGPSPoint]);
 
-  const pauseRecording  = useCallback(()=>{
+  // ── Manual Pause ─────────────────────────────────────────────────────
+  // User taps Pause button → status = "paused"
+  // Timer stops, GPS points are ignored (statusRef check in handleGPSPoint)
+  const pauseRecording = useCallback(()=>{
     pauseStartRef.current = Date.now();
     lastMoveRef.current   = null;
     setStatus("paused");
   },[]);
 
+  // ── Manual Resume ────────────────────────────────────────────────────
+  // User taps Resume button → status = "recording"
+  // Elapsed pause time added to pausedMsRef so total duration stays accurate
   const resumeRecording = useCallback(()=>{
-    if (pauseStartRef.current) pausedMsRef.current += Date.now()-pauseStartRef.current;
+    if (pauseStartRef.current) {
+      pausedMsRef.current += Date.now() - pauseStartRef.current;
+      pauseStartRef.current = null;
+    }
     setStatus("recording");
   },[]);
 
-  // ── stopRecording — NOW uploads to backend ──────────────────────────────
   const stopRecording = useCallback(async () => {
     navigator.geolocation.clearWatch(watchIdRef.current);
-
-    // Capture end time immediately
     const endedAt   = new Date().toISOString();
     const startedAt = new Date(startTimeRef.current).toISOString();
-
     if (lastPtRef.current) {
       const {lat,lng} = lastPtRef.current;
       L.marker([lat,lng],{ icon:flagIcon("#e63946","END"), zIndexOffset:900 })
@@ -752,49 +762,36 @@ export default function LiveTrackRecorder({
     }
     posMarkerRef.current?.remove();
     posMarkerRef.current = null;
-
-    // Save to IndexedDB first (local backup)
     await persist();
-
-    // ── Upload to backend if syncTrack provided ─────────────────────────
-    if (syncTrack && pointsRef.current.length >= 2) {
+    const syncFn = syncTrackRef.current;
+    if (syncFn && pointsRef.current.length >= 2) {
       setUploading(true);
       try {
-        // Calculate total distance
         const pts = pointsRef.current;
         let distanceMeters = 0;
         for (let i = 1; i < pts.length; i++) distanceMeters += haversine(pts[i-1], pts[i]);
         distanceMeters = Math.round(distanceMeters * 100) / 100;
-
-        // Get first photo taken during tracking (if any)
-        const photoWpt     = waypointsRef.current.find(w => w.photo && w.photoId);
-        const photoDataURL = photoWpt ? (photosRef.current[photoWpt.photoId] || null) : null;
-        const safeName     = (trackNameRef.current || "track").replace(/[^a-z0-9]/gi, "_");
+        const photoWpt      = waypointsRef.current.find(w => w.photo && w.photoId);
+        const photoDataURL  = photoWpt ? (photosRef.current[photoWpt.photoId] || null) : null;
+        const safeName      = (trackNameRef.current || "track").replace(/[^a-z0-9]/gi, "_");
         const photoFilename = photoWpt ? `${safeName}_photo.jpg` : null;
-
-        await syncTrack({
-          points:         pts,
-          name:           trackNameRef.current || "Field Track",
-          startedAt,
-          endedAt,
-          distanceMeters,
-          photoDataURL,
-          photoFilename,
+        console.log("[LiveTrackRecorder] calling syncTrack via ref, pts:", pts.length);
+        await syncFn({
+          points: pts, name: trackNameRef.current || "Field Track",
+          startedAt, endedAt, distanceMeters, photoDataURL, photoFilename,
         });
-
-        console.log("[LiveTrackRecorder] Track uploaded to backend ✓");
+        console.log("[LiveTrackRecorder] ✅ Track uploaded to backend");
       } catch (err) {
-        console.warn("[LiveTrackRecorder] Backend upload failed (saved locally):", err.message);
+        console.warn("[LiveTrackRecorder] ❌ Backend upload failed (saved locally):", err.message);
       } finally {
         setUploading(false);
       }
     }
-
     setStatus("stopped");
     setMinimised(false);
     setShowExport(true);
     onRecordingChange?.(false);
-  }, [persist, syncTrack]);
+  }, [persist]);
 
   const discardTrack = useCallback(()=>{
     navigator.geolocation.clearWatch(watchIdRef.current);
@@ -805,8 +802,7 @@ export default function LiveTrackRecorder({
     movingMsRef.current = 0;
     maxSpeedRef.current = 0;
     setStatus("idle"); setMinimised(false); setShowExport(false);
-    setConfirmStop(false); setWaypoints([]); setAutoPaused(false);
-    setUploading(false);
+    setConfirmStop(false); setWaypoints([]); setUploading(false);
     onRecordingChange?.(false);
     setStats({ distance:0,totalDuration:0,movingDuration:0,stoppedDuration:0,
                speed:0,maxSpeed:0,avgSpeed:0,ascent:0,descent:0,points:0,battery:null });
@@ -910,8 +906,8 @@ export default function LiveTrackRecorder({
   const isStopped   = status==="stopped";
   const isIdle      = status==="idle";
 
-  const accentColor = isRecording
-    ? (autoPaused ? T.amber : T.red)
+  // Accent color: red while recording, amber while manually paused, green when done
+  const accentColor = isRecording ? T.red
     : isPaused  ? T.amber
     : isStopped ? T.green
     : T.blue;
@@ -932,9 +928,9 @@ export default function LiveTrackRecorder({
           padding:"8px 14px 8px 12px",
           background:"rgba(6,10,22,0.96)",
           backdropFilter:"blur(24px)", WebkitBackdropFilter:"blur(24px)",
-          border:`1px solid ${isRecording&&!autoPaused?"rgba(230,57,70,0.4)":"rgba(255,255,255,0.09)"}`,
+          border:`1px solid ${isRecording?"rgba(230,57,70,0.4)":"rgba(255,255,255,0.09)"}`,
           borderRadius:100,
-          boxShadow:isRecording&&!autoPaused?"0 4px 24px rgba(230,57,70,0.25)":"0 4px 20px rgba(0,0,0,0.5)",
+          boxShadow:isRecording?"0 4px 24px rgba(230,57,70,0.25)":"0 4px 20px rgba(0,0,0,0.5)",
           cursor:"pointer", userSelect:"none",
           minWidth:240, justifyContent:"space-between",
           fontFamily:FONT_UI,
@@ -942,14 +938,15 @@ export default function LiveTrackRecorder({
           <div style={{ display:"flex",alignItems:"center",gap:7 }}>
             <div style={{
               width:7,height:7,borderRadius:"50%",background:accentColor,flexShrink:0,
-              animation:isRecording&&!autoPaused?"recpulse 1.2s infinite":"none",
+              animation:isRecording?"recpulse 1.2s infinite":"none",
               boxShadow:`0 0 6px ${accentColor}`,
             }}/>
             <span style={{ fontSize:11,fontWeight:600,color:T.text,
               maxWidth:100,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap" }}>
               {isRecording||isPaused ? trackName : "Track Recorder"}
             </span>
-            {autoPaused && (
+            {/* Manual pause badge shown in pill when paused */}
+            {isPaused && (
               <span style={{ fontSize:8,color:T.amber,fontWeight:700,
                 background:"rgba(244,162,97,0.12)",padding:"1px 5px",borderRadius:4,
                 border:"1px solid rgba(244,162,97,0.25)",letterSpacing:".06em" }}>PAUSED</span>
@@ -1064,16 +1061,16 @@ export default function LiveTrackRecorder({
           }}>
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
               stroke={accentColor} strokeWidth="2.5" strokeLinecap="round">
-              {isRecording&&!autoPaused
+              {isRecording
                 ? <rect x="4" y="4" width="16" height="16" rx="3" fill={T.red} stroke="none"/>
-                : isPaused||autoPaused
+                : isPaused
                   ? <><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></>
                   : isStopped
                     ? <polyline points="20 6 9 17 4 12" strokeWidth="2.5"/>
                     : <polygon points="5 3 19 12 5 21 5 3" fill={T.blue} stroke="none"/>
               }
             </svg>
-            {isRecording&&!autoPaused && (
+            {isRecording && (
               <div style={{ position:"absolute",top:3,right:3,width:4,height:4,
                 borderRadius:"50%",background:T.red,
                 animation:"recpulse 1.2s infinite",boxShadow:`0 0 4px ${T.red}` }}/>
@@ -1106,12 +1103,12 @@ export default function LiveTrackRecorder({
               {uploading
                 ? "⏳ Uploading to server…"
                 : isRecording
-                  ? autoPaused
-                    ? `⏸  Not moving · ${stats.points} pts`
-                    : `● REC · ${stats.points} pts · ±${Math.round(lastPtRef.current?.accuracy??0)}m`
-                  : isPaused  ? `⏸  Paused · ${stats.points} pts`
-                  : isStopped ? `✓  Saved · ${stats.points} pts`
-                  : "GPS track recorder · waypoints · export"}
+                  ? `● REC · ${stats.points} pts · ±${Math.round(lastPtRef.current?.accuracy??0)}m`
+                  : isPaused
+                    ? `⏸  Manually paused · ${stats.points} pts`
+                    : isStopped
+                      ? `✓  Saved · ${stats.points} pts`
+                      : "GPS track recorder · waypoints · export"}
             </div>
           </div>
 
@@ -1223,14 +1220,14 @@ export default function LiveTrackRecorder({
 
               {tab==="stats" && (
                 <div style={{ display:"flex",flexDirection:"column",gap:5 }}>
-                  {autoPaused && (
+                  {/* Manual pause info banner — only shown when user paused */}
+                  {isPaused && (
                     <div style={{ padding:"5px 10px",borderRadius:7,
                       background:"rgba(244,162,97,0.06)",border:"1px solid rgba(244,162,97,0.18)",
                       color:"#f4a261",fontSize:9,textAlign:"center",fontWeight:600,letterSpacing:".05em" }}>
-                      ⏸ AUTO-PAUSED — NOT MOVING
+                      ⏸ MANUALLY PAUSED — TAP RESUME TO CONTINUE
                     </div>
                   )}
-                  {/* Upload status indicator */}
                   {uploading && (
                     <div style={{ padding:"6px 10px",borderRadius:7,
                       background:"rgba(72,149,239,0.06)",border:"1px solid rgba(72,149,239,0.18)",
@@ -1382,16 +1379,17 @@ export default function LiveTrackRecorder({
                 <Divider/>
                 <div style={{ flexShrink:0,display:"flex",gap:5,padding:"7px 10px 10px" }}>
                   {[
-                    { label:"Waypoint",icon:"📍",color:T.blue,bg:"rgba(72,149,239,0.1)",border:"rgba(72,149,239,0.22)",onClick:addWaypoint,disabled:!isRecording&&!isPaused },
-                    { label:"Photo",icon:"📷",color:T.amber,bg:"rgba(244,162,97,0.1)",border:"rgba(244,162,97,0.22)",onClick:addPhoto,disabled:!isRecording&&!isPaused },
+                    { label:"Waypoint", icon:"📍", color:T.blue,  bg:"rgba(72,149,239,0.1)",  border:"rgba(72,149,239,0.22)",  onClick:addWaypoint,    disabled:!isRecording&&!isPaused },
+                    { label:"Photo",    icon:"📷", color:T.amber, bg:"rgba(244,162,97,0.1)",  border:"rgba(244,162,97,0.22)",  onClick:addPhoto,       disabled:!isRecording&&!isPaused },
                     isRecording ? {
-                      label:"Pause",icon:"⏸",color:T.amber,bg:"rgba(244,162,97,0.1)",border:"rgba(244,162,97,0.22)",onClick:pauseRecording,disabled:false,
+                      label:"Pause",  icon:"⏸", color:T.amber, bg:"rgba(244,162,97,0.1)",  border:"rgba(244,162,97,0.22)",  onClick:pauseRecording, disabled:false,
                     } : {
-                      label:"Resume",icon:"▶",color:T.green,bg:"rgba(45,198,83,0.1)",border:"rgba(45,198,83,0.22)",onClick:resumeRecording,disabled:false,
+                      label:"Resume", icon:"▶", color:T.green, bg:"rgba(45,198,83,0.1)",   border:"rgba(45,198,83,0.22)",   onClick:resumeRecording,disabled:false,
                     },
                     {
-                      label:confirmStop?"Confirm?":"Stop",icon:confirmStop?"!":"■",
-                      color:T.red,bg:confirmStop?"rgba(230,57,70,0.22)":"rgba(230,57,70,0.1)",border:"rgba(230,57,70,0.35)",
+                      label:confirmStop?"Confirm?":"Stop",
+                      icon:confirmStop?"!":"■",
+                      color:T.red, bg:confirmStop?"rgba(230,57,70,0.22)":"rgba(230,57,70,0.1)", border:"rgba(230,57,70,0.35)",
                       onClick:()=>{ if(!confirmStop){setConfirmStop(true);return;} setConfirmStop(false);stopRecording();setTab("stats"); },
                       disabled:false,
                     },

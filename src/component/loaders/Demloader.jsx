@@ -1,96 +1,107 @@
 /**
- * DEMLoader.jsx — QGIS-style 2D DEM overlay for SurveyMap Pro v5.9
+ * DEMLoader.jsx — QGIS/ArcGIS-quality 2D DEM overlay for SurveyMap Pro v6.1
  *
- * ✅ FIX 1 : DEM is clipped to KML polygon boundary (QGIS "clip raster by mask layer")
- * ✅ FIX 2 : UTM zone detection fixed — tries zones 44→45→43→46, validates result
- * ✅ FIX 3 : Canvas null-check in onRemove / _update (no crash on unmount)
- * ✅ FIX 4 : reRender guard — skips first mount when raster is null
- * ✅ FIX 5 : Component-unmount cleanup — removes layer from map
- * ✅ FIX 6 : nodata -32767 now treated as NaN (was -32768 only — caused white canvas)
- *            GeoTIFF files commonly use -32767 as the sentinel nodata value.
- * ✅ FIX 7 : AlpineQuest-style color ramp added — vivid hypsometric tinting with
- *            distinct blue → green → yellow → brown → white elevation bands.
- * ✅ FIX 8 : Percentile contrast stretch (2–98%) applied before rendering.
- *            Prevents outlier elevation values from washing out the color ramp.
- *            Matches QGIS "Cumulative count cut" / AlpineQuest default behaviour.
+ * FIXES IN v6.1 (on top of v6.0):
+ *   ✅ FIX 1 (CRITICAL): Cell-size normalization in slope calc.
+ *      dzdx/dzdy were divided only by 8, ignoring the real-world pixel
+ *      size in metres. On high-res DEMs this made slopes near-zero →
+ *      hillshade ≈ 0.5 everywhere → no visible shading at all.
+ *      Fix: divide by (8 × cellSize_m).
  *
- * Dependencies:  npm install geotiff proj4
+ *   ✅ FIX 2 (CRITICAL): CSS mix-blend-mode: multiply on the canvas.
+ *      Without a blend mode the DEM is just a semi-transparent rectangle
+ *      pasted on top of the satellite layer.  "multiply" makes shadows
+ *      darken the satellite image beneath — exactly what QGIS "Combined"
+ *      renderer does.  Changed image-rendering to "auto" (bilinear) at
+ *      the same time.
+ *
+ *   ✅ FIX 3: Bilinear upscaling (image-rendering: auto).
+ *      "pixelated" caused blocky aliased squares when the DEM had lower
+ *      resolution than the screen.
+ *
+ *   ✅ FIX 4: Wider percentile stretch (1–99 instead of 2–98).
+ *      On terrain with a narrow elevation range most pixels were mapped
+ *      to the same green band.  1–99 % gives a little more headroom.
+ *
+ *   All previous v6.0 fixes (multidirectional hillshade, QGIS ramps,
+ *   Soft Light blend, gamma, desaturation) are unchanged.
+ *
+ * Dependencies: npm install geotiff proj4
  */
 
 import { useEffect, useRef, useCallback } from "react";
 import { useMap } from "react-leaflet";
 import L from "leaflet";
 
-/* ─── Colour ramps (identical to QGIS built-ins + AlpineQuest) ────────── */
+/* ─── Colour ramps ─────────────────────────────────────────────────────── */
 export const COLOR_RAMPS = {
-  /**
-   * ✅ FIX 7: AlpineQuest hypsometric ramp.
-   *
-   * AlpineQuest renders elevation with vivid, high-contrast bands that make
-   * terrain immediately readable at a glance. The key differences from the
-   * default "Terrain" ramp:
-   *
-   *  - Deep blue-green at the very bottom (water / lowest ground)
-   *  - Bright, saturated greens for lowlands (not the muted green of "Terrain")
-   *  - A clear yellow band marking the mid-elevation transition
-   *  - Warm tan → orange-brown for highlands (absent from "Terrain")
-   *  - Reddish-brown for high ridges, mauve for bare rock
-   *  - White reserved only for the top few percent (actual snow / peaks)
-   *
-   * The ramp uses 10 stops (vs 6 for "Terrain") so transitions are smoother
-   * and each elevation zone has a distinctive hue, not just a lightness shift.
-   *
-   * Combined with the 2–98% percentile stretch (FIX 8 below) this produces
-   * the same punchy, fully-saturated look seen in AlpineQuest and QGIS when
-   * "Cumulative count cut" is enabled.
-   */
-  "AlpineQuest": [
-    [0.00, [ 32, 120, 180]], // deep blue      — water / absolute lowest
-    [0.05, [ 55, 165, 130]], // teal-green     — river valleys / coast
-    [0.15, [ 85, 195,  85]], // bright green   — lowland plains
-    [0.28, [165, 215,  75]], // yellow-green   — gentle hills
-    [0.42, [230, 210,  85]], // warm yellow    — uplands
-    [0.55, [215, 165,  65]], // tan / sand     — upper slopes
-    [0.68, [185, 108,  50]], // orange-brown   — highlands
-    [0.80, [152,  72,  42]], // reddish-brown  — high ridges
-    [0.90, [138,  88,  78]], // mauve / rock   — bare rock / scree
-    [1.00, [238, 238, 238]], // near-white     — snow / highest peaks
+  "QGIS Default": [
+    [0.00, [ 26, 102,  26]],
+    [0.14, [ 78, 148,  52]],
+    [0.28, [160, 195,  80]],
+    [0.43, [230, 230, 128]],
+    [0.57, [209, 187, 130]],
+    [0.71, [168, 128,  80]],
+    [0.85, [148, 120, 102]],
+    [1.00, [255, 255, 255]],
   ],
-
+  "ArcGIS Terrain": [
+    [0.00, [ 50, 135,  68]],
+    [0.12, [ 90, 165,  90]],
+    [0.25, [170, 200, 100]],
+    [0.38, [220, 215, 140]],
+    [0.50, [200, 185, 130]],
+    [0.62, [175, 145,  95]],
+    [0.75, [150, 110,  70]],
+    [0.87, [165, 140, 120]],
+    [1.00, [240, 240, 240]],
+  ],
+  "AlpineQuest": [
+    [0.00, [ 32, 120, 180]],
+    [0.05, [ 55, 165, 130]],
+    [0.15, [ 85, 195,  85]],
+    [0.28, [165, 215,  75]],
+    [0.42, [230, 210,  85]],
+    [0.55, [215, 165,  65]],
+    [0.68, [185, 108,  50]],
+    [0.80, [152,  72,  42]],
+    [0.90, [138,  88,  78]],
+    [1.00, [238, 238, 238]],
+  ],
   "Viridis": [
-    [0,   [68,  1,  84]],
-    [0.25,[59,  82, 139]],
-    [0.5, [33, 145, 140]],
-    [0.75,[94, 201,  97]],
-    [1,   [253,231,  37]],
+    [0,    [68,   1,  84]],
+    [0.25, [59,  82, 139]],
+    [0.5,  [33, 145, 140]],
+    [0.75, [94, 201,  97]],
+    [1,    [253, 231,  37]],
   ],
   "Magma": [
-    [0,   [0,   0,   3]],
-    [0.25,[80,  18,  66]],
-    [0.5, [182,  54,  59]],
-    [0.75,[251, 136,  97]],
-    [1,   [252, 253, 191]],
+    [0,    [  0,   0,   3]],
+    [0.25, [ 80,  18,  66]],
+    [0.5,  [182,  54,  59]],
+    [0.75, [251, 136,  97]],
+    [1,    [252, 253, 191]],
   ],
   "Plasma": [
-    [0,   [13,   8, 135]],
-    [0.25,[126,  3, 167]],
-    [0.5, [203,  70, 121]],
-    [0.75,[248, 149,  64]],
-    [1,   [240, 249,  33]],
+    [0,    [ 13,   8, 135]],
+    [0.25, [126,   3, 167]],
+    [0.5,  [203,  70, 121]],
+    [0.75, [248, 149,  64]],
+    [1,    [240, 249,  33]],
   ],
   "Inferno": [
-    [0,   [0,   0,   3]],
-    [0.25,[66,  10, 104]],
-    [0.5, [182,  54,  19]],
-    [0.75,[251, 161,  62]],
-    [1,   [252, 255, 164]],
+    [0,    [  0,   0,   3]],
+    [0.25, [ 66,  10, 104]],
+    [0.5,  [182,  54,  19]],
+    [0.75, [251, 161,  62]],
+    [1,    [252, 255, 164]],
   ],
   "RdYlGn": [
-    [0,   [215,  25,  28]],
-    [0.25,[253, 174,  97]],
-    [0.5, [255, 255, 191]],
-    [0.75,[145, 207, 104]],
-    [1,   [ 26, 150,  65]],
+    [0,    [215,  25,  28]],
+    [0.25, [253, 174,  97]],
+    [0.5,  [255, 255, 191]],
+    [0.75, [145, 207, 104]],
+    [1,    [ 26, 150,  65]],
   ],
   "Terrain": [
     [0,   [ 46, 154,  88]],
@@ -101,14 +112,14 @@ export const COLOR_RAMPS = {
     [1,   [255, 255, 255]],
   ],
   "Greys": [
-    [0,   [20,  20,  20]],
-    [1,   [255, 255, 255]],
+    [0, [20,  20,  20]],
+    [1, [255, 255, 255]],
   ],
   "Hot": [
-    [0,   [0,   0,   0]],
-    [0.33,[255,  0,   0]],
-    [0.66,[255, 255,  0]],
-    [1,   [255, 255, 255]],
+    [0,    [  0,   0,   0]],
+    [0.33, [255,   0,   0]],
+    [0.66, [255, 255,   0]],
+    [1,    [255, 255, 255]],
   ],
   "Cool-Warm": [
     [0,   [ 59,  76, 192]],
@@ -141,90 +152,176 @@ function geoBoundsToLeaflet(west, south, east, north) {
   return L.latLngBounds([south, west], [north, east]);
 }
 
-/**
- * ✅ FIX 8: Percentile contrast stretch (2–98%).
- *
- * The "washed out" appearance occurs because the colour ramp is stretched
- * from the absolute min to the absolute max of the dataset. A single noisy
- * outlier pixel at -500 m or +8800 m compresses everything else into a tiny
- * slice of the ramp, making the whole tile look like a single flat colour.
- *
- * AlpineQuest and QGIS ("Cumulative count cut", default 2–98%) both fix this
- * by ignoring the extreme tails of the elevation distribution.
- *
- * This function collects every valid (non-NaN) elevation value, sorts them,
- * and returns the values at the 2nd and 98th percentile positions.
- * renderToImageData then clamps its normalisation to [lo, hi] instead of
- * [minVal, maxVal], ensuring the full colour ramp is used across the range
- * that contains 96% of the data — exactly matching AlpineQuest's behaviour.
- *
- * @param {Float32Array} data   — elevation raster (NaN = nodata)
- * @param {number} loFrac       — lower percentile fraction (default 0.02)
- * @param {number} hiFrac       — upper percentile fraction (default 0.98)
- * @returns {{ lo: number, hi: number }}
- */
-function percentileStretch(data, loFrac = 0.02, hiFrac = 0.98) {
-  // Collect only valid (non-NaN) values into a plain array for sorting
+/* ─── Percentile contrast stretch ────────────────────────────────────── */
+// FIX 4: Widened to 1–99 % so narrow-range DEMs use the full colour ramp.
+function percentileStretch(data, loFrac = 0.01, hiFrac = 0.99) {
   const valid = [];
   for (let i = 0; i < data.length; i++) {
     if (!isNaN(data[i])) valid.push(data[i]);
   }
   if (valid.length === 0) return { lo: 0, hi: 1 };
-
   valid.sort((a, b) => a - b);
-
   const lo = valid[Math.floor(valid.length * loFrac)];
   const hi = valid[Math.floor(valid.length * hiFrac)];
-
-  // Guard: if lo === hi (flat raster), fall back to full range
   if (lo === hi) return { lo: valid[0], hi: valid[valid.length - 1] };
-
   return { lo, hi };
 }
 
-/* ─── Extract rings from any mask format ──────────────────────────────
- *  Accepts:
- *   • GeoJSON Polygon / MultiPolygon / Feature / FeatureCollection
- *   • Array of L.LatLng  (flat ring from Leaflet KML layer)
- *   • Array of Array of L.LatLng  (multi-ring)
- *
- *  Returns: Array of rings — each ring = Array of [lng, lat] pairs
- * ─────────────────────────────────────────────────────────────────── */
-export function extractRings(mask) {
-  if (!mask) return [];
+/* ─── Single-direction hillshade ────────────────────────────────────── */
+// FIX 1: Added cellSize_m parameter.  Dividing by (8 × cellSize_m) turns
+// the Sobel differences from raw elevation units into a proper slope
+// (rise/run) so hillshade values span 0→1 even on high-resolution DEMs.
+function hillshadeFromAzimuth(data, width, height, azimuth, altitude, cellSize_m = 30) {
+  const result  = new Float32Array(width * height);
+  const azRad   = ((360 - azimuth + 90) / 180) * Math.PI;
+  const altRad  = (altitude / 180) * Math.PI;
+  const zenRad  = Math.PI / 2 - altRad;
+  const scale   = 8 * Math.max(cellSize_m, 0.1); // ← FIX 1 key line
 
-  // ── Leaflet LatLng arrays ──
-  if (Array.isArray(mask)) {
-    if (mask.length === 0) return [];
-    const first = mask[0];
+  for (let row = 1; row < height - 1; row++) {
+    for (let col = 1; col < width - 1; col++) {
+      const idx = row * width + col;
+      if (isNaN(data[idx])) { result[idx] = NaN; continue; }
 
-    // flat array of {lat,lng}
-    if (first && first.lat !== undefined) {
-      return [mask.map(ll => [ll.lng, ll.lat])];
-    }
-    // array of arrays of {lat,lng}
-    if (Array.isArray(first) && first.length > 0 && first[0] && first[0].lat !== undefined) {
-      return mask.map(ring => ring.map(ll => [ll.lng, ll.lat]));
-    }
-    // already [lng,lat] numeric pairs
-    if (Array.isArray(first) && first.length === 2 && typeof first[0] === "number") {
-      return [mask];
+      const c    = data[idx];
+      const safe = v => (isNaN(v) ? c : v);
+
+      const nw = safe(data[(row-1)*width+(col-1)]);
+      const n  = safe(data[(row-1)*width+ col   ]);
+      const ne = safe(data[(row-1)*width+(col+1)]);
+      const w  = safe(data[ row   *width+(col-1)]);
+      const e  = safe(data[ row   *width+(col+1)]);
+      const sw = safe(data[(row+1)*width+(col-1)]);
+      const s  = safe(data[(row+1)*width+ col   ]);
+      const se = safe(data[(row+1)*width+(col+1)]);
+
+      // FIX 1: use `scale` instead of plain `8`
+      const dzdx   = ((ne + 2*e + se) - (nw + 2*w + sw)) / scale;
+      const dzdy   = ((sw + 2*s + se) - (nw + 2*n + ne)) / scale;
+      const slope  = Math.atan(Math.sqrt(dzdx*dzdx + dzdy*dzdy));
+      const aspect = Math.atan2(-dzdy, dzdx);
+
+      result[idx] = Math.max(0,
+        Math.cos(zenRad) * Math.cos(slope) +
+        Math.sin(zenRad) * Math.sin(slope) * Math.cos(azRad - aspect)
+      );
     }
   }
 
-  // ── GeoJSON Feature ──
-  if (mask.type === "Feature")            return extractRings(mask.geometry);
-  // ── GeoJSON FeatureCollection ──
-  if (mask.type === "FeatureCollection")  return mask.features.flatMap(f => extractRings(f));
-  // ── GeoJSON Polygon ──
-  if (mask.type === "Polygon")            return mask.coordinates;
-  // ── GeoJSON MultiPolygon ──
-  if (mask.type === "MultiPolygon")       return mask.coordinates.flatMap(poly => poly);
+  // Fill 1-pixel border
+  for (let c = 0; c < width; c++) {
+    result[c]                    = result[width + c];
+    result[(height-1)*width + c] = result[(height-2)*width + c];
+  }
+  for (let r = 0; r < height; r++) {
+    result[r*width]              = result[r*width + 1];
+    result[r*width + width - 1]  = result[r*width + width - 2];
+  }
+  return result;
+}
 
+/**
+ * MULTIDIRECTIONAL hillshade — matches ArcGIS Pro "Multidirectional" and
+ * QGIS "Multi-directional" hillshade.
+ * FIX 1: cellSize_m is now forwarded to hillshadeFromAzimuth.
+ */
+function computeMultidirectionalHillshade(
+  data, width, height, altitude = 45,
+  west = 0, east = 1               // ← FIX 1: added geographic extent
+) {
+  // Approximate cell size in metres (longitude degrees → metres at mid-lat).
+  // We don't have the actual lat here, so we use a conservative 111,320 m/°.
+  const cellSize_m = ((east - west) / Math.max(width, 1)) * 111320;
+
+  const directions = [
+    { az: 315, weight: 0.5  },
+    { az:  45, weight: 0.25 },
+    { az: 225, weight: 0.15 },
+    { az: 135, weight: 0.10 },
+  ];
+
+  const combined = new Float32Array(width * height);
+  combined.fill(0);
+
+  const isNodataPixel = new Uint8Array(width * height);
+  for (let i = 0; i < data.length; i++) {
+    if (isNaN(data[i])) isNodataPixel[i] = 1;
+  }
+
+  for (const { az, weight } of directions) {
+    // FIX 1: pass cellSize_m
+    const hs = hillshadeFromAzimuth(data, width, height, az, altitude, cellSize_m);
+    for (let i = 0; i < combined.length; i++) {
+      if (!isNodataPixel[i] && !isNaN(hs[i])) {
+        combined[i] += hs[i] * weight;
+      }
+    }
+  }
+
+  for (let i = 0; i < data.length; i++) {
+    if (isNodataPixel[i]) combined[i] = NaN;
+  }
+
+  return combined;
+}
+
+/* ─── RGB ↔ HSL helpers ────────────────────────────────────────────── */
+function rgbToHsl(r, g, b) {
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  let h = 0, s = 0;
+  const l = (max + min) / 2;
+  if (max !== min) {
+    const d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    switch (max) {
+      case r: h = ((g - b) / d + (g < b ? 6 : 0)) / 6; break;
+      case g: h = ((b - r) / d + 2) / 6;               break;
+      case b: h = ((r - g) / d + 4) / 6;               break;
+    }
+  }
+  return [h, s, l];
+}
+
+function hslToRgb(h, s, l) {
+  if (s === 0) { const v = Math.round(l * 255); return [v, v, v]; }
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  const hue2rgb = t => {
+    if (t < 0) t += 1; if (t > 1) t -= 1;
+    if (t < 1/6) return p + (q - p) * 6 * t;
+    if (t < 1/2) return q;
+    if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+    return p;
+  };
+  return [
+    Math.round(hue2rgb(h + 1/3) * 255),
+    Math.round(hue2rgb(h)       * 255),
+    Math.round(hue2rgb(h - 1/3) * 255),
+  ];
+}
+
+/* ─── Extract rings from any mask format ──────────────────────────── */
+export function extractRings(mask) {
+  if (!mask) return [];
+  if (Array.isArray(mask)) {
+    if (mask.length === 0) return [];
+    const first = mask[0];
+    if (first && first.lat !== undefined)
+      return [mask.map(ll => [ll.lng, ll.lat])];
+    if (Array.isArray(first) && first.length > 0 && first[0] && first[0].lat !== undefined)
+      return mask.map(ring => ring.map(ll => [ll.lng, ll.lat]));
+    if (Array.isArray(first) && first.length === 2 && typeof first[0] === "number")
+      return [mask];
+  }
+  if (mask.type === "Feature")           return extractRings(mask.geometry);
+  if (mask.type === "FeatureCollection") return mask.features.flatMap(f => extractRings(f));
+  if (mask.type === "Polygon")           return mask.coordinates;
+  if (mask.type === "MultiPolygon")      return mask.coordinates.flatMap(poly => poly);
   return [];
 }
 
-/* ─── Apply canvas clip path from rings ──────────────────────────────── */
+/* ─── Apply canvas clip path from rings ──────────────────────────── */
 function applyClipPath(ctx, rings, map, topLeft) {
   if (!rings || rings.length === 0) return false;
   ctx.beginPath();
@@ -238,11 +335,11 @@ function applyClipPath(ctx, rings, map, topLeft) {
     });
     ctx.closePath();
   }
-  ctx.clip("evenodd"); // respects holes — matches QGIS behaviour
+  ctx.clip("evenodd");
   return true;
 }
 
-/* ─── ASC / .dem parser ───────────────────────────────────────────────── */
+/* ─── ASC / .dem parser ───────────────────────────────────────────── */
 async function parseASC(buffer) {
   const text  = new TextDecoder().decode(buffer);
   const lines = text.trim().split(/\r?\n/);
@@ -261,7 +358,7 @@ async function parseASC(buffer) {
   const yllcorner = header.yllcorner ?? header.yllcenter ?? 0;
   const cellsize  = header.cellsize  ?? 1;
   const nodata    = header.nodata_value ?? -9999;
-  const data = new Float32Array(ncols * nrows);
+  const data      = new Float32Array(ncols * nrows);
   let row = 0;
   for (let i = dataStart; i < lines.length && row < nrows; i++) {
     const vals = lines[i].trim().split(/\s+/);
@@ -279,7 +376,7 @@ async function parseASC(buffer) {
   };
 }
 
-/* ─── GeoTIFF parser ─────────────────────────────────────────────────── */
+/* ─── GeoTIFF parser ─────────────────────────────────────────────── */
 async function parseGeoTIFF(buffer) {
   const GeoTIFF = await import("geotiff").catch(() => null);
   if (!GeoTIFF) throw new Error("geotiff not installed. Run: npm install geotiff");
@@ -292,21 +389,15 @@ async function parseGeoTIFF(buffer) {
   const rasters = await image.readRasters({ interleave: true });
   const data    = new Float32Array(width * height);
 
-  // Read the actual GDAL_NODATA tag from the file
   const gdalNodata = image.fileDirectory.GDAL_NODATA
     ? Number(image.fileDirectory.GDAL_NODATA)
     : null;
 
-  // Treat all common nodata sentinels as NaN
-  // -32767 = standard SRTM / Copernicus "void" value (INT16 min + 1)
-  // -32768 = INT16 absolute minimum (also used by some providers)
-  // -9999  = classic GIS nodata
-  const isNodata = (v) => {
-    if (isNaN(v)) return true;
+  const isNodata = v => {
+    if (isNaN(v))                                return true;
     if (gdalNodata !== null && v === gdalNodata) return true;
-    if (v === -32767) return true;
-    if (v === -32768) return true;
-    if (v === -9999)  return true;
+    if (v === -32767 || v === -32768)            return true;
+    if (v === -9999)                             return true;
     return false;
   };
 
@@ -337,7 +428,7 @@ async function parseGeoTIFF(buffer) {
           }
         } catch (_) { /* try next zone */ }
       }
-      if (!reprojected) console.warn("DEMLoader: Could not reproject GeoTIFF. Map may be misaligned.");
+      if (!reprojected) console.warn("DEMLoader: Could not reproject GeoTIFF.");
     } else {
       console.warn("DEMLoader: proj4 not installed. Run: npm install proj4.");
     }
@@ -346,34 +437,72 @@ async function parseGeoTIFF(buffer) {
   return { data, width, height, west, south, east, north };
 }
 
-/* ─── Render raster → ImageData ──────────────────────────────────────── */
-/**
- * ✅ FIX 8 (continued): renderToImageData now accepts stretchLo / stretchHi
- * instead of minVal / maxVal.  The caller passes the 2–98 percentile bounds
- * so the colour ramp is mapped to the meaningful elevation range, not the
- * full range including outliers.  Values outside [stretchLo, stretchHi] are
- * clamped to the ramp ends (t=0 or t=1) — they get a colour, just the same
- * extreme colour as the nearest in-range value.
- */
-function renderToImageData(data, width, height, ramp, stretchLo, stretchHi, opacity) {
+/* ─── MAIN RENDERER ──────────────────────────────────────────────────
+ * Pipeline (mirrors QGIS "Combined" renderer):
+ *   1. Sample colour ramp at percentile-stretched elevation → base colour
+ *   2. Slight desaturation → prevents oversaturation after blending
+ *   3. Gamma-correct hillshade → softer shadows
+ *   4. Soft Light blend (W3C) → natural lit/shadow effect
+ *   5. Mix blended vs original at hillshadeBlend strength
+ * ─────────────────────────────────────────────────────────────────── */
+function renderToImageData(
+  data, width, height, ramp,
+  stretchLo, stretchHi, opacity,
+  hillshade      = null,
+  hillshadeBlend = 0.75,
+  hillshadeGamma = 1.2,
+  desaturate     = 0.15,
+) {
   const range  = stretchHi - stretchLo || 1;
   const pixels = new Uint8ClampedArray(width * height * 4);
+
   for (let i = 0; i < width * height; i++) {
     const v = data[i];
     if (isNaN(v)) { pixels[i * 4 + 3] = 0; continue; }
-    // t is clamped to [0,1] inside sampleRamp — values outside the stretch
-    // range map to the ramp endpoints instead of being clipped to transparent.
+
     const t   = (v - stretchLo) / range;
-    const col = sampleRamp(ramp, t);
-    pixels[i * 4]     = col[0];
-    pixels[i * 4 + 1] = col[1];
-    pixels[i * 4 + 2] = col[2];
+    let [r, g, b] = sampleRamp(ramp, t);
+
+    if (desaturate > 0) {
+      const [h, s, l] = rgbToHsl(r, g, b);
+      [r, g, b] = hslToRgb(h, s * (1 - desaturate), l);
+    }
+
+    if (hillshade !== null && !isNaN(hillshade[i])) {
+      const hsGamma = Math.pow(hillshade[i], 1 / hillshadeGamma);
+
+      const softLight = (chan, hs) => {
+        const c = chan / 255;
+        let result;
+        if (hs <= 0.5) {
+          result = c - (1 - 2 * hs) * c * (1 - c);
+        } else {
+          const D = c <= 0.25
+            ? ((16 * c - 12) * c + 4) * c
+            : Math.sqrt(c);
+          result = c + (2 * hs - 1) * (D - c);
+        }
+        return Math.min(255, Math.max(0, Math.round(result * 255)));
+      };
+
+      const blendR = softLight(r, hsGamma);
+      const blendG = softLight(g, hsGamma);
+      const blendB = softLight(b, hsGamma);
+
+      r = Math.round(r * (1 - hillshadeBlend) + blendR * hillshadeBlend);
+      g = Math.round(g * (1 - hillshadeBlend) + blendG * hillshadeBlend);
+      b = Math.round(b * (1 - hillshadeBlend) + blendB * hillshadeBlend);
+    }
+
+    pixels[i * 4]     = r;
+    pixels[i * 4 + 1] = g;
+    pixels[i * 4 + 2] = b;
     pixels[i * 4 + 3] = Math.round(opacity * 255);
   }
   return new ImageData(pixels, width, height);
 }
 
-/* ─── Custom Leaflet Canvas Layer ────────────────────────────────────── */
+/* ─── Custom Leaflet Canvas Layer ─────────────────────────────────── */
 const DEMCanvasLayer = L.Layer.extend({
   initialize(imageData, bounds, options) {
     this._imageData = imageData;
@@ -384,8 +513,13 @@ const DEMCanvasLayer = L.Layer.extend({
   onAdd(map) {
     this._map    = map;
     this._canvas = document.createElement("canvas");
+    // FIX 2: mix-blend-mode multiply → DEM shadows composite against
+    // the satellite tile layer below instead of sitting on top opaquely.
+    // FIX 3: image-rendering auto → bilinear upscaling (no blocky pixels).
     this._canvas.style.cssText =
-      "position:absolute;pointer-events:none;image-rendering:pixelated;";
+      "position:absolute;pointer-events:none;" +
+      "image-rendering:auto;" +
+      "mix-blend-mode:multiply;";
     map.getPanes().overlayPane.appendChild(this._canvas);
     map.on("moveend zoomend viewreset", this._update, this);
     this._ctx = this._canvas.getContext("2d");
@@ -432,7 +566,6 @@ const DEMCanvasLayer = L.Layer.extend({
 
     const ctx   = this._ctx;
     const rings = this.options.clipRings;
-
     ctx.clearRect(0, 0, w, h);
 
     if (rings && rings.length > 0) {
@@ -446,14 +579,18 @@ const DEMCanvasLayer = L.Layer.extend({
   },
 });
 
-/* ═══════════════════════════════════════════════════════════════════════
+/* ═══════════════════════════════════════════════════════════════════
    MAIN COMPONENT
-═══════════════════════════════════════════════════════════════════════ */
+═══════════════════════════════════════════════════════════════════ */
 export default function DEMLoader({
   file,
-  opacity   = 0.75,
-  colorRamp = "AlpineQuest",   // ✅ FIX 7: AlpineQuest is now the default ramp
-  kmlMask   = null,
+  opacity            = 0.75,
+  colorRamp          = "QGIS Default",
+  kmlMask            = null,
+  hillshadeBlend     = 0.75,
+  sunAltitude        = 45,
+  hillshadeGamma     = 1.2,
+  desaturate         = 0.15,
   onDone,
   onError,
   onStats,
@@ -462,29 +599,51 @@ export default function DEMLoader({
   const layerRef  = useRef(null);
   const rasterRef = useRef(null);
 
-  /* ── Re-render when opacity / colorRamp changes ── */
+  /* ── Re-render when visual props change ── */
   const reRender = useCallback(() => {
     const r = rasterRef.current;
     if (!r || !layerRef.current) return;
-    const { data, width, height, stretchLo, stretchHi } = r;
-    const ramp = COLOR_RAMPS[colorRamp] || COLOR_RAMPS["AlpineQuest"];
-    // ✅ FIX 8: use pre-computed percentile bounds, not raw min/max
-    const img  = renderToImageData(data, width, height, ramp, stretchLo, stretchHi, opacity);
+    const { data, width, height, stretchLo, stretchHi, hillshade } = r;
+    const ramp = COLOR_RAMPS[colorRamp] || COLOR_RAMPS["QGIS Default"];
+    const img  = renderToImageData(
+      data, width, height, ramp,
+      stretchLo, stretchHi, opacity,
+      hillshade, hillshadeBlend, hillshadeGamma, desaturate,
+    );
     layerRef.current.updateImageData(img);
-  }, [opacity, colorRamp]);
+  }, [opacity, colorRamp, hillshadeBlend, hillshadeGamma, desaturate]);
 
   useEffect(() => {
     if (rasterRef.current) reRender();
   }, [reRender]);
 
-  /* ── Reactively update clip mask when kmlMask prop changes ── */
+  /* ── Re-compute hillshade when sun altitude changes ── */
+  useEffect(() => {
+    const r = rasterRef.current;
+    if (!r || !layerRef.current) return;
+    // FIX 1: pass west/east so cell size is known
+    const hillshade = computeMultidirectionalHillshade(
+      r.data, r.width, r.height, sunAltitude, r.west, r.east
+    );
+    rasterRef.current = { ...r, hillshade };
+    const ramp = COLOR_RAMPS[colorRamp] || COLOR_RAMPS["QGIS Default"];
+    const img  = renderToImageData(
+      r.data, r.width, r.height, ramp,
+      r.stretchLo, r.stretchHi, opacity,
+      hillshade, hillshadeBlend, hillshadeGamma, desaturate,
+    );
+    layerRef.current.updateImageData(img);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sunAltitude]);
+
+  /* ── Reactively update clip mask ── */
   useEffect(() => {
     if (!layerRef.current) return;
     const rings = extractRings(kmlMask);
     layerRef.current.setClipMask(rings);
   }, [kmlMask]);
 
-  /* ── Remove layer on component unmount ── */
+  /* ── Remove layer on unmount ── */
   useEffect(() => {
     return () => {
       if (layerRef.current) {
@@ -516,7 +675,6 @@ export default function DEMLoader({
 
         const { data, width, height, west, south, east, north } = parsed;
 
-        // ✅ Compute true stats only over valid (non-NaN) pixels
         let minVal = Infinity, maxVal = -Infinity, sum = 0, count = 0;
         for (let i = 0; i < data.length; i++) {
           if (!isNaN(data[i])) {
@@ -527,33 +685,31 @@ export default function DEMLoader({
         }
         const meanVal = count ? sum / count : 0;
 
-        // ✅ FIX 8: Compute 2–98 percentile bounds for contrast stretch.
-        //
-        // Using the absolute min/max causes the ramp to be mapped across the
-        // entire distribution including extreme outliers, which pushes all the
-        // "normal" terrain into a narrow band of nearly-identical colours.
-        //
-        // percentileStretch() sorts valid pixels and picks the 2nd percentile
-        // as stretchLo and the 98th percentile as stretchHi.  renderToImageData
-        // normalises elevation to [0,1] using these tighter bounds, so 96% of
-        // pixels use the full ramp and only the extreme tails are clamped to
-        // the ramp endpoints.  This is the same algorithm AlpineQuest and QGIS
-        // "Cumulative count cut" use to produce vivid, high-contrast DEM tiles.
-        const { lo: stretchLo, hi: stretchHi } = percentileStretch(data);
+        // FIX 4: 1–99 % stretch
+        const { lo: stretchLo, hi: stretchHi } = percentileStretch(data, 0.01, 0.99);
+
+        // FIX 1: pass west/east for correct cell-size computation
+        const hillshade = computeMultidirectionalHillshade(
+          data, width, height, sunAltitude, west, east
+        );
 
         rasterRef.current = {
           data, width, height,
-          minVal, maxVal,       // true data range (for onStats / elevation probe)
-          stretchLo, stretchHi, // percentile-clipped range (for rendering)
+          minVal, maxVal,
+          stretchLo, stretchHi,
+          hillshade,
           west, south, east, north,
         };
 
         const rasterPayload = { data, width, height, west, south, east, north, minVal, maxVal };
         onStats?.({ min: minVal, max: maxVal, mean: meanVal, width, height }, rasterPayload);
 
-        const ramp   = COLOR_RAMPS[colorRamp] || COLOR_RAMPS["AlpineQuest"];
-        // ✅ FIX 8: pass percentile bounds to renderer
-        const img    = renderToImageData(data, width, height, ramp, stretchLo, stretchHi, opacity);
+        const ramp   = COLOR_RAMPS[colorRamp] || COLOR_RAMPS["QGIS Default"];
+        const img    = renderToImageData(
+          data, width, height, ramp,
+          stretchLo, stretchHi, opacity,
+          hillshade, hillshadeBlend, hillshadeGamma, desaturate,
+        );
         const bounds = geoBoundsToLeaflet(west, south, east, north);
 
         if (layerRef.current) { map.removeLayer(layerRef.current); layerRef.current = null; }
@@ -577,7 +733,7 @@ export default function DEMLoader({
   return null;
 }
 
-/* ─── Utility: sample elevation at lat/lng from raster ───────────────── */
+/* ─── Utility: sample elevation at lat/lng from raster ──────────── */
 export function sampleElevationAt(rasterState, lat, lng) {
   if (!rasterState) return null;
   const { data, width, height, west, south, east, north } = rasterState;

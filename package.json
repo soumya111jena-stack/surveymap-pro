@@ -18,6 +18,7 @@
     "@capacitor/share": "^8.0.1",
     "@mapbox/leaflet-omnivore": "^0.3.4",
     "@nasaworldwind/worldwind": "^0.11.1",
+    "@turf/turf": "^7.3.4",
     "axios": "^1.13.5",
     "cesium": "^1.138.0",
     "geotiff": "^3.0.5",
@@ -37,6 +38,7 @@
     "recharts": "^3.8.0",
     "resium": "^1.19.4",
     "shapefile": "^0.6.6",
+    "shp-write": "^0.3.2",
     "three": "^0.183.1",
     "vite-plugin-cesium": "^1.2.23"
   },

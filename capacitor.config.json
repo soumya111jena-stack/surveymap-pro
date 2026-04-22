@@ -4,10 +4,17 @@
   "webDir": "dist",
   "bundledWebRuntime": false,
 
+  "server": {
+    "androidScheme": "https",
+    "cleartext": false,
+    "hostname": "surveymap.pro"
+  },
+
   "android": {
     "allowMixedContent": true,
     "captureInput": true,
-    "webContentsDebuggingEnabled": true
+    "webContentsDebuggingEnabled": true,
+    "minWebViewVersion": 60
   },
 
   "plugins": {

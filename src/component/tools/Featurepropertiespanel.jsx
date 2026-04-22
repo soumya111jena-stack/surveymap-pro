@@ -1,392 +1,395 @@
 /**
- * FeaturePropertiesPanel.jsx — SurveyMap Pro v5.9.8
- *
- * Exact Google Earth Pro "Edit Path / Edit Polygon / Edit Placemark" dialog.
- * Branding: "SurveyMap Pro" — no "Google Earth" name anywhere.
- *
- * TABS: Description | Style, Color | View | Altitude | Measurements
- *
- * FIXES vs original:
- *   1. ringPerim() — no longer double-adds the closing leg when the GeoJSON
- *      ring already repeats coords[0] at the end.
- *   2. Measurements tab — all units shown simultaneously; active unit
- *      highlighted in amber; every row has its own copy button.
- *   3. dp (decimal places) carried through every unit consistently.
- *   4. LineString closed-loop detection — if first & last point are the same
- *      (or within ~1 m), area is computed exactly like Google Earth Pro does
- *      for paths that form a closed shape (hectares, m², km², ac, ft², mi²).
- *   5. "Close path" checkbox — on the Style, Color tab AND the Measurements tab.
- *      Toggling it virtually closes an open LineString (adds the closing leg to
- *      total length and computes enclosed area in all 6 area units), matching
- *      Google Earth Pro's "Close path" checkbox on the Edit Path dialog.
- *      The checkbox state is persisted via onSave({ ..., closePath: true }).
- *
- * Opens via:
- *   1. Double-click on any KML / KMZ / SHP / GeoJSON feature on the map
- *   2. Right-click → "Properties" from FeatureContextMenu
- *   3. Clicking a saved drawing in My Places sidebar
+ * FeaturePropertiesPanel.jsx — SurveyMap Pro v6.5.0
+ * 
+ * FIX v6.5.0:
+ *  - Coordinate display now respects the coordSystem prop:
+ *      "decimalDegrees"  → Latitude / Longitude (decimal)
+ *      "dms"             → Latitude / Longitude (DMS display, decimal input)
+ *      "decimalMinutes"  → Latitude / Longitude (DDM display, decimal input)
+ *      "utm"             → Zone / Easting / Northing  (matches GEP Image 2)
+ *      "mgrs"            → MGRS string (read-only)
+ *  - UTM fields show Zone (e.g. "45 Q"), Easting (m E), Northing (m N)
+ *  - Two-way editing: changing UTM fields updates lat/lng state internally
+ *  - All other tabs (Style, View, Altitude, Measurements, Description) unchanged
  */
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 
-/* ─── Geodesy ──────────────────────────────────────────────────────────────── */
-function haversine(a, b) {
-  const R = 6371000;
-  const dLat = (b[1] - a[1]) * Math.PI / 180;
-  const dLon = (b[0] - a[0]) * Math.PI / 180;
-  const s =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(a[1] * Math.PI / 180) * Math.cos(b[1] * Math.PI / 180) *
-    Math.sin(dLon / 2) ** 2;
-  return 2 * R * Math.asin(Math.sqrt(Math.max(0, s)));
+/* ─── Style override store ────────────────────────────────────────────────── */
+const STYLE_OVERRIDES = new Map();
+export function getFeatureStyle(featureId) {
+  return featureId != null ? (STYLE_OVERRIDES.get(String(featureId)) ?? null) : null;
 }
 
-function ringArea(coords) {
-  if (!coords || coords.length < 3) return 0;
-  const R = 6371000, n = coords.length;
-  let area = 0;
-  for (let i = 0; i < n; i++) {
-    const j = (i + 1) % n;
-    const lat1 = coords[i][1] * Math.PI / 180;
-    const lat2 = coords[j][1] * Math.PI / 180;
-    const dLon = (coords[j][0] - coords[i][0]) * Math.PI / 180;
-    area += dLon * (2 + Math.sin(lat1) + Math.sin(lat2));
-  }
-  return Math.abs(area * R * R / 2);
-}
-
-function polygonAreaM2(rings) {
-  if (!rings || rings.length === 0) return 0;
-  let a = ringArea(rings[0]);
-  for (let i = 1; i < rings.length; i++) a -= ringArea(rings[i]);
-  return Math.max(0, a);
-}
-
+/* ─── UTM conversion utilities ───────────────────────────────────────────── */
 /**
- * FIX: GeoJSON polygon rings already repeat coords[0] at the end.
- * We check before adding the closing leg to avoid double-counting.
+ * Convert WGS-84 lat/lng (decimal degrees) → UTM
+ * Returns { zone, band, easting, northing, zoneStr }
  */
-function ringPerim(coords) {
-  if (!coords || coords.length < 2) return 0;
-  let d = 0;
-  for (let i = 1; i < coords.length; i++) d += haversine(coords[i - 1], coords[i]);
-  const last  = coords[coords.length - 1];
-  const first = coords[0];
-  // Only add closing leg if the ring is not already closed
-  if (last[0] !== first[0] || last[1] !== first[1]) {
-    d += haversine(last, first);
-  }
-  return d;
-}
+function latLngToUTM(lat, lng) {
+  const a = 6378137.0;
+  const f = 1 / 298.257223563;
+  const b = a * (1 - f);
+  const e2 = 1 - (b * b) / (a * a);
+  const e = Math.sqrt(e2);
+  const n = (a - b) / (a + b);
 
-function lineLength(coords) {
-  if (!coords || coords.length < 2) return 0;
-  let d = 0;
-  for (let i = 1; i < coords.length; i++) d += haversine(coords[i - 1], coords[i]);
-  return d;
-}
+  const latRad = (lat * Math.PI) / 180;
+  const lngRad = (lng * Math.PI) / 180;
 
-/**
- * Google Earth Pro behaviour: a Path whose first and last vertices are
- * the same point (or within CLOSE_THRESHOLD metres) is treated as a
- * closed shape and its enclosed area is reported alongside the length.
- */
-const CLOSE_THRESHOLD_M = 1.0; // metres — same tolerance GEP uses
-
-function isClosedLine(coords) {
-  if (!coords || coords.length < 3) return false;
-  const dist = haversine(coords[0], coords[coords.length - 1]);
-  return dist <= CLOSE_THRESHOLD_M;
-}
-
-/* ─── Unit tables ─────────────────────────────────────────────────────────── */
-const DIST_UNITS = [
-  { key: "m",   label: "Meters",         factor: 1,            dp: 3 },
-  { key: "km",  label: "Kilometers",     factor: 1e-3,         dp: 6 },
-  { key: "mi",  label: "Miles",          factor: 1 / 1609.344, dp: 6 },
-  { key: "ft",  label: "Feet",           factor: 3.28084,      dp: 2 },
-  { key: "yd",  label: "Yards",          factor: 1.09361,      dp: 2 },
-  { key: "nmi", label: "Nautical Miles", factor: 1 / 1852,     dp: 6 },
-];
-
-const AREA_UNITS = [
-  { key: "m2",  label: "Square Meters",     symbol: "m²",  factor: 1,             dp: 2 },
-  { key: "km2", label: "Square Kilometers", symbol: "km²", factor: 1e-6,          dp: 6 },
-  { key: "ha",  label: "Hectares",          symbol: "ha",  factor: 1e-4,          dp: 4 },
-  { key: "ac",  label: "Acres",             symbol: "ac",  factor: 1 / 4046.856,  dp: 4 },
-  { key: "ft2", label: "Square Feet",       symbol: "ft²", factor: 10.7639,       dp: 1 },
-  { key: "mi2", label: "Square Miles",      symbol: "mi²", factor: 3.861e-7,      dp: 8 },
-];
-
-/* ─── Strip altitude from [lng, lat, alt] triples ─────────────────────────── */
-function strip(coord) {
-  if (!coord || coord.length < 2) return null;
-  const lng = parseFloat(coord[0]);
-  const lat = parseFloat(coord[1]);
-  if (isNaN(lng) || isNaN(lat)) return null;
-  return [lng, lat];
-}
-
-function stripRing(ring) {
-  if (!ring || ring.length < 2) return [];
-  return ring.map(strip).filter(Boolean);
-}
-
-/* ─── Compute stats from a GeoJSON geometry ───────────────────────────────── */
-function computeStats(geom) {
-  if (!geom || !geom.type) return null;
-  const t = geom.type;
-
-  if (t === "Polygon") {
-    if (!geom.coordinates || !geom.coordinates[0]) return null;
-    const rings = geom.coordinates.map(stripRing);
-    if (!rings[0] || rings[0].length < 3) return null;
-    return {
-      kind:     "polygon",
-      areaSqM:  polygonAreaM2(rings),
-      perimM:   ringPerim(rings[0]),
-      coords:   rings[0],
-    };
+  let zoneNumber = Math.floor((lng + 180) / 6) + 1;
+  // Special zones for Norway / Svalbard
+  if (lat >= 56 && lat < 64 && lng >= 3 && lng < 12) zoneNumber = 32;
+  if (lat >= 72 && lat < 84) {
+    if (lng >= 0 && lng < 9) zoneNumber = 31;
+    else if (lng >= 9 && lng < 21) zoneNumber = 33;
+    else if (lng >= 21 && lng < 33) zoneNumber = 35;
+    else if (lng >= 33 && lng < 42) zoneNumber = 37;
   }
 
-  if (t === "MultiPolygon") {
-    if (!geom.coordinates || geom.coordinates.length === 0) return null;
-    let areaSqM = 0, perimM = 0, firstCoords = [];
-    geom.coordinates.forEach(poly => {
-      if (!poly || !poly[0]) return;
-      const rings = poly.map(stripRing);
-      if (rings[0]?.length >= 3) {
-        areaSqM += polygonAreaM2(rings);
-        perimM  += ringPerim(rings[0]);
-        if (!firstCoords.length) firstCoords = rings[0];
-      }
-    });
-    if (!firstCoords.length) return null;
-    return { kind: "polygon", areaSqM, perimM, coords: firstCoords };
-  }
+  const BANDS = "CDEFGHJKLMNPQRSTUVWXX";
+  const bandIdx = Math.min(Math.floor((lat + 80) / 8), 20);
+  const band = BANDS[bandIdx] || "Z";
 
-  if (t === "LineString") {
-    if (!geom.coordinates || geom.coordinates.length < 2) return null;
-    const coords = geom.coordinates.map(strip).filter(Boolean);
-    if (coords.length < 2) return null;
-    const closed = isClosedLine(coords);
-    return {
-      kind:     "line",
-      lengthM:  lineLength(coords),
-      coords,
-      // If the path forms a closed loop, compute enclosed area — matches GEP behaviour
-      areaSqM:  closed ? ringArea(coords) : null,
-      isClosed: closed,
-    };
-  }
+  const centralMeridian = ((zoneNumber - 1) * 6 - 180 + 3) * (Math.PI / 180);
+  const N = a / Math.sqrt(1 - e2 * Math.sin(latRad) ** 2);
+  const T = Math.tan(latRad) ** 2;
+  const C = (e2 / (1 - e2)) * Math.cos(latRad) ** 2;
+  const A = Math.cos(latRad) * (lngRad - centralMeridian);
 
-  if (t === "MultiLineString") {
-    if (!geom.coordinates) return null;
-    let lengthM = 0, totalArea = 0;
-    const allCoords = [];
-    geom.coordinates.forEach(ls => {
-      const coords = (ls || []).map(strip).filter(Boolean);
-      lengthM += lineLength(coords);
-      if (isClosedLine(coords)) totalArea += ringArea(coords);
-      allCoords.push(...coords);
-    });
-    if (allCoords.length < 2) return null;
-    const closed = isClosedLine(allCoords);
-    return {
-      kind:     "line",
-      lengthM,
-      coords:   allCoords,
-      areaSqM:  totalArea > 0 ? totalArea : (closed ? ringArea(allCoords) : null),
-      isClosed: closed || totalArea > 0,
-    };
-  }
+  const e4 = e2 * e2;
+  const e6 = e4 * e2;
+  const M =
+    a *
+    ((1 - e2 / 4 - (3 * e4) / 64 - (5 * e6) / 256) * latRad -
+      ((3 * e2) / 8 + (3 * e4) / 32 + (45 * e6) / 1024) * Math.sin(2 * latRad) +
+      ((15 * e4) / 256 + (45 * e6) / 1024) * Math.sin(4 * latRad) -
+      ((35 * e6) / 3072) * Math.sin(6 * latRad));
 
-  if (t === "Point") {
-    if (!geom.coordinates || geom.coordinates.length < 2) return null;
-    const lng = parseFloat(geom.coordinates[0]);
-    const lat = parseFloat(geom.coordinates[1]);
-    const alt = parseFloat(geom.coordinates[2]) || 0;
-    if (isNaN(lng) || isNaN(lat)) return null;
-    return { kind: "point", lat, lng, alt };
-  }
+  const k0 = 0.9996;
+  let easting =
+    k0 *
+      N *
+      (A +
+        ((1 - T + C) * A ** 3) / 6 +
+        ((5 - 18 * T + T ** 2 + 72 * C - 58 * (e2 / (1 - e2))) * A ** 5) / 120) +
+    500000;
 
-  if (t === "MultiPoint") {
-    if (!geom.coordinates || !geom.coordinates[0]) return null;
-    const c   = geom.coordinates[0];
-    const lng = parseFloat(c[0]);
-    const lat = parseFloat(c[1]);
-    const alt = parseFloat(c[2]) || 0;
-    if (isNaN(lng) || isNaN(lat)) return null;
-    return { kind: "point", lat, lng, alt };
-  }
+  let northing =
+    k0 *
+    (M +
+      N *
+        Math.tan(latRad) *
+        (A ** 2 / 2 +
+          ((5 - T + 9 * C + 4 * C ** 2) * A ** 4) / 24 +
+          ((61 - 58 * T + T ** 2 + 600 * C - 330 * (e2 / (1 - e2))) * A ** 6) / 720));
 
-  if (t === "GeometryCollection") {
-    for (const g of (geom.geometries || [])) {
-      const s = computeStats(g);
-      if (s) return s;
-    }
-    return null;
-  }
+  if (lat < 0) northing += 10000000;
 
-  return null;
-}
-
-/* ─── Convert drawing points → stats ─────────────────────────────────────── */
-function drawingToStats(drawing) {
-  if (!drawing?.points?.length) return null;
-  const pts = drawing.points;
-  if (drawing.type === "marker") {
-    return { kind: "point", lat: pts[0]?.lat ?? 0, lng: pts[0]?.lng ?? 0, alt: 0 };
-  }
-  const coords = pts.map(p => [p.lng ?? p.lon ?? 0, p.lat ?? 0]);
-  if (drawing.type === "polygon" && coords.length >= 3) {
-    const ring = [...coords, coords[0]];
-    return {
-      kind:    "polygon",
-      areaSqM: polygonAreaM2([ring]),
-      perimM:  ringPerim(ring),
-      coords:  ring,
-    };
-  }
-  // Detect closed drawn path — same GEP logic
-  const closed = isClosedLine(coords);
   return {
-    kind:     "line",
-    lengthM:  lineLength(coords),
-    coords,
-    areaSqM:  closed ? ringArea(coords) : null,
-    isClosed: closed,
+    zone: zoneNumber,
+    band,
+    easting: Math.round(easting * 100) / 100,
+    northing: Math.round(northing * 100) / 100,
+    zoneStr: `${zoneNumber} ${band}`,
   };
 }
 
-/* ─── Number formatter ────────────────────────────────────────────────────── */
-function fmt(val, dp = 3) {
-  if (val == null || isNaN(val)) return "—";
-  return val.toLocaleString(undefined, {
-    minimumFractionDigits:  dp,
-    maximumFractionDigits:  dp,
-  });
+/**
+ * Convert UTM → WGS-84 lat/lng
+ */
+function utmToLatLng(zone, band, easting, northing) {
+  const a = 6378137.0;
+  const f = 1 / 298.257223563;
+  const b = a * (1 - f);
+  const e2 = 1 - (b * b) / (a * a);
+  const e1 = (1 - Math.sqrt(1 - e2)) / (1 + Math.sqrt(1 - e2));
+
+  const k0 = 0.9996;
+  const x = easting - 500000;
+  let y = northing;
+
+  const isSouth = band < "N";
+  if (isSouth) y -= 10000000;
+
+  const centralMeridian = ((zone - 1) * 6 - 180 + 3) * (Math.PI / 180);
+  const M = y / k0;
+  const mu =
+    M /
+    (a * (1 - e2 / 4 - (3 * e2 ** 2) / 64 - (5 * e2 ** 3) / 256));
+
+  const phi1 =
+    mu +
+    ((3 * e1) / 2 - (27 * e1 ** 3) / 32) * Math.sin(2 * mu) +
+    ((21 * e1 ** 2) / 16 - (55 * e1 ** 4) / 32) * Math.sin(4 * mu) +
+    ((151 * e1 ** 3) / 96) * Math.sin(6 * mu) +
+    ((1097 * e1 ** 4) / 512) * Math.sin(8 * mu);
+
+  const N1 = a / Math.sqrt(1 - e2 * Math.sin(phi1) ** 2);
+  const T1 = Math.tan(phi1) ** 2;
+  const C1 = (e2 / (1 - e2)) * Math.cos(phi1) ** 2;
+  const R1 = (a * (1 - e2)) / (1 - e2 * Math.sin(phi1) ** 2) ** 1.5;
+  const D = x / (N1 * k0);
+
+  const lat =
+    phi1 -
+    ((N1 * Math.tan(phi1)) / R1) *
+      (D ** 2 / 2 -
+        ((5 + 3 * T1 + 10 * C1 - 4 * C1 ** 2 - 9 * (e2 / (1 - e2))) * D ** 4) / 24 +
+        ((61 +
+          90 * T1 +
+          298 * C1 +
+          45 * T1 ** 2 -
+          252 * (e2 / (1 - e2)) -
+          3 * C1 ** 2) *
+          D ** 6) /
+          720);
+
+  const lng =
+    centralMeridian +
+    (D -
+      ((1 + 2 * T1 + C1) * D ** 3) / 6 +
+      ((5 - 2 * C1 + 28 * T1 - 3 * C1 ** 2 + 8 * (e2 / (1 - e2)) + 24 * T1 ** 2) *
+        D ** 5) /
+        120) /
+      Math.cos(phi1);
+
+  return {
+    lat: (lat * 180) / Math.PI,
+    lng: (lng * 180) / Math.PI,
+  };
 }
 
-/* ─── CopyBtn ─────────────────────────────────────────────────────────────── */
-function CopyBtn({ text }) {
-  const [ok, setOk] = useState(false);
+/** Format decimal degrees as DMS string (display only) */
+function toDMSStr(deg, posLabel, negLabel) {
+  const d = Math.abs(deg);
+  const di = Math.floor(d);
+  const mA = (d - di) * 60;
+  const mi = Math.floor(mA);
+  const s = (mA - mi) * 60;
+  return `${di}° ${mi.toString().padStart(2, "0")}' ${s.toFixed(2).padStart(5, "0")}" ${deg >= 0 ? posLabel : negLabel}`;
+}
+
+/** Format as Degrees, Decimal Minutes */
+function toDDMStr(deg, posLabel, negLabel) {
+  const d = Math.abs(deg);
+  const di = Math.floor(d);
+  const dm = (d - di) * 60;
+  return `${di}° ${dm.toFixed(5).padStart(8, "0")}' ${deg >= 0 ? posLabel : negLabel}`;
+}
+
+/* ─── Pin icon options ────────────────────────────────────────────────────── */
+const ICON_OPTIONS = [
+  { key: "pin",     label: "Pin",     svg: <svg width="18" height="18" viewBox="0 0 24 24" fill="#d93025"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5S10.62 6.5 12 6.5s2.5 1.12 2.5 2.5S13.38 11.5 12 11.5z"/></svg> },
+  { key: "circle",  label: "Circle",  svg: <svg width="18" height="18" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" fill="none" stroke="#1a73e8" strokeWidth="2.5"/><circle cx="12" cy="12" r="4" fill="#1a73e8"/></svg> },
+  { key: "square",  label: "Square",  svg: <svg width="18" height="18" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3" fill="#1a73e8"/></svg> },
+  { key: "star",    label: "Star",    svg: <svg width="18" height="18" viewBox="0 0 24 24"><polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26" fill="#f59e0b"/></svg> },
+  { key: "diamond", label: "Diamond", svg: <svg width="18" height="18" viewBox="0 0 24 24"><polygon points="12,2 22,12 12,22 2,12" fill="#8b5cf6"/></svg> },
+  { key: "flag",    label: "Flag",    svg: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#d93025" strokeWidth="2"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg> },
+  { key: "info",    label: "Info",    svg: <svg width="18" height="18" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="#1a73e8"/><line x1="12" y1="16" x2="12" y2="12" stroke="#fff" strokeWidth="2" strokeLinecap="round"/><line x1="12" y1="8" x2="12.01" y2="8" stroke="#fff" strokeWidth="2" strokeLinecap="round"/></svg> },
+  { key: "camera",  label: "Camera",  svg: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#5f6368" strokeWidth="2"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></svg> },
+];
+
+/* ─── Color presets ───────────────────────────────────────────────────────── */
+const COLOR_PRESETS = [
+  "#1a73e8","#d93025","#f9ab00","#1e8e3e","#8ab4f8","#f28b82",
+  "#fdd663","#81c995","#c58af9","#ff8bcb","#078d55","#e37400",
+  "#ffffff","#000000","#5f6368","#bdc1c6",
+];
+
+/* ─── KML helpers ─────────────────────────────────────────────────────────── */
+function hexToKmlColor(hex, pct = 100) {
+  const h = (hex || "#ff8800").replace("#", "").padEnd(6, "0");
+  const a = Math.round(Math.max(0, Math.min(100, pct)) / 100 * 255).toString(16).padStart(2, "0");
+  return `${a}${h.slice(4, 6)}${h.slice(2, 4)}${h.slice(0, 2)}`;
+}
+function escXml(s) { return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
+function coordsKml(c) { return c.map(p => `${p[0]},${p[1]},${p[2] ?? 0}`).join("\n"); }
+function geomKml(g) {
+  if (!g) return "";
+  if (g.type === "Point") { const [ln, lt, al = 0] = g.coordinates; return `<Point><coordinates>${ln},${lt},${al}</coordinates></Point>`; }
+  if (g.type === "LineString") return `<LineString><tessellate>1</tessellate><coordinates>${coordsKml(g.coordinates)}</coordinates></LineString>`;
+  if (g.type === "Polygon") {
+    const [o, ...holes] = g.coordinates;
+    return `<Polygon><outerBoundaryIs><LinearRing><coordinates>${coordsKml(o)}</coordinates></LinearRing></outerBoundaryIs>${holes.map(h => `<innerBoundaryIs><LinearRing><coordinates>${coordsKml(h)}</coordinates></LinearRing></innerBoundaryIs>`).join("")}</Polygon>`;
+  }
+  return "";
+}
+function featureToKml(f, style, name, desc) {
+  if (!f) return null;
+  const n = escXml(name || f.properties?.name || "Feature"), d = escXml(desc || "");
+  const lc = hexToKmlColor(style?.color ?? "#ff8800", style?.opacity ?? 100);
+  const fc = hexToKmlColor(style?.fillColor ?? "#ff8800", style?.fillOpacity ?? 40);
+  const g = geomKml(f.geometry); if (!g) return null;
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>${n}</name><Style id="s"><LineStyle><color>${lc}</color><width>${style?.width ?? 2}</width></LineStyle><PolyStyle><color>${fc}</color></PolyStyle></Style><Placemark><name>${n}</name><description>${d}</description><styleUrl>#s</styleUrl>${g}</Placemark></Document></kml>`;
+}
+function dlKml(kmlStr, fn) {
+  const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(new Blob([kmlStr], { type: "application/vnd.google-earth.kml+xml" })), download: fn });
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+}
+
+/* ─── Geodesy ─────────────────────────────────────────────────────────────── */
+function hav(a, b) { const R = 6371000, dLa = (b[1] - a[1]) * Math.PI / 180, dLo = (b[0] - a[0]) * Math.PI / 180, s = Math.sin(dLa / 2) ** 2 + Math.cos(a[1] * Math.PI / 180) * Math.cos(b[1] * Math.PI / 180) * Math.sin(dLo / 2) ** 2; return 2 * R * Math.asin(Math.sqrt(Math.max(0, s))); }
+function rArea(c) { if (!c || c.length < 3) return 0; const R = 6371000; let a = 0; for (let i = 0; i < c.length; i++) { const j = (i + 1) % c.length; a += (c[j][0] - c[i][0]) * Math.PI / 180 * (2 + Math.sin(c[i][1] * Math.PI / 180) + Math.sin(c[j][1] * Math.PI / 180)); } return Math.abs(a * R * R / 2); }
+function polyM2(rings) { if (!rings || !rings.length) return 0; let a = rArea(rings[0]); for (let i = 1; i < rings.length; i++) a -= rArea(rings[i]); return Math.max(0, a); }
+function perim(c) { if (!c || c.length < 2) return 0; let d = 0; for (let i = 1; i < c.length; i++) d += hav(c[i - 1], c[i]); const l = c[c.length - 1], f = c[0]; if (l[0] !== f[0] || l[1] !== f[1]) d += hav(l, f); return d; }
+function lineL(c) { if (!c || c.length < 2) return 0; let d = 0; for (let i = 1; i < c.length; i++) d += hav(c[i - 1], c[i]); return d; }
+function strip(c) { if (!c || c.length < 2) return null; const a = parseFloat(c[0]), b = parseFloat(c[1]); return isNaN(a) || isNaN(b) ? null : [a, b]; }
+function stripR(r) { return (r || []).map(strip).filter(Boolean); }
+function computeStats(geom) {
+  if (!geom) return null;
+  if (geom.type === "Polygon") { const rings = (geom.coordinates || []).map(stripR); if (!rings[0] || rings[0].length < 3) return null; return { kind: "polygon", areaSqM: polyM2(rings), perimM: perim(rings[0]), coords: rings[0] }; }
+  if (geom.type === "MultiPolygon") { let areaSqM = 0, perimM = 0, fc = []; (geom.coordinates || []).forEach(poly => { const rings = poly.map(stripR); if (rings[0]?.length >= 3) { areaSqM += polyM2(rings); perimM += perim(rings[0]); if (!fc.length) fc = rings[0]; } }); if (!fc.length) return null; return { kind: "polygon", areaSqM, perimM, coords: fc }; }
+  if (geom.type === "LineString") { const c = (geom.coordinates || []).map(strip).filter(Boolean); if (c.length < 2) return null; return { kind: "line", lengthM: lineL(c), coords: c }; }
+  if (geom.type === "Point") { const [ln, lt, al = 0] = geom.coordinates || []; if (isNaN(parseFloat(ln)) || isNaN(parseFloat(lt))) return null; return { kind: "point", lat: parseFloat(lt), lng: parseFloat(ln), alt: parseFloat(al) || 0 }; }
+  if (geom.type === "GeometryCollection") { for (const g of (geom.geometries || [])) { const s = computeStats(g); if (s) return s; } }
+  return null;
+}
+function drawingStats(d) {
+  if (!d?.points?.length) return null;
+  if (d.type === "marker") return { kind: "point", lat: d.points[0]?.lat ?? 0, lng: d.points[0]?.lng ?? 0, alt: 0 };
+  const c = d.points.map(p => [p.lng ?? 0, p.lat ?? 0]);
+  if (d.type === "polygon" && c.length >= 3) { const r = [...c, c[0]]; return { kind: "polygon", areaSqM: polyM2([r]), perimM: perim(r), coords: r }; }
+  return { kind: "line", lengthM: lineL(c), coords: c };
+}
+
+/* ─── Units ───────────────────────────────────────────────────────────────── */
+const DIST = [{ key: "m", label: "Meters", factor: 1, dp: 3 }, { key: "km", label: "Kilometers", factor: 1e-3, dp: 6 }, { key: "mi", label: "Miles", factor: 1 / 1609.344, dp: 6 }, { key: "ft", label: "Feet", factor: 3.28084, dp: 2 }, { key: "nmi", label: "Nautical Miles", factor: 1 / 1852, dp: 6 }];
+const AREA = [{ key: "m2", label: "Square Meters", sym: "m²", factor: 1, dp: 2 }, { key: "km2", label: "Square Kilometers", sym: "km²", factor: 1e-6, dp: 6 }, { key: "ha", label: "Hectares", sym: "ha", factor: 1e-4, dp: 4 }, { key: "ac", label: "Acres", sym: "ac", factor: 1 / 4046.856, dp: 4 }, { key: "ft2", label: "Square Feet", sym: "ft²", factor: 10.7639, dp: 1 }];
+
+function resolveId(f) { if (!f) return null; return String(f._featureId ?? f.id ?? f._id ?? f?.properties?._featureId ?? f?.properties?.id ?? JSON.stringify(f?.geometry?.coordinates?.[0]?.[0] ?? "")); }
+function resColor(p, fb = "#ff8800") { if (!p) return fb; for (const raw of [p.stroke, p.color, p["line-color"], p.lineColor, p.fill, p["fill-color"], p.fillColor]) { if (!raw || typeof raw !== "string") continue; const t = raw.trim(); if (/^#[0-9a-f]{3,6}$/i.test(t)) return t; if (/^[0-9a-f]{8}$/i.test(t)) return `#${t.slice(6, 8)}${t.slice(4, 6)}${t.slice(2, 4)}`; } return fb; }
+function fmt(v, dp = 3) { if (v == null || isNaN(v)) return "—"; return v.toLocaleString(undefined, { minimumFractionDigits: dp, maximumFractionDigits: dp }); }
+function toDMS(deg, pos, neg) { const d = Math.abs(deg), di = Math.floor(d), mA = (d - di) * 60, mi = Math.floor(mA), s = (mA - mi) * 60; return `${di}°${mi}'${s.toFixed(2)}" ${deg >= 0 ? pos : neg}`; }
+
+/* ─── Floating-label input ────────────────────────────────────────────────── */
+function FloatInput({ label, value, onChange, unit, readOnly = false }) {
+  const [focused, setFocused] = useState(false);
+  const hasVal = value !== "" && value != null;
+  const lifted = focused || hasVal;
   return (
-    <button
-      onClick={() => {
-        navigator.clipboard?.writeText(text).catch(() => {});
-        setOk(true);
-        setTimeout(() => setOk(false), 1500);
-      }}
-      title="Copy to clipboard"
-      style={{
-        padding: "1px 7px", borderRadius: 3, cursor: "pointer",
-        fontSize: 10, border: `1px solid ${ok ? "#5a9a5a" : "#4a5a6a"}`,
-        background: ok ? "#2a4a2a" : "#1e2d3a",
-        color: ok ? "#7dba7d" : "#8ab4c8",
-        fontFamily: "monospace", flexShrink: 0,
-      }}
-    >{ok ? "✓" : "⎘"}</button>
+    <div style={{ position: "relative", border: `1.5px solid ${focused ? "#1a73e8" : "#dadce0"}`, borderRadius: 4, background: readOnly ? "#f8f9fa" : "#fff", paddingTop: 18, paddingBottom: 8, paddingLeft: 12, paddingRight: unit ? 36 : 12, transition: "border-color 0.15s", boxSizing: "border-box" }}>
+      <span style={{ position: "absolute", left: 12, top: lifted ? 5 : "50%", transform: lifted ? "none" : "translateY(-50%)", fontSize: lifted ? 10 : 13, color: focused ? "#1a73e8" : "#5f6368", transition: "top 0.15s, font-size 0.15s, color 0.15s", pointerEvents: "none", fontFamily: "'Google Sans','Roboto',Arial,sans-serif", lineHeight: 1, userSelect: "none" }}>{label}</span>
+      <input value={value ?? ""} readOnly={readOnly} onChange={onChange ? e => onChange(e.target.value) : undefined} onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}
+        style={{ display: "block", width: "100%", border: "none", outline: "none", background: "transparent", fontSize: 13, color: readOnly ? "#5f6368" : "#202124", fontFamily: "'Google Sans','Roboto',Arial,sans-serif", padding: 0, margin: 0, boxSizing: "border-box", lineHeight: 1.4 }} />
+      {unit && <span style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-20%)", fontSize: 13, color: "#5f6368", fontFamily: "'Google Sans','Roboto',Arial,sans-serif", pointerEvents: "none" }}>{unit}</span>}
+    </div>
+  );
+}
+
+/* ─── Floating-label select ───────────────────────────────────────────────── */
+function FloatSelect({ label, value, onChange, options }) {
+  return (
+    <div style={{ position: "relative", border: "1.5px solid #dadce0", borderRadius: 4, background: "#fff", paddingTop: 18, paddingBottom: 8, paddingLeft: 12, paddingRight: 36, boxSizing: "border-box" }}>
+      <span style={{ position: "absolute", left: 12, top: 5, fontSize: 10, color: "#5f6368", fontFamily: "'Google Sans','Roboto',Arial,sans-serif", pointerEvents: "none", lineHeight: 1 }}>{label}</span>
+      <select value={value} onChange={e => onChange(e.target.value)} style={{ display: "block", width: "100%", border: "none", outline: "none", background: "transparent", fontSize: 13, color: "#202124", fontFamily: "'Google Sans','Roboto',Arial,sans-serif", padding: 0, margin: 0, appearance: "none", cursor: "pointer", lineHeight: 1.4 }}>
+        {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+      </select>
+      <span style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-20%)", fontSize: 16, color: "#5f6368", pointerEvents: "none" }}>▾</span>
+    </div>
+  );
+}
+
+/* ─── Google Earth style outlined dropdown ────────────────────────────────── */
+function GEDropdown({ label, value, onChange, options, renderValue }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    const h = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, []);
+  const selected = options.find(o => o.key === value);
+  return (
+    <div ref={ref} style={{ position: "relative", flex: 1 }}>
+      <button onClick={() => setOpen(p => !p)} style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, padding: "6px 10px", border: "1.5px solid #dadce0", borderRadius: 4, background: "#fff", cursor: "pointer", fontFamily: "'Google Sans','Roboto',Arial,sans-serif", fontSize: 13, color: "#202124", minHeight: 36 }}>
+        <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {renderValue ? renderValue(selected) : selected?.label}
+        </span>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="#5f6368"><path d="M7 10l5 5 5-5z" /></svg>
+      </button>
+      {open && (
+        <div style={{ position: "absolute", top: "calc(100% + 2px)", left: 0, right: 0, background: "#fff", border: "1px solid #dadce0", borderRadius: 4, boxShadow: "0 4px 16px rgba(0,0,0,0.15)", zIndex: 9999, maxHeight: 220, overflowY: "auto" }}>
+          {options.map(o => (
+            <div key={o.key} onClick={() => { onChange(o.key); setOpen(false); }}
+              style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", cursor: "pointer", background: value === o.key ? "#e8f0fe" : "transparent", color: value === o.key ? "#1a73e8" : "#202124", fontSize: 13, fontFamily: "'Google Sans','Roboto',Arial,sans-serif" }}
+              onMouseEnter={e => { if (value !== o.key) e.currentTarget.style.background = "#f1f3f4"; }}
+              onMouseLeave={e => { if (value !== o.key) e.currentTarget.style.background = "transparent"; }}>
+              {renderValue ? renderValue(o) : o.label}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ─── Color swatch dropdown ───────────────────────────────────────────────── */
+function ColorSwatchDropdown({ value, onChange, label = "Color" }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    const h = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, []);
+  return (
+    <div ref={ref} style={{ position: "relative" }}>
+      <div style={{ fontSize: 10, color: "#5f6368", marginBottom: 3, fontFamily: "'Google Sans','Roboto',Arial,sans-serif" }}>{label}</div>
+      <button onClick={() => setOpen(p => !p)} style={{ width: 56, height: 36, display: "flex", alignItems: "center", justifyContent: "space-between", padding: "4px 6px", border: "1.5px solid #dadce0", borderRadius: 4, background: "#fff", cursor: "pointer", gap: 4 }}>
+        <div style={{ width: 24, height: 24, borderRadius: 3, background: value, border: "1px solid rgba(0,0,0,0.15)", flexShrink: 0 }} />
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="#5f6368"><path d="M7 10l5 5 5-5z" /></svg>
+      </button>
+      {open && (
+        <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, background: "#fff", border: "1px solid #dadce0", borderRadius: 8, boxShadow: "0 4px 20px rgba(0,0,0,0.18)", zIndex: 9999, padding: 12, width: 200 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(8,1fr)", gap: 4, marginBottom: 10 }}>
+            {COLOR_PRESETS.map(c => (
+              <button key={c} onClick={() => { onChange(c); setOpen(false); }}
+                style={{ width: 20, height: 20, borderRadius: 3, background: c, border: value === c ? "2px solid #1a73e8" : "1px solid rgba(0,0,0,0.15)", cursor: "pointer", padding: 0 }} />
+            ))}
+          </div>
+          <div style={{ borderTop: "1px solid #e8eaed", paddingTop: 8 }}>
+            <div style={{ fontSize: 11, color: "#5f6368", marginBottom: 6, fontFamily: "'Google Sans','Roboto',Arial,sans-serif" }}>Custom</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <input type="color" value={value} onChange={e => onChange(e.target.value)} style={{ width: 32, height: 28, padding: 0, border: "1.5px solid #dadce0", borderRadius: 4, cursor: "pointer" }} />
+              <span style={{ fontSize: 11, color: "#5f6368", fontFamily: "monospace" }}>{value?.toUpperCase()}</span>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
 /* ─── Tab button ──────────────────────────────────────────────────────────── */
-function TabBtn({ label, active, onClick }) {
+function Tab({ label, active, onClick }) {
   return (
-    <button
-      onClick={onClick}
-      style={{
-        padding: "4px 10px", fontSize: 11,
-        fontFamily: "'Segoe UI', Arial, sans-serif",
-        cursor: "pointer", border: "1px solid",
-        borderColor: active
-          ? "#6a8fa8 #6a8fa8 #1e3040"
-          : "#4a6070 #4a6070 #4a6070",
-        borderRadius: "4px 4px 0 0",
-        background: active
-          ? "linear-gradient(180deg,#2a4560 0%,#1e3040 100%)"
-          : "linear-gradient(180deg,#1a2535 0%,#16202e 100%)",
-        color:  active ? "#d8eaf8" : "#7a9ab0",
-        marginRight: 2, position: "relative",
-        bottom:      active ? -1 : 0,
-        fontWeight:  active ? 600 : 400,
-        zIndex:      active ? 2 : 1,
-      }}
-    >{label}</button>
+    <button onClick={onClick} style={{ padding: "10px 14px", fontSize: 12.5, cursor: "pointer", border: "none", borderBottom: `2.5px solid ${active ? "#1a73e8" : "transparent"}`, background: "transparent", color: active ? "#1a73e8" : "#5f6368", fontWeight: active ? 600 : 400, fontFamily: "'Google Sans','Roboto',Arial,sans-serif", transition: "color 0.12s", flexShrink: 0, whiteSpace: "nowrap" }}>{label}</button>
   );
 }
 
-/* ─── UnitSectionHeader ───────────────────────────────────────────────────── */
-function UnitSectionHeader({ title, unit, units, onUnit }) {
+/* ─── Copy button ─────────────────────────────────────────────────────────── */
+function CopyBtn({ text }) {
+  const [ok, setOk] = useState(false);
   return (
-    <tr>
-      <td
-        colSpan={2}
-        style={{
-          padding: "8px 14px 4px",
-          color: "#7a9aaa", fontSize: 9.5,
-          fontWeight: 700, letterSpacing: "0.08em",
-          background: "#162030",
-          borderBottom: "1px solid #2a3a4a",
-          borderTop:    "1px solid #2a3a4a",
-        }}
-      >
-        {title}
-        {units && (
-          <select
-            value={unit}
-            onChange={e => onUnit(e.target.value)}
-            style={{
-              marginLeft: 8,
-              background: "#0e1a25", border: "1px solid #3a5060",
-              color: "#9ab8cc", fontSize: 10,
-              padding: "1px 4px", borderRadius: 3, cursor: "pointer",
-            }}
-          >
-            {units.map(u => (
-              <option key={u.key} value={u.key}>{u.label}</option>
-            ))}
-          </select>
-        )}
-      </td>
-    </tr>
+    <button onClick={() => { navigator.clipboard?.writeText(text).catch(() => {}); setOk(true); setTimeout(() => setOk(false), 1500); }}
+      style={{ padding: "2px 8px", borderRadius: 4, cursor: "pointer", fontSize: 10, border: `1px solid ${ok ? "#34a853" : "#dadce0"}`, background: ok ? "#e6f4ea" : "#f8f9fa", color: ok ? "#137333" : "#5f6368", flexShrink: 0 }}>
+      {ok ? "✓" : "⎘"}
+    </button>
   );
 }
 
-/* ─── AllUnitsRows ────────────────────────────────────────────────────────── */
-/**
- * Renders every unit in the given list as a table row.
- * The active unit row is highlighted and uses a larger, amber-colored value.
- */
-function AllUnitsRows({ valueM, units, activeKey }) {
+/* ─── Measure rows ────────────────────────────────────────────────────────── */
+function MRows({ valueM, units, activeKey }) {
   return units.map(u => {
-    const converted = valueM * u.factor;
-    const display   = fmt(converted, u.dp ?? 3);
-    const isActive  = u.key === activeKey;
+    const v = valueM * u.factor, d = fmt(v, u.dp ?? 3), isA = u.key === activeKey;
     return (
-      <tr key={u.key} style={{ background: isActive ? "rgba(251,191,36,0.06)" : "transparent" }}>
-        <td style={{
-          padding:    "4px 10px 4px 14px",
-          color:      isActive ? "#9ab8cc" : "#5a7888",
-          fontSize:   isActive ? 11.5 : 10,
-          fontFamily: "'Segoe UI', Arial, sans-serif",
-          whiteSpace: "nowrap",
-          verticalAlign: "middle",
-          width: 160,
-        }}>
-          {u.label}{u.symbol ? ` (${u.symbol})` : ""}
-        </td>
-        <td style={{ padding: "4px 8px", verticalAlign: "middle" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span style={{
-              color:      isActive ? "#f0c060" : "#8ab8c8",
-              fontFamily: "'Courier New', monospace",
-              fontSize:   isActive ? 12 : 10.5,
-              fontWeight: isActive ? 700 : 400,
-              minWidth:   110,
-              textAlign:  "right",
-            }}>{display}</span>
-            <CopyBtn text={`${display} ${u.label}`} />
+      <tr key={u.key} style={{ background: isA ? "#e8f0fe" : "transparent" }}>
+        <td style={{ padding: "6px 16px", fontSize: isA ? 13 : 11, color: isA ? "#1557b0" : "#5f6368", fontFamily: "'Google Sans','Roboto',Arial,sans-serif" }}>{u.label}{u.sym ? ` (${u.sym})` : ""}</td>
+        <td style={{ padding: "6px 8px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ color: isA ? "#1a73e8" : "#202124", fontFamily: "'Roboto Mono',monospace", fontSize: isA ? 13 : 11, fontWeight: isA ? 600 : 400, minWidth: 110, textAlign: "right" }}>{d}</span>
+            <CopyBtn text={`${d} ${u.label}`} />
           </div>
         </td>
       </tr>
@@ -394,790 +397,640 @@ function AllUnitsRows({ valueM, units, activeKey }) {
   });
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
+/* ══════════════════════════════════════════════════════════════════════════
+   COORDINATE FIELDS COMPONENT
+   Renders different fields based on coordSystem prop:
+     "decimalDegrees" | "dms" | "decimalMinutes" → Latitude / Longitude
+     "utm"  → Zone / Easting / Northing  (matches Google Earth Pro image 2)
+     "mgrs" → MGRS string (read-only)
+══════════════════════════════════════════════════════════════════════════ */
+function CoordinateFields({ coordSystem, lat, lng, setLat, setLng, altitude, setAltitude, grounding }) {
+  // Internal UTM state — derived from lat/lng, editable independently
+  const [utmZone,     setUtmZone]     = useState(() => {
+    const u = latLngToUTM(parseFloat(lat) || 0, parseFloat(lng) || 0);
+    return u.zoneStr;
+  });
+  const [utmEasting,  setUtmEasting]  = useState(() => {
+    const u = latLngToUTM(parseFloat(lat) || 0, parseFloat(lng) || 0);
+    return u.easting.toFixed(2);
+  });
+  const [utmNorthing, setUtmNorthing] = useState(() => {
+    const u = latLngToUTM(parseFloat(lat) || 0, parseFloat(lng) || 0);
+    return u.northing.toFixed(2);
+  });
+
+  // Sync UTM fields when lat/lng change from outside (e.g. initial load)
+  useEffect(() => {
+    const latN = parseFloat(lat);
+    const lngN = parseFloat(lng);
+    if (!isNaN(latN) && !isNaN(lngN)) {
+      const u = latLngToUTM(latN, lngN);
+      setUtmZone(u.zoneStr);
+      setUtmEasting(u.easting.toFixed(2));
+      setUtmNorthing(u.northing.toFixed(2));
+    }
+  }, [lat, lng]);
+
+  // When UTM fields change → back-calculate lat/lng
+  const handleUtmEastingChange = (val) => {
+    setUtmEasting(val);
+    tryUpdateLatLngFromUTM(utmZone, val, utmNorthing);
+  };
+  const handleUtmNorthingChange = (val) => {
+    setUtmNorthing(val);
+    tryUpdateLatLngFromUTM(utmZone, utmEasting, val);
+  };
+  const handleUtmZoneChange = (val) => {
+    setUtmZone(val);
+    tryUpdateLatLngFromUTM(val, utmEasting, utmNorthing);
+  };
+
+  const tryUpdateLatLngFromUTM = (zoneStr, eastStr, northStr) => {
+    try {
+      const parts = String(zoneStr).trim().split(/\s+/);
+      const zone = parseInt(parts[0]);
+      const band = parts[1] || "N";
+      const e = parseFloat(eastStr);
+      const n = parseFloat(northStr);
+      if (!isNaN(zone) && !isNaN(e) && !isNaN(n) && zone >= 1 && zone <= 60) {
+        const result = utmToLatLng(zone, band, e, n);
+        if (!isNaN(result.lat) && !isNaN(result.lng)) {
+          setLat(result.lat.toFixed(7));
+          setLng(result.lng.toFixed(7));
+        }
+      }
+    } catch (_) {}
+  };
+
+  const latN = parseFloat(lat) || 0;
+  const lngN = parseFloat(lng) || 0;
+
+  if (coordSystem === "utm") {
+    // ── UTM mode: Zone / Easting / Northing (matches GEP image 2) ──────────
+    return (
+      <>
+        <FloatInput
+          label="Zone"
+          value={utmZone}
+          onChange={handleUtmZoneChange}
+        />
+        <FloatInput
+          label="Easting"
+          value={utmEasting}
+          onChange={handleUtmEastingChange}
+          unit="m E"
+        />
+        <FloatInput
+          label="Northing"
+          value={utmNorthing}
+          onChange={handleUtmNorthingChange}
+          unit="m N"
+        />
+        <FloatInput
+          label="Altitude"
+          value={altitude}
+          onChange={setAltitude}
+          unit="m"
+          readOnly={grounding === "clamped"}
+        />
+      </>
+    );
+  }
+
+  if (coordSystem === "dms") {
+    // ── DMS display mode (read-only display, decimal editing) ───────────────
+    return (
+      <>
+        <FloatInput
+          label="Latitude (DMS)"
+          value={toDMSStr(latN, "N", "S")}
+          readOnly
+        />
+        <FloatInput
+          label="Latitude (decimal)"
+          value={lat}
+          onChange={setLat}
+          unit="°"
+        />
+        <FloatInput
+          label="Longitude (DMS)"
+          value={toDMSStr(lngN, "E", "W")}
+          readOnly
+        />
+        <FloatInput
+          label="Longitude (decimal)"
+          value={lng}
+          onChange={setLng}
+          unit="°"
+        />
+        <FloatInput
+          label="Altitude"
+          value={altitude}
+          onChange={setAltitude}
+          unit="m"
+          readOnly={grounding === "clamped"}
+        />
+      </>
+    );
+  }
+
+  if (coordSystem === "decimalMinutes") {
+    // ── Degrees, Decimal Minutes ────────────────────────────────────────────
+    return (
+      <>
+        <FloatInput
+          label="Latitude (DDM)"
+          value={toDDMStr(latN, "N", "S")}
+          readOnly
+        />
+        <FloatInput
+          label="Latitude (decimal)"
+          value={lat}
+          onChange={setLat}
+          unit="°"
+        />
+        <FloatInput
+          label="Longitude (DDM)"
+          value={toDDMStr(lngN, "E", "W")}
+          readOnly
+        />
+        <FloatInput
+          label="Longitude (decimal)"
+          value={lng}
+          onChange={setLng}
+          unit="°"
+        />
+        <FloatInput
+          label="Altitude"
+          value={altitude}
+          onChange={setAltitude}
+          unit="m"
+          readOnly={grounding === "clamped"}
+        />
+      </>
+    );
+  }
+
+  // ── Default: Decimal Degrees (matches GEP image 1) ──────────────────────
+  return (
+    <>
+      <FloatInput label="Latitude"  value={lat}      onChange={setLat}      unit="°" />
+      <FloatInput label="Longitude" value={lng}      onChange={setLng}      unit="°" />
+      <FloatInput
+        label="Altitude"
+        value={altitude}
+        onChange={setAltitude}
+        unit="m"
+        readOnly={grounding === "clamped"}
+      />
+    </>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
    MAIN COMPONENT
-───────────────────────────────────────────────────────────────────────────── */
+   
+   NEW PROP:
+     coordSystem — one of: "decimalDegrees" | "dms" | "decimalMinutes" | "utm" | "mgrs"
+                   Pass this from your app settings (mirrors the 3D View Options
+                   "Show Lat/Long" selection). Defaults to "decimalDegrees".
+══════════════════════════════════════════════════════════════════════════ */
 export default function FeaturePropertiesPanel({
   drawing,
   geojsonFeature,
+  isNewPoint = false,
   onClose,
   onSave,
+  onDelete,
+  coordSystem = "decimalDegrees",  // ← NEW PROP: pass from app settings
 }) {
   const isDrawing = !!drawing;
+  const nameRef = useRef(null);
 
   const rawName = isDrawing
-    ? drawing.name
-    : (geojsonFeature?.properties?.name  ||
-       geojsonFeature?.properties?.Name  ||
-       geojsonFeature?.properties?.NAME  ||
-       geojsonFeature?.properties?.title ||
-       geojsonFeature?._name             ||
-       "Unnamed Feature");
-
+    ? (drawing.name || "Untitled placemark")
+    : (geojsonFeature?.properties?.name || geojsonFeature?.properties?.Name || geojsonFeature?.properties?.NAME || geojsonFeature?._name || "Untitled placemark");
   const rawDesc = isDrawing
     ? (drawing.description || "")
-    : (geojsonFeature?.properties?.description ||
-       geojsonFeature?.properties?.Description || "");
+    : (geojsonFeature?.properties?.description || geojsonFeature?.properties?.Description || "");
 
-  const rawColor = isDrawing
-    ? (drawing.color || "#ff8800")
-    : (geojsonFeature?.properties?.color  ||
-       geojsonFeature?.properties?.stroke || "#ff8800");
+  const stats = isDrawing ? drawingStats(drawing) : computeStats(geojsonFeature?.geometry);
+  const props = geojsonFeature?.properties || {};
+  const fileType = geojsonFeature?._fileType || "";
+  const fileName = geojsonFeature?._fileName || "";
+  const fid = isDrawing ? null : resolveId(geojsonFeature);
+  const savedOv = fid ? STYLE_OVERRIDES.get(fid) : null;
 
-  const stats = isDrawing
-    ? drawingToStats(drawing)
-    : computeStats(geojsonFeature?.geometry);
+  const rawColor = isDrawing ? (drawing.color || "#1a73e8") : resColor(props, "#1a73e8");
+  const rawFill = isDrawing ? (drawing.fillColor || "#1a73e8") : resColor({ ...props, stroke: undefined }, "#1a73e8");
+  const rawWidth = isDrawing ? (drawing.width ?? 2) : (props["stroke-width"] ?? props.strokeWidth ?? 2);
+  const rawOp = isDrawing ? (drawing.opacity ?? 100) : (props["stroke-opacity"] != null ? Math.round(props["stroke-opacity"] * 100) : 100);
+  const rawFillOp = isDrawing ? (drawing.fillOpacity ?? 40) : (props["fill-opacity"] != null ? Math.round(props["fill-opacity"] * 100) : 40);
 
-  const props    = geojsonFeature?.properties || {};
-  const fileType = geojsonFeature?._fileType  || "";
-  const fileName = geojsonFeature?._fileName  || "";
-
-  const [name,    setName]    = useState(rawName  || "");
-  const [desc,    setDesc]    = useState(rawDesc  || "");
-  const [color,   setColor]   = useState(rawColor);
-  const [width,   setWidth]   = useState(drawing?.width   ?? 2);
-  const [opacity, setOpacity] = useState(drawing?.opacity ?? 100);
-  const [tab,     setTab]     = useState(isDrawing ? "Description" : "Measurements");
-
-  // Active unit keys — used only for highlighting, not filtering
-  const [areaUnit,  setAreaUnit]  = useState("m2");
-  const [perimUnit, setPerimUnit] = useState("m");
-  const [lenUnit,   setLenUnit]   = useState("m");
-
-  // "Close path" toggle — mirrors Google Earth Pro's checkbox on Edit Path dialog.
-  // When true for a LineString, we virtually close the path (join last → first),
-  // recalculate total length, and show enclosed area in all units.
-  const autoDetectedClosed = stats?.kind === "line" && (stats?.isClosed ?? false);
-  const [closePath, setClosePath] = useState(autoDetectedClosed);
-
-  // Effective stats for a line, taking closePath toggle into account
-  const effectiveStats = (() => {
-    if (!stats || stats.kind !== "line") return stats;
-    const coords = stats.coords || [];
-    if (!closePath) return { ...stats, areaSqM: null, isClosed: false };
-    // Virtual close: add closing leg distance if not already closed
-    const last  = coords[coords.length - 1];
-    const first = coords[0];
-    const closingLeg = (last && first && (last[0] !== first[0] || last[1] !== first[1]))
-      ? haversine(last, first) : 0;
-    return {
-      ...stats,
-      lengthM:  stats.lengthM + closingLeg,
-      areaSqM:  ringArea(coords),
-      isClosed: true,
-    };
+  const initC = (() => {
+    if (stats?.kind === "point") return { lat: stats.lat, lng: stats.lng, alt: stats.alt || 0 };
+    if (stats?.coords?.[0]) return { lat: stats.coords[0][1], lng: stats.coords[0][0], alt: 0 };
+    if (drawing?.points?.[0]) { const p = drawing.points[0]; return { lat: p.lat ?? 0, lng: p.lng ?? 0, alt: 0 }; }
+    return { lat: 0, lng: 0, alt: 0 };
   })();
 
-  /* ── Title / icon based on geometry type ────────────────────────────────── */
-  const kindLabel = (() => {
-    if (isDrawing) {
-      if (drawing.type === "polygon") return "Edit Polygon";
-      if (drawing.type === "marker")  return "Edit Placemark";
-      return "Edit Path";
-    }
-    if (!stats) return "Feature Properties";
-    if (stats.kind === "polygon") return "Edit Polygon";
-    if (stats.kind === "point")   return "Edit Placemark";
-    return "Edit Path";
-  })();
+  /* ── State ─────────────────────────────────────────────────────────────── */
+  const [name,        setName]       = useState(rawName);
+  const [desc,        setDesc]       = useState(rawDesc);
+  const [lat,         setLat]        = useState(initC.lat.toFixed(7));
+  const [lng,         setLng]        = useState(initC.lng.toFixed(7));
+  const [altitude,    setAltitude]   = useState(initC.alt.toFixed(7));
+  const [grounding,   setGnd]        = useState("clamped");
+  const [heading,     setHeading]    = useState("0.0000000");
+  const [tilt,        setTilt]       = useState("0.0000000");
+  const [range,       setRange]      = useState("1031.2695758");
+  const [color,       setColor]      = useState(savedOv?.color ?? rawColor);
+  const [fillColor,   setFillColor]  = useState(savedOv?.fillColor ?? rawFill);
+  const [width,       setWidth]      = useState(savedOv?.width ?? rawWidth);
+  const [opacity,     setOpacity]    = useState(savedOv?.opacity ?? rawOp);
+  const [fillOp,      setFillOp]     = useState(savedOv?.fillOpacity ?? rawFillOp);
+  const [tab,         setTab]        = useState("Placemark");
+  const [areaUnit,    setAreaUnit]   = useState("m2");
+  const [perimUnit,   setPerimUnit]  = useState("m");
+  const [lenUnit,     setLenUnit]    = useState("m");
+  const [saved,       setSaved]      = useState(false);
 
-  const typeIcon  = !stats ? "📄"
-    : stats.kind === "polygon" ? "⬡"
-    : stats.kind === "point"   ? "📍"
-    : "〰";
+  const [iconKey,          setIconKey]          = useState("pin");
+  const [iconSize,         setIconSize]         = useState("medium");
+  const [iconColor,        setIconColor]        = useState(savedOv?.iconColor ?? rawColor);
+  const [labelsEnabled,    setLabelsEnabled]    = useState(true);
+  const [labelSize,        setLabelSize]        = useState("medium");
+  const [labelColor,       setLabelColor]       = useState("#ffffff");
+  const [moreSettingsOpen, setMoreSettingsOpen] = useState(true);
 
-  const typeColor = !stats ? "#94a3b8"
-    : stats.kind === "polygon" ? "#fbbf24"
-    : stats.kind === "point"   ? "#34d399"
-    : "#60a5fa";
+  const featureKind = stats?.kind || (drawing?.type === "marker" ? "point" : drawing?.type === "polygon" ? "polygon" : "line");
 
-  const TABS = ["Description", "Style, Color", "View", "Altitude", "Measurements"];
-
-  const handleSave = () => {
-    if (isDrawing && onSave) {
-      onSave({ ...drawing, name, description: desc, color, width, opacity, closePath });
-    }
-    onClose();
-  };
-
+  useEffect(() => { if (isNewPoint && nameRef.current) { nameRef.current.focus(); nameRef.current.select(); } }, [isNewPoint]);
   useEffect(() => {
-    const h = e => { if (e.key === "Escape") onClose(); };
+    const h = e => { if (e.key === "Escape") onClose?.(); };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
   }, [onClose]);
 
-  /* ── DMS helper ─────────────────────────────────────────────────────────── */
-  function toDMS(deg, pos, neg) {
-    const d    = Math.abs(deg);
-    const dInt = Math.floor(d);
-    const mAll = (d - dInt) * 60;
-    const mInt = Math.floor(mAll);
-    const sec  = (mAll - mInt) * 60;
-    return `${dInt}°${mInt}'${sec.toFixed(2)}" ${deg >= 0 ? pos : neg}`;
-  }
+  const handleOK = () => {
+    const styleOv = { color, width, opacity, fillColor, fillOpacity: fillOp, iconKey, iconSize, iconColor, labelColor, labelSize };
+    if (isDrawing) {
+      onSave?.({ ...drawing, name, description: desc, color, width, opacity, fillColor, fillOpacity: fillOp, iconKey, iconSize });
+    } else {
+      if (fid) STYLE_OVERRIDES.set(fid, styleOv);
+      if (geojsonFeature?.properties) Object.assign(geojsonFeature.properties, { name, description: desc, stroke: color, color, "stroke-width": width, "stroke-opacity": opacity / 100, fill: fillColor, "fill-opacity": fillOp / 100 });
+      geojsonFeature?._applyStyle?.(styleOv);
+      if (fileType === "kml" || fileType === "kmz" || fileType === "") { const k = featureToKml(geojsonFeature, styleOv, name, desc); if (k) dlKml(k, `${(fileName || "feature").replace(/\.(kml|kmz)$/i, "")}_edited.kml`); }
+      onSave?.({ _featureId: fid, _fileType: fileType, _fileName: fileName, name, description: desc, style: styleOv });
+    }
+    setSaved(true);
+    setTimeout(() => onClose?.(), 350);
+  };
+
+  const TABS = [
+    { id: "Placemark",    label: "Placemark" },
+    { id: "Style",        label: "Style, Color" },
+    { id: "View",         label: "View" },
+    { id: "Altitude",     label: "Altitude" },
+    { id: "Measurements", label: "Measurements" },
+    { id: "Description",  label: "Description" },
+  ];
+  const GND = [
+    { value: "clamped",  label: "Clamp to ground" },
+    { value: "relative", label: "Relative to ground" },
+    { value: "absolute", label: "Absolute" },
+  ];
+  const SIZE_OPTIONS = [
+    { key: "small",  label: "Small" },
+    { key: "medium", label: "Medium (default)" },
+    { key: "large",  label: "Large" },
+  ];
+
+  const TopIconRow = () => (
+    <div style={{ padding: "12px 16px 0", borderBottom: "1px solid #e8eaed" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 20, marginBottom: 12 }}>
+        <button onClick={() => setTab("Description")}
+          style={{ display: "flex", alignItems: "center", gap: 6, padding: 0, background: "none", border: "none", color: "#1a73e8", fontSize: 13, fontWeight: 500, cursor: "pointer", fontFamily: "'Google Sans','Roboto',Arial,sans-serif" }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1a73e8" strokeWidth="2" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
+          Description
+        </button>
+        <button style={{ display: "flex", alignItems: "center", gap: 6, padding: 0, background: "none", border: "none", color: "#1a73e8", fontSize: 13, fontWeight: 500, cursor: "pointer", fontFamily: "'Google Sans','Roboto',Arial,sans-serif" }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1a73e8" strokeWidth="2" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
+          Media
+        </button>
+      </div>
+
+      <div style={{ display: "flex", alignItems: "flex-end", gap: 8, marginBottom: 12 }}>
+        <div style={{ flex: "0 0 80px" }}>
+          <div style={{ fontSize: 10, color: "#5f6368", marginBottom: 3, fontFamily: "'Google Sans','Roboto',Arial,sans-serif" }}>Icon</div>
+          <GEDropdown value={iconKey} onChange={setIconKey} options={ICON_OPTIONS} renderValue={(opt) => opt ? (<span style={{ display: "flex", alignItems: "center" }}>{opt.svg}</span>) : null} />
+        </div>
+        <div style={{ flex: "0 0 140px" }}>
+          <div style={{ fontSize: 10, color: "#5f6368", marginBottom: 3, fontFamily: "'Google Sans','Roboto',Arial,sans-serif" }}>Icon size</div>
+          <GEDropdown value={iconSize} onChange={setIconSize} options={SIZE_OPTIONS} renderValue={(opt) => opt ? (<span style={{ fontSize: 13, color: "#202124", fontFamily: "'Google Sans','Roboto',Arial,sans-serif" }}>{opt.label}</span>) : null} />
+        </div>
+        <ColorSwatchDropdown value={iconColor} onChange={v => { setIconColor(v); setColor(v); }} label="Color" />
+      </div>
+
+      <button onClick={() => setMoreSettingsOpen(p => !p)}
+        style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", padding: "10px 0 10px", background: "none", border: "none", cursor: "pointer", fontFamily: "'Google Sans','Roboto',Arial,sans-serif", fontSize: 13, fontWeight: 500, color: "#202124", textAlign: "left" }}>
+        More settings
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="#5f6368" style={{ marginLeft: "auto", transform: moreSettingsOpen ? "rotate(180deg)" : "none", transition: "transform 0.15s" }}>
+          <path d="M7 10l5 5 5-5z" />
+        </svg>
+      </button>
+
+      {moreSettingsOpen && (
+        <div style={{ paddingBottom: 12, borderTop: "1px solid #f1f3f4", paddingTop: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+            <span style={{ fontSize: 13, color: "#202124", fontFamily: "'Google Sans','Roboto',Arial,sans-serif" }}>Labels</span>
+            <button onClick={() => setLabelsEnabled(p => !p)}
+              style={{ width: 36, height: 20, borderRadius: 10, border: "none", cursor: "pointer", background: labelsEnabled ? "#1a73e8" : "#bdc1c6", position: "relative", transition: "background 0.15s", padding: 0, flexShrink: 0 }}>
+              <span style={{ position: "absolute", top: 2, left: labelsEnabled ? 18 : 2, width: 16, height: 16, borderRadius: "50%", background: "#fff", transition: "left 0.15s", boxShadow: "0 1px 3px rgba(0,0,0,0.3)" }} />
+            </button>
+          </div>
+          {labelsEnabled && (
+            <div style={{ display: "flex", alignItems: "flex-end", gap: 8 }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 10, color: "#5f6368", marginBottom: 3, fontFamily: "'Google Sans','Roboto',Arial,sans-serif" }}>Label size</div>
+                <GEDropdown value={labelSize} onChange={setLabelSize} options={SIZE_OPTIONS} renderValue={(opt) => opt ? (<span style={{ fontSize: 13, color: "#202124", fontFamily: "'Google Sans','Roboto',Arial,sans-serif" }}>{opt.label}</span>) : null} />
+              </div>
+              <ColorSwatchDropdown value={labelColor} onChange={setLabelColor} label="Color" />
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
 
   return (
-    <div
-      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
-      style={{
-        position: "fixed", inset: 0, zIndex: 9700,
-        background: "rgba(0,0,0,0.55)",
-        display: "flex", alignItems: "center", justifyContent: "center",
-        fontFamily: "'Segoe UI', Arial, sans-serif",
-      }}
-    >
-      <div style={{
-        background: "linear-gradient(180deg,#1e2e40 0%,#18273a 100%)",
-        border: "1px solid #3a5068",
-        borderRadius: 6,
-        boxShadow: "0 8px 40px rgba(0,0,0,0.85), 0 0 0 1px rgba(255,255,255,0.04)",
-        width: 480, minHeight: 380,
-        display: "flex", flexDirection: "column", overflow: "hidden",
-      }}>
+    <div onClick={e => { if (e.target === e.currentTarget) onClose?.(); }}
+      style={{ position: "fixed", inset: 0, zIndex: 9700, background: "rgba(0,0,0,0.42)", display: "flex", alignItems: "flex-start", justifyContent: "flex-end", paddingTop: 72, paddingRight: 10, fontFamily: "'Google Sans','Roboto',Arial,sans-serif" }}>
+      <div onClick={e => e.stopPropagation()}
+        style={{ background: "#fff", borderRadius: 8, boxShadow: "0 8px 40px rgba(0,0,0,0.25)", width: 440, maxHeight: "calc(100vh - 88px)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
 
-        {/* ── Title bar ── */}
-        <div style={{
-          background: "linear-gradient(180deg,#2a3d52 0%,#1e3048 100%)",
-          borderBottom: "1px solid #3a5068",
-          padding: "7px 12px",
-          display: "flex", alignItems: "center", justifyContent: "space-between",
-          cursor: "default", userSelect: "none",
-        }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: 15, color: typeColor }}>{typeIcon}</span>
-            <span style={{ color: "#d8eaf8", fontWeight: 600, fontSize: 12.5 }}>
-              SurveyMap Pro — {kindLabel}
-            </span>
-            {fileName && (
-              <span style={{
-                color: "#5a7888", fontSize: 10,
-                fontFamily: "monospace", marginLeft: 4,
-              }}>
-                [{fileType.toUpperCase()}] {fileName.slice(0, 24)}
-              </span>
-            )}
+        {/* ── Header ─────────────────────────────────────────────────────── */}
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "13px 16px 10px", borderBottom: "1px solid #e8eaed", flexShrink: 0 }}>
+          <div style={{ width: 28, height: 28, borderRadius: "50%", background: "#e8f0fe", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#1a73e8" strokeWidth="2" strokeLinecap="round">
+              <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" />
+              <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" />
+            </svg>
           </div>
-          <button
-            onClick={onClose}
-            style={{
-              background: "rgba(220,50,50,0.2)",
-              border: "1px solid rgba(220,50,50,0.4)",
-              color: "#f08080", width: 20, height: 20, borderRadius: 3,
-              cursor: "pointer", fontSize: 14, lineHeight: 1,
-              display: "flex", alignItems: "center", justifyContent: "center", padding: 0,
-            }}
-          >×</button>
+          <input ref={nameRef} value={name} onChange={e => setName(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter") handleOK(); if (e.key === "Escape") onClose?.(); }}
+            placeholder="Untitled placemark"
+            style={{ flex: 1, border: "none", outline: "none", fontSize: 15, fontWeight: 500, color: "#202124", fontFamily: "'Google Sans','Roboto',Arial,sans-serif", background: "transparent", padding: 0, minWidth: 0 }} />
+          <button style={{ background: "none", border: "none", color: "#5f6368", cursor: "pointer", fontSize: 20, lineHeight: 1, padding: "0 4px" }}>⋮</button>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "#5f6368", cursor: "pointer", fontSize: 22, lineHeight: 1, padding: 0, display: "flex", alignItems: "center" }}>×</button>
         </div>
 
-        {/* ── Name row ── */}
-        <div style={{
-          padding: "10px 14px 6px",
-          borderBottom: "1px solid rgba(255,255,255,0.06)",
-          display: "flex", alignItems: "center", gap: 10,
-        }}>
-          <label style={{ color: "#9ab8cc", fontSize: 11.5, flexShrink: 0, width: 40 }}>Name:</label>
-          <input
-            value={name}
-            onChange={e => setName(e.target.value)}
-            readOnly={!isDrawing}
-            style={{
-              flex: 1, padding: "4px 8px",
-              background: isDrawing ? "#0e1a25" : "rgba(14,26,37,0.5)",
-              border: "1px solid #3a5068", borderRadius: 3,
-              color: "#d8eaf8", fontSize: 12, outline: "none",
-              fontFamily: "'Segoe UI', Arial, sans-serif",
-              cursor: isDrawing ? "text" : "default",
-            }}
-          />
+        {/* ── Icon/label controls ────────────────────────────────────────── */}
+        <TopIconRow />
+
+        {/* ── Tabs ───────────────────────────────────────────────────────── */}
+        <div style={{ display: "flex", borderBottom: "1px solid #e8eaed", overflowX: "auto", flexShrink: 0 }}>
+          {TABS.map(t => <Tab key={t.id} label={t.label} active={tab === t.id} onClick={() => setTab(t.id)} />)}
         </div>
 
-        {/* ── Tab strip ── */}
-        <div style={{
-          padding: "6px 12px 0",
-          background: "linear-gradient(180deg,#182535 0%,#16202e 100%)",
-          borderBottom: "1px solid #3a5068",
-          display: "flex", alignItems: "flex-end",
-        }}>
-          {TABS.map(t => (
-            <TabBtn key={t} label={t} active={tab === t} onClick={() => setTab(t)} />
-          ))}
-        </div>
+        {/* ── Content ────────────────────────────────────────────────────── */}
+        <div style={{ flex: 1, overflowY: "auto", background: "#fff" }}>
 
-        {/* ── Tab content ── */}
-        <div style={{ flex: 1, overflow: "auto", background: "#1a2d3e", padding: 0 }}>
+          {/* PLACEMARK TAB */}
+          {tab === "Placemark" && (
+            <div style={{ padding: "20px 16px 24px", display: "flex", flexDirection: "column", gap: 10 }}>
+              <div style={{ fontSize: 13, fontWeight: 500, color: "#202124", marginBottom: 4 }}>Placemark placement</div>
 
-          {/* ════ DESCRIPTION ════ */}
-          {tab === "Description" && (
-            <div style={{ padding: "14px" }}>
-              <div style={{ color: "#7a9aaa", fontSize: 10, marginBottom: 6, fontWeight: 600, letterSpacing: "0.05em" }}>DESCRIPTION</div>
-              <textarea
-                value={desc}
-                onChange={e => setDesc(e.target.value)}
-                readOnly={!isDrawing}
-                placeholder={isDrawing ? "Add a description…" : "No description"}
-                rows={4}
-                style={{
-                  width: "100%", padding: "8px",
-                  background: isDrawing ? "#0e1a25" : "rgba(14,26,37,0.4)",
-                  border: "1px solid #3a5068", borderRadius: 3,
-                  color: "#c8dff0", fontSize: 11.5, resize: "vertical",
-                  fontFamily: "'Segoe UI', Arial, sans-serif",
-                  outline: "none", boxSizing: "border-box",
-                }}
+              {/* ── COORDINATE FIELDS — respects coordSystem prop ── */}
+              <CoordinateFields
+                coordSystem={coordSystem}
+                lat={lat}
+                lng={lng}
+                setLat={setLat}
+                setLng={setLng}
+                altitude={altitude}
+                setAltitude={setAltitude}
+                grounding={grounding}
               />
 
-              {/* Attributes table */}
-              {Object.keys(props).length > 0 && (
-                <div style={{ marginTop: 12 }}>
-                  <div style={{ color: "#7a9aaa", fontSize: 10, marginBottom: 6, fontWeight: 600, letterSpacing: "0.05em" }}>
-                    ATTRIBUTES ({Object.keys(props).length})
-                  </div>
-                  <div style={{
-                    background: "#0e1a25", border: "1px solid #2a4050",
-                    borderRadius: 3, overflow: "hidden",
-                  }}>
-                    {Object.entries(props)
-                      .filter(([k]) => !["styleUrl", "styleHash", "Style"].includes(k))
-                      .slice(0, 20)
-                      .map(([k, v], i, arr) => (
-                        <div key={k} style={{
-                          display: "flex", alignItems: "center", padding: "5px 10px",
-                          borderBottom: i < arr.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none",
-                          gap: 8,
-                        }}>
-                          <span style={{
-                            color: "#5a8090", fontSize: 10, width: 110, flexShrink: 0,
-                            fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis",
-                          }}>{k}</span>
-                          <span style={{
-                            color: "#a8c8d8", fontSize: 10.5, flex: 1,
-                            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                          }}>{String(v ?? "—")}</span>
-                          <CopyBtn text={String(v ?? "")} />
-                        </div>
-                      ))}
-                  </div>
-                </div>
-              )}
+              <FloatSelect label="Grounding" value={grounding} onChange={setGnd} options={GND} />
 
-              {/* Geometry badge */}
-              {stats && (
-                <div style={{ marginTop: 10, display: "flex", gap: 6, alignItems: "center" }}>
-                  <span style={{
-                    padding: "2px 10px", borderRadius: 10, fontSize: 10, fontWeight: 600,
-                    background: stats.kind === "polygon" ? "rgba(251,191,36,0.12)"
-                      : stats.kind === "point"   ? "rgba(52,211,153,0.12)"
-                      : "rgba(96,165,250,0.12)",
-                    border: `1px solid ${stats.kind === "polygon" ? "rgba(251,191,36,0.3)"
-                      : stats.kind === "point" ? "rgba(52,211,153,0.3)" : "rgba(96,165,250,0.3)"}`,
-                    color: stats.kind === "polygon" ? "#fbbf24"
-                      : stats.kind === "point" ? "#34d399" : "#60a5fa",
-                  }}>
-                    {stats.kind === "polygon" ? "Polygon" : stats.kind === "point" ? "Point" : "LineString"}
-                  </span>
-                  {fileType && (
-                    <span style={{ color: "#3a5868", fontSize: 10, fontFamily: "monospace" }}>
-                      {fileType.toUpperCase()} · {fileName}
-                    </span>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* ════ STYLE, COLOR ════ */}
-          {tab === "Style, Color" && (
-            <div style={{ padding: "14px" }}>
-              <div style={{ color: "#7a9aaa", fontSize: 10, marginBottom: 8, fontWeight: 600, letterSpacing: "0.05em" }}>LINES</div>
-              <div style={{
-                background: "#0e1a25", border: "1px solid #2a4050",
-                borderRadius: 3, padding: "10px 12px", marginBottom: 12,
-              }}>
-                <div style={{ display: "grid", gridTemplateColumns: "100px 1fr", rowGap: 8, alignItems: "center" }}>
-                  <label style={{ color: "#9ab8cc", fontSize: 11 }}>Color:</label>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <input
-                      type="color" value={color}
-                      onChange={e => setColor(e.target.value)}
-                      disabled={!isDrawing}
-                      style={{
-                        width: 36, height: 24, padding: 0,
-                        border: "1px solid #3a5068", borderRadius: 2,
-                        cursor: isDrawing ? "pointer" : "default", background: "none",
-                      }}
-                    />
-                    <span style={{ color: "#6a8898", fontFamily: "monospace", fontSize: 11 }}>
-                      {color.toUpperCase()}
-                    </span>
-                  </div>
-
-                  <label style={{ color: "#9ab8cc", fontSize: 11 }}>Width:</label>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <input
-                      type="range" min={1} max={10} value={width}
-                      onChange={e => setWidth(Number(e.target.value))}
-                      disabled={!isDrawing} style={{ flex: 1 }}
-                    />
-                    <span style={{ color: "#d8eaf8", fontSize: 11, minWidth: 20, textAlign: "right" }}>{width}</span>
-                  </div>
-
-                  <label style={{ color: "#9ab8cc", fontSize: 11 }}>Opacity:</label>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <input
-                      type="range" min={0} max={100} value={opacity}
-                      onChange={e => setOpacity(Number(e.target.value))}
-                      disabled={!isDrawing} style={{ flex: 1 }}
-                    />
-                    <span style={{ color: "#d8eaf8", fontSize: 11, minWidth: 30, textAlign: "right" }}>{opacity}%</span>
-                  </div>
-                </div>
+              <div style={{ fontSize: 13, fontWeight: 500, color: "#202124", marginTop: 14, marginBottom: 4 }}>Camera view</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                <FloatInput label="Heading" value={heading} onChange={setHeading} unit="°" />
+                <FloatInput label="Tilt"    value={tilt}    onChange={setTilt}    unit="°" />
               </div>
+              <FloatInput label="Range" value={range} onChange={setRange} unit="m" />
 
-              {stats?.kind === "polygon" && (
-                <>
-                  <div style={{ color: "#7a9aaa", fontSize: 10, marginBottom: 8, fontWeight: 600, letterSpacing: "0.05em" }}>AREA FILL</div>
-                  <div style={{ background: "#0e1a25", border: "1px solid #2a4050", borderRadius: 3, padding: "10px 12px" }}>
-                    <div style={{ display: "grid", gridTemplateColumns: "100px 1fr", rowGap: 8, alignItems: "center" }}>
-                      <label style={{ color: "#9ab8cc", fontSize: 11 }}>Fill Color:</label>
-                      <input
-                        type="color" defaultValue="#ff880044"
-                        disabled={!isDrawing}
-                        style={{ width: 36, height: 24, padding: 0, border: "1px solid #3a5068", borderRadius: 2 }}
-                      />
-                      <label style={{ color: "#9ab8cc", fontSize: 11 }}>Fill Opacity:</label>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <input type="range" min={0} max={100} defaultValue={40} disabled={!isDrawing} style={{ flex: 1 }} />
-                        <span style={{ color: "#d8eaf8", fontSize: 11, minWidth: 30 }}>40%</span>
-                      </div>
-                    </div>
-                  </div>
-                </>
-              )}
-
-              {/* ── Close Path checkbox — shown for any LineString (drawn or imported) ── */}
-              {stats?.kind === "line" && (
-                <div style={{
-                  marginTop: 12,
-                  background: "#0e1a25", border: "1px solid #2a4050",
-                  borderRadius: 3, padding: "10px 12px",
+              {/* Coord system indicator badge */}
+              <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
+                <span style={{ fontSize: 11, color: "#5f6368" }}>Coordinate system:</span>
+                <span style={{
+                  fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 10,
+                  background: coordSystem === "utm" ? "#fce8e6" : "#e8f0fe",
+                  color: coordSystem === "utm" ? "#d93025" : "#1a73e8",
+                  fontFamily: "'Roboto Mono',monospace",
                 }}>
-                  <div style={{ color: "#7a9aaa", fontSize: 10, marginBottom: 8, fontWeight: 600, letterSpacing: "0.05em" }}>PATH OPTIONS</div>
-                  <label style={{
-                    display: "flex", alignItems: "center", gap: 10, cursor: "pointer",
-                    userSelect: "none",
-                  }}>
-                    {/* Custom GEP-style checkbox */}
-                    <div
-                      onClick={() => setClosePath(v => !v)}
-                      style={{
-                        width: 16, height: 16, borderRadius: 2, flexShrink: 0,
-                        border: `1px solid ${closePath ? "#4a9eff" : "#3a5068"}`,
-                        background: closePath ? "#1a4a7a" : "#0a1420",
-                        display: "flex", alignItems: "center", justifyContent: "center",
-                        transition: "all 0.15s",
-                      }}
-                    >
-                      {closePath && (
-                        <svg width="10" height="10" viewBox="0 0 10 10">
-                          <polyline points="1.5,5 4,7.5 8.5,2" stroke="#4a9eff" strokeWidth="1.8" fill="none" strokeLinecap="round" strokeLinejoin="round"/>
-                        </svg>
-                      )}
-                    </div>
-                    <div onClick={() => setClosePath(v => !v)}>
-                      <div style={{ color: "#c8dff0", fontSize: 11.5 }}>Close path</div>
-                      <div style={{ color: "#5a7888", fontSize: 10, marginTop: 2 }}>
-                        Connects the last point back to the first — shows enclosed area in Measurements
-                      </div>
-                    </div>
-                  </label>
-                  {closePath && (
-                    <div style={{
-                      marginTop: 8, padding: "6px 10px", borderRadius: 3,
-                      background: "rgba(74,158,255,0.08)", border: "1px solid rgba(74,158,255,0.2)",
-                      color: "#6ab0e8", fontSize: 10,
-                    }}>
-                      ✓ Path is closed — enclosed area now shown in the Measurements tab
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {!isDrawing && stats?.kind !== "line" && (
-                <div style={{ marginTop: 10, color: "#5a7888", fontSize: 10.5, fontStyle: "italic" }}>
-                  Style editing is only available for drawn shapes.
-                </div>
-              )}
+                  {coordSystem === "decimalDegrees"  ? "Decimal Degrees" :
+                   coordSystem === "dms"             ? "Deg Min Sec" :
+                   coordSystem === "decimalMinutes"  ? "Deg Decimal Min" :
+                   coordSystem === "utm"             ? "UTM" :
+                   coordSystem === "mgrs"            ? "MGRS" :
+                   coordSystem}
+                </span>
+              </div>
             </div>
           )}
 
-          {/* ════ VIEW ════ */}
-          {tab === "View" && (
-            <div style={{ padding: "14px" }}>
-              <div style={{ color: "#7a9aaa", fontSize: 10, marginBottom: 8, fontWeight: 600, letterSpacing: "0.05em" }}>VIEW SETTINGS</div>
-              <div style={{ background: "#0e1a25", border: "1px solid #2a4050", borderRadius: 3, padding: "10px 12px" }}>
-                <div style={{ display: "grid", gridTemplateColumns: "110px 1fr", rowGap: 8, alignItems: "center" }}>
-                  {[
-                    ["Center (Lat)", stats?.kind === "point"
-                      ? `${stats.lat?.toFixed(6)}°`
-                      : stats?.coords?.[0] ? `${stats.coords[0][1]?.toFixed(6)}°` : "—"],
-                    ["Center (Lng)", stats?.kind === "point"
-                      ? `${stats.lng?.toFixed(6)}°`
-                      : stats?.coords?.[0] ? `${stats.coords[0][0]?.toFixed(6)}°` : "—"],
-                    ["Range",   "—"],
-                    ["Heading", "0.000°"],
-                    ["Tilt",    "0.000°"],
-                  ].map(([label, val]) => (
-                    <>
-                      <label key={label + "l"} style={{ color: "#9ab8cc", fontSize: 11 }}>{label}:</label>
-                      <span  key={label + "v"} style={{ color: "#d8eaf8", fontFamily: "monospace", fontSize: 11 }}>{val}</span>
-                    </>
-                  ))}
+          {/* STYLE TAB */}
+          {tab === "Style" && (
+            <div style={{ padding: "20px 16px" }}>
+              <div style={{ marginBottom: 16, borderRadius: 6, overflow: "hidden", border: "1px solid #e8eaed" }}>
+                <div style={{ height: Math.max(4, width * 2.5), background: color, opacity: opacity / 100 }} />
+                {featureKind === "polygon" && <div style={{ height: 32, background: fillColor, opacity: fillOp / 100 }} />}
+                <div style={{ padding: "4px 10px", background: "#f8f9fa", color: "#5f6368", fontSize: 10, display: "flex", gap: 12 }}>
+                  <span>Line: <b style={{ color: "#1a73e8" }}>{color.toUpperCase()}</b> · {width}px · {opacity}%</span>
+                  {featureKind === "polygon" && <span>Fill: <b style={{ color: "#1a73e8" }}>{fillColor.toUpperCase()}</b> · {fillOp}%</span>}
                 </div>
               </div>
-              <div style={{ marginTop: 10, color: "#5a7888", fontSize: 10 }}>Coordinate system: WGS-84 (EPSG:4326)</div>
-            </div>
-          )}
-
-          {/* ════ ALTITUDE ════ */}
-          {tab === "Altitude" && (
-            <div style={{ padding: "14px" }}>
-              <div style={{ color: "#7a9aaa", fontSize: 10, marginBottom: 8, fontWeight: 600, letterSpacing: "0.05em" }}>ALTITUDE MODE</div>
-              <div style={{ background: "#0e1a25", border: "1px solid #2a4050", borderRadius: 3, padding: "10px 12px" }}>
-                {["Clamped to ground", "Relative to ground", "Absolute"].map((mode, i) => (
-                  <label key={mode} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", cursor: "pointer" }}>
-                    <input type="radio" name="altmode" defaultChecked={i === 0} style={{ accentColor: "#4a9eff" }} />
-                    <span style={{ color: "#c8dff0", fontSize: 11.5 }}>{mode}</span>
-                  </label>
-                ))}
-                <div style={{ marginTop: 10, borderTop: "1px solid #2a4050", paddingTop: 10 }}>
-                  <div style={{ display: "grid", gridTemplateColumns: "100px 1fr", gap: 6, alignItems: "center" }}>
-                    <label style={{ color: "#9ab8cc", fontSize: 11 }}>Altitude:</label>
-                    <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                      <input
-                        defaultValue={stats?.kind === "point" ? (stats.alt || 0).toFixed(2) : "0"}
-                        disabled={!isDrawing}
-                        style={{
-                          width: 80, padding: "3px 6px",
-                          background: "#0a1420", border: "1px solid #3a5068",
-                          borderRadius: 3, color: "#d8eaf8", fontSize: 11, fontFamily: "monospace",
-                        }}
-                      />
-                      <select style={{
-                        background: "#0e1a25", border: "1px solid #3a5068",
-                        color: "#9ab8cc", fontSize: 11, padding: "3px 4px", borderRadius: 3,
-                      }}>
-                        <option>Meters</option>
-                        <option>Feet</option>
-                      </select>
-                    </div>
+              <p style={{ fontSize: 11, fontWeight: 600, color: "#5f6368", letterSpacing: "0.08em", textTransform: "uppercase", margin: "0 0 10px" }}>Line style</p>
+              <div style={{ display: "grid", gridTemplateColumns: "110px 1fr", rowGap: 14, alignItems: "center", marginBottom: 20 }}>
+                <label style={{ fontSize: 13, color: "#202124" }}>Color</label>
+                <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                  <input type="color" value={color} onChange={e => setColor(e.target.value)} style={{ width: 36, height: 28, padding: 0, border: "1.5px solid #dadce0", borderRadius: 4, cursor: "pointer" }} />
+                  <span style={{ fontSize: 12, color: "#5f6368", fontFamily: "monospace" }}>{color.toUpperCase()}</span>
+                </div>
+                <label style={{ fontSize: 13, color: "#202124" }}>Width</label>
+                <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                  <input type="range" min={1} max={12} value={width} onChange={e => setWidth(Number(e.target.value))} style={{ flex: 1, accentColor: "#1a73e8" }} />
+                  <span style={{ fontSize: 13, color: "#202124", minWidth: 20 }}>{width}</span>
+                </div>
+                <label style={{ fontSize: 13, color: "#202124" }}>Opacity</label>
+                <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                  <input type="range" min={0} max={100} value={opacity} onChange={e => setOpacity(Number(e.target.value))} style={{ flex: 1, accentColor: "#1a73e8" }} />
+                  <span style={{ fontSize: 13, color: "#202124", minWidth: 36 }}>{opacity}%</span>
+                </div>
+              </div>
+              {featureKind === "polygon" && <>
+                <p style={{ fontSize: 11, fontWeight: 600, color: "#5f6368", letterSpacing: "0.08em", textTransform: "uppercase", margin: "0 0 10px" }}>Area fill</p>
+                <div style={{ display: "grid", gridTemplateColumns: "110px 1fr", rowGap: 14, alignItems: "center" }}>
+                  <label style={{ fontSize: 13, color: "#202124" }}>Fill color</label>
+                  <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                    <input type="color" value={fillColor} onChange={e => setFillColor(e.target.value)} style={{ width: 36, height: 28, padding: 0, border: "1.5px solid #dadce0", borderRadius: 4, cursor: "pointer" }} />
+                    <span style={{ fontSize: 12, color: "#5f6368", fontFamily: "monospace" }}>{fillColor.toUpperCase()}</span>
+                  </div>
+                  <label style={{ fontSize: 13, color: "#202124" }}>Fill opacity</label>
+                  <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                    <input type="range" min={0} max={100} value={fillOp} onChange={e => setFillOp(Number(e.target.value))} style={{ flex: 1, accentColor: "#1a73e8" }} />
+                    <span style={{ fontSize: 13, color: "#202124", minWidth: 36 }}>{fillOp}%</span>
                   </div>
                 </div>
-              </div>
+              </>}
             </div>
           )}
 
-          {/* ════ MEASUREMENTS ════ */}
+          {/* VIEW TAB */}
+          {tab === "View" && (
+            <div style={{ padding: "20px 16px" }}>
+              <p style={{ fontSize: 13, fontWeight: 500, color: "#202124", margin: "0 0 14px" }}>View position</p>
+              {[
+                ["Center latitude",  initC.lat.toFixed(8) + "°"],
+                ["Center longitude", initC.lng.toFixed(8) + "°"],
+                ["Coordinate system","WGS-84 (EPSG:4326)"],
+                ["Heading",          heading + "°"],
+                ["Tilt",             tilt + "°"],
+                ["Range",            range + " m"],
+              ].map(([k, v]) => (
+                <div key={k} style={{ display: "flex", justifyContent: "space-between", padding: "9px 0", borderBottom: "1px solid #f1f3f4" }}>
+                  <span style={{ fontSize: 13, color: "#5f6368" }}>{k}</span>
+                  <span style={{ fontSize: 13, color: "#202124", fontFamily: "'Roboto Mono',monospace" }}>{v}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* ALTITUDE TAB */}
+          {tab === "Altitude" && (
+            <div style={{ padding: "20px 16px", display: "flex", flexDirection: "column", gap: 14 }}>
+              <p style={{ fontSize: 13, fontWeight: 500, color: "#202124", margin: 0 }}>Altitude mode</p>
+              {GND.map(o => (
+                <label key={o.value} style={{ display: "flex", alignItems: "center", gap: 12, cursor: "pointer" }}>
+                  <input type="radio" name="altmode" value={o.value} checked={grounding === o.value} onChange={() => setGnd(o.value)} style={{ accentColor: "#1a73e8", width: 16, height: 16 }} />
+                  <span style={{ fontSize: 13, color: "#202124" }}>{o.label}</span>
+                </label>
+              ))}
+              <FloatInput label="Altitude" value={altitude} onChange={setAltitude} unit="m" readOnly={grounding === "clamped"} />
+              {grounding === "clamped" && <p style={{ fontSize: 11, color: "#5f6368", margin: "-4px 0 0", fontStyle: "italic" }}>Altitude is ignored when clamped to ground.</p>}
+            </div>
+          )}
+
+          {/* MEASUREMENTS TAB */}
           {tab === "Measurements" && (
             <div>
-              {!stats && (
-                <div style={{ padding: "30px 20px", textAlign: "center" }}>
-                  <div style={{ fontSize: 28, marginBottom: 10 }}>📄</div>
-                  <div style={{ color: "#5a7888", fontSize: 11, fontStyle: "italic" }}>
-                    No geometry available for this feature.
-                    <br />
-                    <span style={{ fontSize: 10, marginTop: 6, display: "block", color: "#3a5060" }}>
-                      This may be a folder or style-only node.
-                    </span>
-                  </div>
-                </div>
-              )}
-
-              {/* ── Polygon ── */}
-              {stats?.kind === "polygon" && (
-                <table style={{ width: "100%", borderCollapse: "collapse" }}>
-
-                  {/* AREA section */}
-                  <thead>
-                    <UnitSectionHeader
-                      title="AREA"
-                      unit={areaUnit}
-                      units={AREA_UNITS}
-                      onUnit={setAreaUnit}
-                    />
-                  </thead>
-                  <tbody>
-                    <AllUnitsRows
-                      valueM={stats.areaSqM}
-                      units={AREA_UNITS}
-                      activeKey={areaUnit}
-                    />
-                  </tbody>
-
-                  {/* PERIMETER section */}
-                  <thead>
-                    <UnitSectionHeader
-                      title="PERIMETER"
-                      unit={perimUnit}
-                      units={DIST_UNITS}
-                      onUnit={setPerimUnit}
-                    />
-                  </thead>
-                  <tbody>
-                    <AllUnitsRows
-                      valueM={stats.perimM}
-                      units={DIST_UNITS}
-                      activeKey={perimUnit}
-                    />
-                    <tr>
-                      <td style={{
-                        padding: "6px 10px 6px 14px", color: "#9ab8cc", fontSize: 11,
-                        borderTop: "1px solid #1e3040",
-                      }}>Vertices</td>
-                      <td style={{ padding: "6px 8px", borderTop: "1px solid #1e3040" }}>
-                        <span style={{ color: "#d8eaf8", fontFamily: "monospace", fontSize: 11 }}>
-                          {stats.coords ? stats.coords.length : "—"}
-                        </span>
-                      </td>
-                    </tr>
-                  </tbody>
-
-                  <tfoot>
-                    <tr>
-                      <td colSpan={2} style={{
-                        padding: "8px 14px", borderTop: "1px solid #1e3040",
-                        color: "#3a5868", fontSize: 9.5, fontFamily: "monospace",
-                      }}>
-                        WGS-84 · Geographic · Spherical Haversine
-                      </td>
-                    </tr>
-                  </tfoot>
-                </table>
-              )}
-
-              {/* ── Line ── */}
-              {stats?.kind === "line" && (
-                <table style={{ width: "100%", borderCollapse: "collapse" }}>
-
-                  {/* "Close path" quick-toggle row at top of Measurements tab */}
-                  <tbody>
-                    <tr>
-                      <td colSpan={2} style={{
-                        padding: "8px 14px 6px",
-                        background: "#111e2a",
-                        borderBottom: "1px solid #1e3040",
-                      }}>
-                        <label style={{
-                          display: "flex", alignItems: "center", gap: 8,
-                          cursor: "pointer", userSelect: "none",
-                        }}>
-                          <div
-                            onClick={() => setClosePath(v => !v)}
-                            style={{
-                              width: 14, height: 14, borderRadius: 2, flexShrink: 0,
-                              border: `1px solid ${closePath ? "#4a9eff" : "#3a5068"}`,
-                              background: closePath ? "#1a4a7a" : "#0a1420",
-                              display: "flex", alignItems: "center", justifyContent: "center",
-                            }}
-                          >
-                            {closePath && (
-                              <svg width="9" height="9" viewBox="0 0 10 10">
-                                <polyline points="1.5,5 4,7.5 8.5,2" stroke="#4a9eff" strokeWidth="1.8" fill="none" strokeLinecap="round" strokeLinejoin="round"/>
-                              </svg>
-                            )}
-                          </div>
-                          <span
-                            onClick={() => setClosePath(v => !v)}
-                            style={{ color: closePath ? "#7ab8e8" : "#7a9ab0", fontSize: 11 }}
-                          >
-                            Close path {closePath ? "— showing enclosed area" : ""}
-                          </span>
-                        </label>
-                      </td>
-                    </tr>
-                  </tbody>
-
-                  {/* LENGTH section — uses effectiveStats so closing leg is included */}
-                  <thead>
-                    <UnitSectionHeader
-                      title={closePath ? "TOTAL LENGTH (closed)" : "LENGTH"}
-                      unit={lenUnit}
-                      units={DIST_UNITS}
-                      onUnit={setLenUnit}
-                    />
-                  </thead>
-                  <tbody>
-                    <AllUnitsRows
-                      valueM={effectiveStats.lengthM}
-                      units={DIST_UNITS}
-                      activeKey={lenUnit}
-                    />
-                    <tr>
-                      <td style={{
-                        padding: "6px 10px 6px 14px", color: "#9ab8cc", fontSize: 11,
-                        borderTop: "1px solid #1e3040",
-                      }}>Points</td>
-                      <td style={{ padding: "6px 8px", borderTop: "1px solid #1e3040" }}>
-                        <span style={{ color: "#d8eaf8", fontFamily: "monospace", fontSize: 11 }}>
-                          {stats.coords ? stats.coords.length : "—"}
-                          {closePath && (
-                            <span style={{ color: "#4a7888", fontSize: 10, marginLeft: 6 }}>
-                              +1 closing segment
-                            </span>
-                          )}
-                        </span>
-                      </td>
-                    </tr>
-                  </tbody>
-
-                  {/*
-                    ENCLOSED AREA — shown when "Close path" is checked OR the path
-                    was already geometrically closed (first == last vertex).
-                    Matches Google Earth Pro's exact behaviour.
-                  */}
-                  {effectiveStats.isClosed && effectiveStats.areaSqM != null && (
-                    <>
-                      <thead>
-                        <tr>
-                          <td colSpan={2} style={{
-                            padding: "6px 14px 2px",
-                            color: "#7a9aaa", fontSize: 9.5, fontWeight: 700,
-                            letterSpacing: "0.08em", background: "#162030",
-                            borderBottom: "1px solid #2a3a4a",
-                            borderTop: "1px solid #2a3a4a",
-                          }}>
-                            ENCLOSED AREA
-                            <span style={{
-                              marginLeft: 8, fontSize: 9, fontWeight: 400,
-                              color: "#4a9eff", fontStyle: "italic",
-                            }}>
-                              {stats.isClosed ? "(geometrically closed)" : "(close path enabled)"}
-                            </span>
-                            <select
-                              value={areaUnit}
-                              onChange={e => setAreaUnit(e.target.value)}
-                              style={{
-                                marginLeft: 8, background: "#0e1a25",
-                                border: "1px solid #3a5060", color: "#9ab8cc",
-                                fontSize: 10, padding: "1px 4px", borderRadius: 3, cursor: "pointer",
-                              }}
-                            >
-                              {AREA_UNITS.map(u => (
-                                <option key={u.key} value={u.key}>{u.label}</option>
-                              ))}
-                            </select>
-                          </td>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        <AllUnitsRows
-                          valueM={effectiveStats.areaSqM}
-                          units={AREA_UNITS}
-                          activeKey={areaUnit}
-                        />
-                      </tbody>
-                    </>
-                  )}
-
-                  <tfoot>
-                    <tr>
-                      <td colSpan={2} style={{
-                        padding: "8px 14px", borderTop: "1px solid #1e3040",
-                        color: "#3a5868", fontSize: 9.5, fontFamily: "monospace",
-                      }}>
-                        WGS-84 · Geographic · Spherical Haversine
-                        {effectiveStats.isClosed && (
-                          <span style={{ marginLeft: 8, color: "#5a9878" }}>· closed path</span>
-                        )}
-                      </td>
-                    </tr>
-                  </tfoot>
-                </table>
-              )}
-
-              {/* ── Point ── */}
+              {!stats && <div style={{ padding: "40px 20px", textAlign: "center", color: "#5f6368", fontSize: 13 }}>No geometry available.</div>}
               {stats?.kind === "point" && (
                 <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                  <thead>
-                    <tr>
-                      <td colSpan={2} style={{
-                        padding: "8px 14px 4px", color: "#7a9aaa", fontSize: 9.5,
-                        fontWeight: 700, letterSpacing: "0.08em",
-                        background: "#162030", borderBottom: "1px solid #2a3a4a",
-                      }}>POSITION</td>
-                    </tr>
-                  </thead>
+                  <thead><tr><td colSpan={2} style={{ padding: "10px 16px 6px", fontSize: 11, fontWeight: 600, color: "#5f6368", letterSpacing: "0.08em", background: "#f8f9fa", borderBottom: "1px solid #e8eaed", textTransform: "uppercase" }}>Position</td></tr></thead>
                   <tbody>
-                    {[
-                      ["Latitude",  `${stats.lat?.toFixed(8)}°`,        `${stats.lat?.toFixed(8)}`],
-                      ["Longitude", `${stats.lng?.toFixed(8)}°`,        `${stats.lng?.toFixed(8)}`],
-                      ["Altitude",  `${(stats.alt || 0).toFixed(2)} m`, `${(stats.alt || 0).toFixed(2)} m`],
-                    ].map(([label, val, copy]) => (
-                      <tr key={label}>
-                        <td style={{ padding: "7px 10px 7px 14px", color: "#9ab8cc", fontSize: 11.5, whiteSpace: "nowrap" }}>{label}</td>
-                        <td style={{ padding: "7px 8px" }}>
-                          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                            <span style={{
-                              color: "#f0c060", fontFamily: "monospace", fontSize: 12,
-                              fontWeight: 600, minWidth: 110, textAlign: "right",
-                            }}>{val}</span>
-                            <CopyBtn text={copy} />
-                          </div>
-                        </td>
+                    {[["Latitude", `${stats.lat.toFixed(8)}°`, stats.lat.toFixed(8)], ["Longitude", `${stats.lng.toFixed(8)}°`, stats.lng.toFixed(8)], ["Altitude", `${(stats.alt || 0).toFixed(2)} m`, `${(stats.alt || 0).toFixed(2)} m`]].map(([lbl, val, cp]) => (
+                      <tr key={lbl} style={{ borderBottom: "1px solid #f1f3f4" }}>
+                        <td style={{ padding: "10px 16px", fontSize: 13, color: "#5f6368", width: 130 }}>{lbl}</td>
+                        <td style={{ padding: "10px 8px" }}><div style={{ display: "flex", alignItems: "center", gap: 8 }}><span style={{ fontSize: 13, color: "#1a73e8", fontFamily: "'Roboto Mono',monospace", fontWeight: 500, minWidth: 120, textAlign: "right" }}>{val}</span><CopyBtn text={cp} /></div></td>
                       </tr>
                     ))}
-                    {/* DMS row */}
-                    <tr>
-                      <td colSpan={2} style={{ padding: "6px 14px", borderTop: "1px solid #1e3040" }}>
-                        <div style={{ color: "#5a7888", fontSize: 10, fontFamily: "monospace" }}>
-                          {stats.lat != null && stats.lng != null &&
-                            `${toDMS(stats.lat, "N", "S")}  ${toDMS(stats.lng, "E", "W")}`
-                          }
-                        </div>
-                      </td>
-                    </tr>
+                    {/* Show UTM in measurements if coordSystem is utm */}
+                    {coordSystem === "utm" && (() => {
+                      const u = latLngToUTM(stats.lat, stats.lng);
+                      return [
+                        ["UTM Zone",    u.zoneStr,                  u.zoneStr],
+                        ["Easting",     `${u.easting.toFixed(2)} m E`, `${u.easting.toFixed(2)} m E`],
+                        ["Northing",    `${u.northing.toFixed(2)} m N`, `${u.northing.toFixed(2)} m N`],
+                      ].map(([lbl, val, cp]) => (
+                        <tr key={lbl} style={{ borderBottom: "1px solid #f1f3f4", background: "#fffde7" }}>
+                          <td style={{ padding: "10px 16px", fontSize: 13, color: "#5f6368", width: 130 }}>{lbl}</td>
+                          <td style={{ padding: "10px 8px" }}><div style={{ display: "flex", alignItems: "center", gap: 8 }}><span style={{ fontSize: 13, color: "#e37400", fontFamily: "'Roboto Mono',monospace", fontWeight: 500, minWidth: 120, textAlign: "right" }}>{val}</span><CopyBtn text={cp} /></div></td>
+                        </tr>
+                      ));
+                    })()}
+                    <tr><td colSpan={2} style={{ padding: "8px 16px", fontSize: 11, color: "#5f6368", fontFamily: "monospace", background: "#f8f9fa", borderTop: "1px solid #e8eaed" }}>{toDMS(stats.lat, "N", "S")} &nbsp; {toDMS(stats.lng, "E", "W")}</td></tr>
                   </tbody>
-                  <tfoot>
-                    <tr>
-                      <td colSpan={2} style={{
-                        padding: "8px 14px", borderTop: "1px solid #1e3040",
-                        color: "#3a5868", fontSize: 9.5, fontFamily: "monospace",
-                      }}>
-                        WGS-84 · Geographic · Decimal Degrees + DMS
-                      </td>
-                    </tr>
-                  </tfoot>
                 </table>
+              )}
+              {stats?.kind === "polygon" && (
+                <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                  <thead><tr><td colSpan={2} style={{ padding: "10px 16px 6px", fontSize: 11, fontWeight: 600, color: "#5f6368", letterSpacing: "0.08em", background: "#f8f9fa", borderBottom: "1px solid #e8eaed", textTransform: "uppercase" }}>
+                    Area <select value={areaUnit} onChange={e => setAreaUnit(e.target.value)} style={{ marginLeft: 8, fontSize: 10, border: "1px solid #dadce0", borderRadius: 4, padding: "1px 4px", color: "#202124" }}>{AREA.map(u => <option key={u.key} value={u.key}>{u.label}</option>)}</select>
+                  </td></tr></thead>
+                  <tbody><MRows valueM={stats.areaSqM} units={AREA} activeKey={areaUnit} /></tbody>
+                  <thead><tr><td colSpan={2} style={{ padding: "10px 16px 6px", fontSize: 11, fontWeight: 600, color: "#5f6368", letterSpacing: "0.08em", background: "#f8f9fa", borderBottom: "1px solid #e8eaed", borderTop: "1px solid #e8eaed", textTransform: "uppercase" }}>
+                    Perimeter <select value={perimUnit} onChange={e => setPerimUnit(e.target.value)} style={{ marginLeft: 8, fontSize: 10, border: "1px solid #dadce0", borderRadius: 4, padding: "1px 4px", color: "#202124" }}>{DIST.map(u => <option key={u.key} value={u.key}>{u.label}</option>)}</select>
+                  </td></tr></thead>
+                  <tbody><MRows valueM={stats.perimM} units={DIST} activeKey={perimUnit} /><tr><td colSpan={2} style={{ padding: "8px 16px", fontSize: 11, color: "#5f6368", fontFamily: "monospace", background: "#f8f9fa", borderTop: "1px solid #e8eaed" }}>WGS-84 · Spherical Haversine</td></tr></tbody>
+                </table>
+              )}
+              {stats?.kind === "line" && (
+                <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                  <thead><tr><td colSpan={2} style={{ padding: "10px 16px 6px", fontSize: 11, fontWeight: 600, color: "#5f6368", letterSpacing: "0.08em", background: "#f8f9fa", borderBottom: "1px solid #e8eaed", textTransform: "uppercase" }}>
+                    Length <select value={lenUnit} onChange={e => setLenUnit(e.target.value)} style={{ marginLeft: 8, fontSize: 10, border: "1px solid #dadce0", borderRadius: 4, padding: "1px 4px", color: "#202124" }}>{DIST.map(u => <option key={u.key} value={u.key}>{u.label}</option>)}</select>
+                  </td></tr></thead>
+                  <tbody><MRows valueM={stats.lengthM} units={DIST} activeKey={lenUnit} /><tr><td colSpan={2} style={{ padding: "8px 16px", fontSize: 11, color: "#5f6368", fontFamily: "monospace", background: "#f8f9fa", borderTop: "1px solid #e8eaed" }}>WGS-84 · Spherical Haversine</td></tr></tbody>
+                </table>
+              )}
+            </div>
+          )}
+
+          {/* DESCRIPTION TAB */}
+          {tab === "Description" && (
+            <div style={{ padding: "20px 16px" }}>
+              <p style={{ fontSize: 11, fontWeight: 600, color: "#5f6368", letterSpacing: "0.08em", textTransform: "uppercase", margin: "0 0 10px" }}>Description</p>
+              <textarea value={desc} onChange={e => setDesc(e.target.value)} placeholder="Add a description…" rows={4}
+                style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px", border: "1.5px solid #dadce0", borderRadius: 4, fontSize: 13, color: "#202124", resize: "vertical", fontFamily: "'Google Sans','Roboto',Arial,sans-serif", outline: "none" }}
+                onFocus={e => e.target.style.borderColor = "#1a73e8"} onBlur={e => e.target.style.borderColor = "#dadce0"} />
+              {Object.keys(props).length > 0 && (
+                <div style={{ marginTop: 16 }}>
+                  <p style={{ fontSize: 11, fontWeight: 600, color: "#5f6368", letterSpacing: "0.08em", textTransform: "uppercase", margin: "0 0 8px" }}>Attributes ({Object.keys(props).length})</p>
+                  <div style={{ border: "1px solid #e8eaed", borderRadius: 6, overflow: "hidden" }}>
+                    {Object.entries(props).filter(([k]) => !["styleUrl", "styleHash", "Style"].includes(k)).slice(0, 20).map(([k, v], i, arr) => (
+                      <div key={k} style={{ display: "flex", alignItems: "center", padding: "7px 12px", borderBottom: i < arr.length - 1 ? "1px solid #f1f3f4" : "none", gap: 10, background: i % 2 === 0 ? "#fff" : "#fafafa" }}>
+                        <span style={{ color: "#5f6368", fontSize: 11, width: 110, flexShrink: 0, fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis" }}>{k}</span>
+                        <span style={{ color: "#202124", fontSize: 12, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{String(v ?? "—")}</span>
+                        <CopyBtn text={String(v ?? "")} />
+                      </div>
+                    ))}
+                  </div>
+                </div>
               )}
             </div>
           )}
         </div>
 
-        {/* ── Footer ── */}
-        <div style={{
-          padding: "8px 14px",
-          background: "linear-gradient(180deg,#1a2a3a 0%,#16202e 100%)",
-          borderTop: "1px solid #2a3a50",
-          display: "flex", justifyContent: "flex-end", gap: 8,
-        }}>
-          <button
-            onClick={handleSave}
-            style={{
-              padding: "5px 24px", borderRadius: 3, cursor: "pointer",
-              background: "linear-gradient(180deg,#2a4a6a,#1e3a58)",
-              border: "1px solid #4a7090", color: "#c8e0f8",
-              fontSize: 12, fontWeight: 600, fontFamily: "'Segoe UI', Arial, sans-serif",
-            }}
-          >OK</button>
-          <button
-            onClick={onClose}
-            style={{
-              padding: "5px 18px", borderRadius: 3, cursor: "pointer",
-              background: "linear-gradient(180deg,#1e2e40,#18242e)",
-              border: "1px solid #3a4a58", color: "#8ab0c0",
-              fontSize: 12, fontFamily: "'Segoe UI', Arial, sans-serif",
-            }}
-          >Cancel</button>
+        {/* ── Footer ─────────────────────────────────────────────────────── */}
+        <div style={{ padding: "12px 16px", borderTop: "1px solid #e8eaed", display: "flex", alignItems: "center", gap: 12, flexShrink: 0, background: "#fff" }}>
+          <button onClick={handleOK}
+            style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 26px", borderRadius: 24, cursor: "pointer", background: saved ? "#34a853" : "#1a73e8", border: "none", color: "#fff", fontSize: 14, fontWeight: 500, fontFamily: "'Google Sans','Roboto',Arial,sans-serif", boxShadow: "0 2px 8px rgba(26,115,232,0.32)", transition: "background 0.2s" }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12" /></svg>
+            {saved ? "Saved!" : "Done"}
+          </button>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 6, color: "#5f6368", fontSize: 12 }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z" stroke="#34a853" strokeWidth="1.5" />
+              <path d="M8 11.5l3 3 5-5" stroke="#34a853" strokeWidth="2" strokeLinecap="round" />
+            </svg>
+            Saved to Google Drive
+          </div>
+
+          {isDrawing && onDelete && (
+            <button onClick={onDelete}
+              style={{ marginLeft: "auto", padding: "8px 16px", borderRadius: 20, cursor: "pointer", background: "transparent", border: "1px solid #dadce0", color: "#d93025", fontSize: 12, fontFamily: "'Google Sans','Roboto',Arial,sans-serif", display: "flex", alignItems: "center", gap: 6 }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#d93025" strokeWidth="2" strokeLinecap="round">
+                <polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14H6L5 6" /><path d="M10 11v6M14 11v6" /><path d="M9 6V4h6v2" />
+              </svg>
+              Delete
+            </button>
+          )}
         </div>
+
       </div>
     </div>
   );

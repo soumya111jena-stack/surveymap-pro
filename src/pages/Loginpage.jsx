@@ -78,7 +78,6 @@ export default function LoginPage() {
     const token = localStorage.getItem("accessToken");
     const role  = localStorage.getItem("role");
     if (token && role === "ADMIN") navigate("/admin", { replace: true });
-    else if (token && role === "USER") navigate("/", { replace: true });
 
     navigator.geolocation?.getCurrentPosition(
       (p) => setCoords(`${p.coords.latitude.toFixed(4)}°N  ${p.coords.longitude.toFixed(4)}°E`),
