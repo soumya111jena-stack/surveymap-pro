@@ -1,4 +1,6 @@
-const BASE = "http://localhost:8080";
+import { BASE_URL } from "./apiConfig";
+
+const BASE = BASE_URL;
 
 const headers = () => ({
   "Content-Type": "application/json",

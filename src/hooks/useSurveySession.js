@@ -1,18 +1,3 @@
-/**
- * useSurveySession.js — SurveyMap Pro v2
- *
- * Changes from v1:
- *  - syncTrack now accepts full track object: { points, name, startedAt, endedAt,
- *    distanceMeters, photoDataURL, photoFilename }
- *  - syncDrawing is now a no-op (drawings are local only, not saved to backend)
- *  - syncBadge has .type field for SurveyMap.jsx spinner
- *  - Full debug logging to trace session + track save flow
- *
- * v2.1 FIX:
- *  - Export syncTrackRef (stable ref always pointing to latest syncTrack)
- *    so LiveTrackRecorder never holds a stale closure across async session restores
- */
-
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
   isLoggedIn,
@@ -117,66 +102,56 @@ export function useSurveySession({ enqueue, isOnline }) {
     }
   }, [activeSessionId]);
 
-  // ── syncTrack — main track save ───────────────────────────────────────
-  // Accepts either:
-  //   syncTrack(points)  — legacy plain array
-  //   syncTrack({ points, name, startedAt, endedAt, distanceMeters, photoDataURL })
+  // ── syncTrack ─────────────────────────────────────────────────────────
   const syncTrack = useCallback(
     async (trackOrPoints) => {
       console.log("[syncTrack] called");
 
-      // ── Auth check ────────────────────────────────────────────────────
       if (!isLoggedIn()) {
         console.warn("[syncTrack] not logged in — aborting");
         return;
       }
 
-      // ── Normalise input ───────────────────────────────────────────────
       const isArray        = Array.isArray(trackOrPoints);
-      const points         = isArray ? trackOrPoints : (trackOrPoints.points || []);
+      const points         = isArray ? trackOrPoints : (trackOrPoints.points         || []);
       const name           = isArray ? "Field Track" : (trackOrPoints.name           || "Field Track");
       const startedAt      = isArray ? null          : (trackOrPoints.startedAt      || null);
       const endedAt        = isArray ? null          : (trackOrPoints.endedAt        || null);
       const distanceMeters = isArray ? 0             : (trackOrPoints.distanceMeters || 0);
+      const photos         = isArray ? []            : (trackOrPoints.photos         || []);
       const photoDataURL   = isArray ? null          : (trackOrPoints.photoDataURL   || null);
       const photoFilename  = isArray ? "photo.jpg"   : (trackOrPoints.photoFilename  || "photo.jpg");
+      const photoName      = isArray ? null          : (trackOrPoints.photoName      || null);
+      const photoNote      = isArray ? null          : (trackOrPoints.photoNote      || null);
 
       console.log("[syncTrack] points:", points?.length,
         "| name:", name,
-        "| startedAt:", startedAt,
-        "| endedAt:", endedAt,
-        "| distance:", distanceMeters, "m",
-        "| hasPhoto:", !!photoDataURL);
+        "| photos:", photos.length,
+        "| photoName:", photoName,
+        "| photoNote:", photoNote);
 
-      // ── Minimum points check ──────────────────────────────────────────
       if (!points || points.length < 2) {
-        console.warn("[syncTrack] not enough points (need ≥ 2), got:", points?.length, "— aborting");
+        console.warn("[syncTrack] not enough points — aborting");
         return;
       }
 
-      // ── Session check / auto-create ───────────────────────────────────
       let sessionClientId = activeSessionClientId;
-      console.log("[syncTrack] activeSessionClientId:", sessionClientId);
 
       if (!sessionClientId) {
-        console.log("[syncTrack] no active session — auto-creating one…");
+        console.log("[syncTrack] no active session — auto-creating…");
         try {
           const session = await createSession({ name: "Auto Session" });
-          console.log("[syncTrack] auto session created:", JSON.stringify(session));
           setActiveSessionId(session.id);
           setActiveSessionClientId(session.clientId);
           setSessionStatus("active");
           sessionClientId = session.clientId;
-          console.log("[syncTrack] will use sessionClientId:", sessionClientId);
         } catch (err) {
           console.error("[syncTrack] session auto-create FAILED:", err.message);
           return;
         }
       }
 
-      // ── Save track ────────────────────────────────────────────────────
       setSyncStatus("syncing");
-      console.log("[syncTrack] → calling saveTrack, sessionClientId:", sessionClientId, "points:", points.length);
 
       try {
         const result = await saveTrack(sessionClientId, points, {
@@ -184,8 +159,11 @@ export function useSurveySession({ enqueue, isOnline }) {
           startedAt,
           endedAt,
           distanceMeters,
+          photos,
           photoDataURL,
           photoFilename,
+          photoName,
+          photoNote,
         });
         console.log("[syncTrack] ✅ saveTrack SUCCESS:", JSON.stringify(result));
         setSyncStatus("synced");
@@ -193,17 +171,12 @@ export function useSurveySession({ enqueue, isOnline }) {
         console.error("[syncTrack] ❌ saveTrack FAILED:", err.message);
         try {
           await enqueue("track", {
-            sessionClientId,
-            points,
-            name,
-            startedAt,
-            endedAt,
-            distanceMeters,
+            sessionClientId, points, name,
+            startedAt, endedAt, distanceMeters,
           });
-          console.log("[syncTrack] track queued for later sync");
           setSyncStatus("queued");
         } catch (qErr) {
-          console.error("[syncTrack] enqueue also failed:", qErr.message);
+          console.error("[syncTrack] enqueue failed:", qErr.message);
           setSyncStatus("error");
         }
       }
@@ -211,30 +184,17 @@ export function useSurveySession({ enqueue, isOnline }) {
     [activeSessionClientId, enqueue]
   );
 
-  // ── syncTrackRef — stable ref always pointing to latest syncTrack ─────
-  // LiveTrackRecorder uses this ref so it never holds a stale closure
-  // even when syncTrack recreates after an async session restore.
   const syncTrackRef = useRef(syncTrack);
-  useEffect(() => {
-    syncTrackRef.current = syncTrack;
-  }, [syncTrack]);
+  useEffect(() => { syncTrackRef.current = syncTrack; }, [syncTrack]);
 
-  // ── syncDrawing — drawings are local only, this is a no-op ───────────
-  // Kept so existing call sites in SurveyMap.jsx don't crash.
-  const syncDrawing = useCallback(
-    async (_drawing) => {
-      console.log("[syncDrawing] drawings are local only — skipping backend sync");
-    },
-    []
-  );
+  const syncDrawing = useCallback(async (_drawing) => {}, []);
 
-  // ── Badge ─────────────────────────────────────────────────────────────
   const badgeMap = {
-    idle:    { label: null,       type: "idle",    color: "#94a3b8", bg: "transparent",           border: "transparent"           },
-    syncing: { label: "Syncing…", type: "syncing", color: "#60a5fa", bg: "rgba(74,158,255,0.1)",  border: "rgba(74,158,255,0.3)"  },
-    synced:  { label: "Synced",   type: "synced",  color: "#4ade80", bg: "rgba(74,222,128,0.1)",  border: "rgba(74,222,128,0.3)"  },
-    queued:  { label: "Queued",   type: "queued",  color: "#fbbf24", bg: "rgba(251,191,36,0.1)",  border: "rgba(251,191,36,0.3)"  },
-    error:   { label: "Error",    type: "error",   color: "#f87171", bg: "rgba(248,113,113,0.1)", border: "rgba(248,113,113,0.3)" },
+    idle:    { label: null,       color: "#94a3b8", bg: "transparent",           border: "transparent"           },
+    syncing: { label: "Syncing…", color: "#60a5fa", bg: "rgba(74,158,255,0.1)",  border: "rgba(74,158,255,0.3)"  },
+    synced:  { label: "Synced",   color: "#4ade80", bg: "rgba(74,222,128,0.1)",  border: "rgba(74,222,128,0.3)"  },
+    queued:  { label: "Queued",   color: "#fbbf24", bg: "rgba(251,191,36,0.1)",  border: "rgba(251,191,36,0.3)"  },
+    error:   { label: "Error",    color: "#f87171", bg: "rgba(248,113,113,0.1)", border: "rgba(248,113,113,0.3)" },
   };
 
   return {
@@ -248,6 +208,6 @@ export function useSurveySession({ enqueue, isOnline }) {
     endSurveySession,
     syncDrawing,
     syncTrack,
-    syncTrackRef,   // ← NEW: stable ref for LiveTrackRecorder
+    syncTrackRef,
   };
 }

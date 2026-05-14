@@ -1,21 +1,100 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- ═══════════════════════════════════════════════
+         NETWORK
+    ════════════════════════════════════════════════ -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+
+    <!-- ═══════════════════════════════════════════════
+         GPS / LOCATION
+    ════════════════════════════════════════════════ -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <uses-feature android:name="android.hardware.location.gps"     android:required="true" />
+    <uses-feature android:name="android.hardware.location.network" android:required="false" />
+
+    <!-- ═══════════════════════════════════════════════
+         CAMERA
+    ════════════════════════════════════════════════ -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera"           android:required="true" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+
+    <!-- ═══════════════════════════════════════════════
+         STORAGE
+    ════════════════════════════════════════════════ -->
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="29" />
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+    <uses-permission android:name="android.permission.MANAGE_DOCUMENTS"
+        android:maxSdkVersion="32" />
+
+    <!-- ═══════════════════════════════════════════════
+         OTHER
+    ════════════════════════════════════════════════ -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- ═══════════════════════════════════════════════
+         QUERIES — Android 11+ package visibility
+    ════════════════════════════════════════════════ -->
+    <queries>
+        <intent>
+            <action android:name="android.media.action.IMAGE_CAPTURE" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.GET_CONTENT" />
+            <data android:mimeType="image/*" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.PICK" />
+            <data android:mimeType="image/*" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SEND" />
+            <data android:mimeType="*/*" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="geo" />
+        </intent>
+    </queries>
+
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/AppTheme">
+        android:theme="@style/AppTheme"
+        android:usesCleartextTraffic="true"
+        android:hardwareAccelerated="true"
+        android:requestLegacyExternalStorage="true"
+        android:networkSecurityConfig="@xml/network_security_config">
 
         <activity
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|navigation|density"
             android:name=".MainActivity"
             android:label="@string/title_activity_main"
-            android:theme="@style/AppTheme.NoActionBarLaunch"
             android:launchMode="singleTask"
-            android:exported="true">
+            android:exported="true"
+            android:screenOrientation="unspecified"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/AppTheme.NoActionBarLaunch">
 
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -24,6 +103,13 @@
 
         </activity>
 
+        <!-- Foreground service for background GPS tracking -->
+        <service
+            android:name=".LocationForegroundService"
+            android:foregroundServiceType="location"
+            android:exported="false" />
+
+        <!-- File Provider for camera/file sharing -->
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
@@ -35,94 +121,5 @@
         </provider>
 
     </application>
-
-    <!-- ═══════════════════════════════════════════════
-         NETWORK
-    ════════════════════════════════════════════════ -->
-    <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-
-    <!-- ═══════════════════════════════════════════════
-         GPS / LOCATION  (@capacitor/geolocation)
-    ════════════════════════════════════════════════ -->
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-    <!-- Uncomment only if tracking while app is in background -->
-    <!-- <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" /> -->
-
-    <uses-feature android:name="android.hardware.location.gps"     android:required="true" />
-    <uses-feature android:name="android.hardware.location.network" android:required="false" />
-
-    <!-- ═══════════════════════════════════════════════
-         CAMERA  (@capacitor/camera — photo waypoints)
-    ════════════════════════════════════════════════ -->
-    <uses-permission android:name="android.permission.CAMERA" />
-    <uses-feature android:name="android.hardware.camera"           android:required="true" />
-    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
-
-    <!-- ═══════════════════════════════════════════════
-         STORAGE  (GPX / KMZ export + photo read)
-         Android 13+ uses READ_MEDIA_IMAGES
-    ════════════════════════════════════════════════ -->
-
-    <!-- Android 12 and below -->
-    <uses-permission
-        android:name="android.permission.READ_EXTERNAL_STORAGE"
-        android:maxSdkVersion="32" />
-    <uses-permission
-        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
-        android:maxSdkVersion="29" />
-
-    <!-- Android 13+ (API 33+) -->
-    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
-
-    <!-- ═══════════════════════════════════════════════
-         SHARE  (@capacitor/share — KML / KMZ / CSV export)
-         ─────────────────────────────────────────────
-         ADD THESE TWO LINES after READ_MEDIA_IMAGES
-         (line above this comment block).
-         Required so the native share sheet can open
-         any installed app (Files, Drive, WhatsApp…).
-         Without these, Share.share() silently fails
-         on Android 11+ due to package visibility rules.
-    ════════════════════════════════════════════════ -->
-    <uses-permission android:name="android.permission.READ_MEDIA_DOCUMENTS" />  <!-- ← NEW LINE 1 -->
-    <uses-permission android:name="android.permission.MANAGE_DOCUMENTS"
-        android:maxSdkVersion="32" />                                            <!-- ← NEW LINE 2 -->
-
-    <!-- ═══════════════════════════════════════════════
-         QUERIES — required on Android 11+ (API 30+)
-         so @capacitor/camera can launch the camera app
-         WITHOUT this block, camera silently fails on
-         Android 11+ due to package visibility rules
-    ════════════════════════════════════════════════ -->
-    <queries>
-        <!-- Launch the camera for photo capture -->
-        <intent>
-            <action android:name="android.media.action.IMAGE_CAPTURE" />
-        </intent>
-        <!-- Pick image from gallery -->
-        <intent>
-            <action android:name="android.intent.action.GET_CONTENT" />
-            <data android:mimeType="image/*" />
-        </intent>
-        <!-- Android 13+ photo picker -->
-        <intent>
-            <action android:name="android.intent.action.PICK" />
-            <data android:mimeType="image/*" />
-        </intent>
-
-        <!-- ─────────────────────────────────────────
-             ADD THESE THREE LINES inside <queries>
-             Required so Share sheet can see installed
-             apps that can receive files (Drive, Files,
-             WhatsApp, Gmail, etc.) on Android 11+
-        ──────────────────────────────────────────── -->
-        <intent>                                                <!-- ← NEW LINE 3 -->
-            <action android:name="android.intent.action.SEND" /><!-- ← NEW LINE 4 -->
-            <data android:mimeType="*/*" />                     <!-- ← NEW LINE 5 -->
-        </intent>                                               <!-- ← NEW LINE 6 (closing tag) -->
-
-    </queries>
 
 </manifest>

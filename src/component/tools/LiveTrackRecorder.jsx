@@ -1,15 +1,22 @@
 /**
- * LiveTrackRecorder.jsx -- SurveyMap Pro v5.4.0
+ * LiveTrackRecorder.jsx -- SurveyMap Pro v5.3.3
  * ─────────────────────────────────────────────────────────────────────────────
- * CHANGES FROM v5.3.1:
+ * BUG FIXES in v5.3.3:
  *
- *  ✅ REMOVED: Auto-pause logic entirely (AUTO_PAUSE_SPEED, AUTO_PAUSE_SECS,
- *     stillSinceRef, autoPaused state, autoPaused banner, autoPaused pill badge)
+ *  ✅ FIX 1 — Multiple photos now all reach the backend.
+ *     - photoInputRef.current.value is reset to "" before every .click() so
+ *       Android WebView fires the change event on 2nd, 3rd, ... photos.
+ *     - e.target.value is cleared BEFORE FileReader runs (not after) so
+ *       re-selecting the same file also works.
+ *     - pendingPhotoRef / photoNameRef / photoNoteRef keep refs in sync with
+ *       state so stopRecording can auto-save an unconfirmed photo (user taps
+ *       Stop while the name/note modal is still open).
  *
- *  ✅ KEPT: Manual pause / resume only — status switches between
- *     "recording" → "paused" → "recording" via Pause / Resume buttons.
+ *  ✅ FIX 2 — stopRecording auto-saves any unconfirmed pending photo before
+ *     uploading, so photos taken right before Stop are never lost.
  *
- *  All other features unchanged from v5.3.1.
+ *  ✅ All v5.3.2 fixes preserved (auto-pause UI-only, modalOpenRef, all-photos
+ *     array sent to backend, stale-closure fix via syncTrackRef).
  */
 
 import React, { useState, useRef, useEffect, useCallback } from "react";
@@ -17,6 +24,8 @@ import L from "leaflet";
 
 /* --- Constants ------------------------------------------------------------ */
 const MIN_DISTANCE_M   = 3;
+const AUTO_PAUSE_SPEED = 0.3;
+const AUTO_PAUSE_SECS  = 8;
 const DB_NAME          = "SurveyMapPro";
 const DB_VERSION       = 2;
 const STORE_TRACKS     = "tracks";
@@ -525,17 +534,19 @@ export default function LiveTrackRecorder({
   const mapRef = leafletMapRef ?? internalRef;
   const getMap = () => mapRef.current;
 
-  // Stable ref always pointing to latest syncTrack prop
+  // ── Stable ref always pointing to latest syncTrack prop ───────────────
   const syncTrackRef = useRef(syncTrack);
-  useEffect(() => {
-    syncTrackRef.current = syncTrack;
-  }, [syncTrack]);
+  useEffect(() => { syncTrackRef.current = syncTrack; }, [syncTrack]);
+
+  // ── Modal-open suppresses auto-pause ──────────────────────────────────
+  const modalOpenRef = useRef(false);
 
   const [status,       setStatus]       = useState("idle");
   const [trackName,    setTrackName]    = useState("");
   const [trackColor,   setTrackColor]   = useState(TRACK_COLORS[0].hex);
   const [editingName,  setEditingName]  = useState(false);
   const [showColors,   setShowColors]   = useState(false);
+  const [autoPaused,   setAutoPaused]   = useState(false);
   const [minimised,    setMinimised]    = useState(false);
   const [confirmStop,  setConfirmStop]  = useState(false);
   const [tab,          setTab]          = useState("stats");
@@ -552,29 +563,50 @@ export default function LiveTrackRecorder({
   const [showWptModal,  setShowWptModal]  = useState(false);
   const [wptName,       setWptName]       = useState("");
   const [wptNote,       setWptNote]       = useState("");
-  const [pendingPhoto,  setPendingPhoto]  = useState(null);
-  const [photoName,     setPhotoName]     = useState("");
-  const [photoNote,     setPhotoNote]     = useState("");
+
+  // ── FIX v5.3.3: use refs for pending photo state so stopRecording
+  //    can auto-save an unconfirmed photo without stale-closure issues ───
+  const [pendingPhoto,  setPendingPhotoState] = useState(null);
+  const [photoName,     setPhotoNameState]    = useState("");
+  const [photoNote,     setPhotoNoteState]    = useState("");
+  const pendingPhotoRef = useRef(null);
+  const photoNameRef    = useRef("");
+  const photoNoteRef    = useRef("");
+
+  // Wrapped setters that keep refs in sync
+  const setPendingPhoto = useCallback((v) => {
+    pendingPhotoRef.current = v;
+    setPendingPhotoState(v);
+  }, []);
+  const setPhotoName = useCallback((v) => {
+    photoNameRef.current = v;
+    setPhotoNameState(v);
+  }, []);
+  const setPhotoNote = useCallback((v) => {
+    photoNoteRef.current = v;
+    setPhotoNoteState(v);
+  }, []);
+
   const photoInputRef = useRef(null);
 
-  const trackIdRef     = useRef(null);
-  const pointsRef      = useRef([]);
-  const waypointsRef   = useRef([]);
-  const photosRef      = useRef({});
-  const startTimeRef   = useRef(null);
-  const pausedMsRef    = useRef(0);
-  const pauseStartRef  = useRef(null);
-  const lastPtRef      = useRef(null);
-  const timerRef       = useRef(null);
-  const watchIdRef     = useRef(null);
-  const maxSpeedRef    = useRef(0);
-  const statusRef      = useRef("idle");
-  const trackNameRef   = useRef("");
-  const trackColorRef  = useRef(TRACK_COLORS[0].hex);
-  const movingMsRef    = useRef(0);
-  const lastMoveRef    = useRef(null);
-
-  // NOTE: stillSinceRef removed — was only used for auto-pause
+  const trackIdRef      = useRef(null);
+  const pointsRef       = useRef([]);
+  const waypointsRef    = useRef([]);
+  const photosRef       = useRef({});
+  const photoCounterRef = useRef(0);
+  const startTimeRef    = useRef(null);
+  const pausedMsRef     = useRef(0);
+  const pauseStartRef   = useRef(null);
+  const lastPtRef       = useRef(null);
+  const timerRef        = useRef(null);
+  const watchIdRef      = useRef(null);
+  const maxSpeedRef     = useRef(0);
+  const statusRef       = useRef("idle");
+  const trackNameRef    = useRef("");
+  const trackColorRef   = useRef(TRACK_COLORS[0].hex);
+  const movingMsRef     = useRef(0);
+  const lastMoveRef     = useRef(null);
+  const stillSinceRef   = useRef(null);
 
   const layerGroupRef = useRef(null);
   const polylineRef   = useRef(null);
@@ -610,9 +642,7 @@ export default function LiveTrackRecorder({
     } catch (e) { console.warn("persist:", e); }
   },[]);
 
-  // ── Timer: runs every second during recording only ───────────────────
-  // Manual pause stops the timer via the status check.
-  // No auto-pause logic here — purely tracks time and speed stats.
+  // ── Auto-pause timer (UI-only, never blocks GPS) ──────────────────────
   useEffect(()=>{
     if (status==="recording") {
       timerRef.current = setInterval(async ()=>{
@@ -625,12 +655,19 @@ export default function LiveTrackRecorder({
           if (dt > 0) curSpeed = haversine(pts.at(-2), pts.at(-1)) / dt;
         }
 
-        // Track moving time: accumulate whenever we have actual speed
-        if (curSpeed >= 0.1) {
-          if (lastMoveRef.current) movingMsRef.current += now - lastMoveRef.current;
-          lastMoveRef.current = now;
-        } else {
-          lastMoveRef.current = null;
+        if (!modalOpenRef.current) {
+          if (curSpeed < AUTO_PAUSE_SPEED) {
+            if (!stillSinceRef.current) stillSinceRef.current = now;
+            if (now - stillSinceRef.current > AUTO_PAUSE_SECS * 1000) {
+              setAutoPaused(true);
+              lastMoveRef.current = null;
+            }
+          } else {
+            stillSinceRef.current = null;
+            setAutoPaused(false);
+            if (lastMoveRef.current) movingMsRef.current += now - lastMoveRef.current;
+            lastMoveRef.current = now;
+          }
         }
 
         if (curSpeed > maxSpeedRef.current) maxSpeedRef.current = curSpeed;
@@ -699,17 +736,22 @@ export default function LiveTrackRecorder({
     pointsRef.current    = [];
     waypointsRef.current = [];
     photosRef.current    = {};
+    photoCounterRef.current = 0;
     startTimeRef.current = Date.now();
     pausedMsRef.current  = 0;
     maxSpeedRef.current  = 0;
     movingMsRef.current  = 0;
     lastMoveRef.current  = null;
+    stillSinceRef.current= null;
     lastPtRef.current    = null;
+    modalOpenRef.current = false;
     setTrackName(name);
     setWaypoints([]);
+    setAutoPaused(false);
     setConfirmStop(false);
     setShowExport(false);
     setUploading(false);
+    setPendingPhoto(null);
     setStats({ distance:0,totalDuration:0,movingDuration:0,stoppedDuration:0,
                speed:0,maxSpeed:0,avgSpeed:0,ascent:0,descent:0,points:0,battery:null });
     setStatus("recording");
@@ -730,30 +772,63 @@ export default function LiveTrackRecorder({
     );
   },[handleGPSPoint]);
 
-  // ── Manual Pause ─────────────────────────────────────────────────────
-  // User taps Pause button → status = "paused"
-  // Timer stops, GPS points are ignored (statusRef check in handleGPSPoint)
-  const pauseRecording = useCallback(()=>{
+  const pauseRecording  = useCallback(()=>{
     pauseStartRef.current = Date.now();
     lastMoveRef.current   = null;
     setStatus("paused");
   },[]);
 
-  // ── Manual Resume ────────────────────────────────────────────────────
-  // User taps Resume button → status = "recording"
-  // Elapsed pause time added to pausedMsRef so total duration stays accurate
   const resumeRecording = useCallback(()=>{
-    if (pauseStartRef.current) {
-      pausedMsRef.current += Date.now() - pauseStartRef.current;
-      pauseStartRef.current = null;
-    }
+    if (pauseStartRef.current) pausedMsRef.current += Date.now()-pauseStartRef.current;
+    stillSinceRef.current = null;
+    setAutoPaused(false);
     setStatus("recording");
   },[]);
 
+  // ── Helper: save a pending photo directly from refs (no stale closure) ─
+  const flushPendingPhoto = useCallback(() => {
+    const pending = pendingPhotoRef.current;
+    if (!pending) return;
+    const { dataURL, lat, lng, alt } = pending;
+    photoCounterRef.current += 1;
+    const photoId = `photo_${photoCounterRef.current}_${Date.now()}`;
+    photosRef.current[photoId] = dataURL;
+    const wpt = {
+      id:      `wpt_${photoCounterRef.current}_${Date.now()}`,
+      lat, lng, alt,
+      name:    photoNameRef.current.trim() || `Photo ${photoCounterRef.current}`,
+      note:    photoNoteRef.current.trim(),
+      time:    nowISO(),
+      photo:   true,
+      photoId,
+    };
+    waypointsRef.current.push(wpt);
+    setWaypoints([...waypointsRef.current]);
+    // Also add the marker on the map
+    const thumb = `<img src="${dataURL}" style="width:200px;height:130px;object-fit:cover;border-radius:6px;display:block;"/>`;
+    L.marker([lat,lng],{icon:PHOTO_ICON})
+      .bindPopup(`<div style="padding:4px"><b>${wpt.name}</b><br/>${thumb}${wpt.note?`<div style="font-size:11px;margin-top:4px">${wpt.note}</div>`:""}</div>`,{maxWidth:240})
+      .addTo(layerGroupRef.current);
+    console.log(`[LiveTrackRecorder] auto-saved pending photo: ${wpt.name}`);
+    // Clear pending state
+    pendingPhotoRef.current = null;
+    setPendingPhotoState(null);
+  }, []);
+
+  // ── stopRecording ─────────────────────────────────────────────────────
   const stopRecording = useCallback(async () => {
     navigator.geolocation.clearWatch(watchIdRef.current);
+
+    // ── FIX v5.3.3: auto-save any unconfirmed photo before stopping ────
+    // If the user taps Stop while the photo name/note modal is still open,
+    // we flush it with whatever name/note they've typed so far.
+    flushPendingPhoto();
+
+    modalOpenRef.current = false;
+
     const endedAt   = new Date().toISOString();
     const startedAt = new Date(startTimeRef.current).toISOString();
+
     if (lastPtRef.current) {
       const {lat,lng} = lastPtRef.current;
       L.marker([lat,lng],{ icon:flagIcon("#e63946","END"), zIndexOffset:900 })
@@ -762,23 +837,53 @@ export default function LiveTrackRecorder({
     }
     posMarkerRef.current?.remove();
     posMarkerRef.current = null;
+
     await persist();
+
     const syncFn = syncTrackRef.current;
     if (syncFn && pointsRef.current.length >= 2) {
       setUploading(true);
       try {
         const pts = pointsRef.current;
+
         let distanceMeters = 0;
         for (let i = 1; i < pts.length; i++) distanceMeters += haversine(pts[i-1], pts[i]);
         distanceMeters = Math.round(distanceMeters * 100) / 100;
-        const photoWpt      = waypointsRef.current.find(w => w.photo && w.photoId);
-        const photoDataURL  = photoWpt ? (photosRef.current[photoWpt.photoId] || null) : null;
-        const safeName      = (trackNameRef.current || "track").replace(/[^a-z0-9]/gi, "_");
-        const photoFilename = photoWpt ? `${safeName}_photo.jpg` : null;
-        console.log("[LiveTrackRecorder] calling syncTrack via ref, pts:", pts.length);
+
+        const safeName = (trackNameRef.current || "track").replace(/[^a-z0-9]/gi, "_");
+
+        const photos = waypointsRef.current
+          .filter(w => w.photo && w.photoId && photosRef.current[w.photoId])
+          .map((w, idx) => ({
+            dataURL:  photosRef.current[w.photoId],
+            filename: `${safeName}_photo_${idx + 1}.jpg`,
+            name:     w.name || `Photo ${idx + 1}`,
+            note:     w.note || null,
+            lat:      w.lat,
+            lng:      w.lng,
+            time:     w.time,
+          }));
+
+        const firstPhoto    = photos[0] || null;
+        const photoDataURL  = firstPhoto?.dataURL  || null;
+        const photoFilename = firstPhoto?.filename || null;
+        const photoName     = firstPhoto?.name     || null;
+        const photoNote     = firstPhoto?.note     || null;
+
+        console.log("[LiveTrackRecorder] calling syncTrack, pts:", pts.length,
+          "| photos:", photos.length);
+
         await syncFn({
-          points: pts, name: trackNameRef.current || "Field Track",
-          startedAt, endedAt, distanceMeters, photoDataURL, photoFilename,
+          points:         pts,
+          name:           trackNameRef.current || "Field Track",
+          startedAt,
+          endedAt,
+          distanceMeters,
+          photos,
+          photoDataURL,
+          photoFilename,
+          photoName,
+          photoNote,
         });
         console.log("[LiveTrackRecorder] ✅ Track uploaded to backend");
       } catch (err) {
@@ -787,11 +892,12 @@ export default function LiveTrackRecorder({
         setUploading(false);
       }
     }
+
     setStatus("stopped");
     setMinimised(false);
     setShowExport(true);
     onRecordingChange?.(false);
-  }, [persist]);
+  }, [persist, flushPendingPhoto]);
 
   const discardTrack = useCallback(()=>{
     navigator.geolocation.clearWatch(watchIdRef.current);
@@ -801,8 +907,10 @@ export default function LiveTrackRecorder({
     photosRef.current = {};
     movingMsRef.current = 0;
     maxSpeedRef.current = 0;
+    modalOpenRef.current = false;
     setStatus("idle"); setMinimised(false); setShowExport(false);
-    setConfirmStop(false); setWaypoints([]); setUploading(false);
+    setConfirmStop(false); setWaypoints([]); setAutoPaused(false);
+    setUploading(false); setPendingPhoto(null);
     onRecordingChange?.(false);
     setStats({ distance:0,totalDuration:0,movingDuration:0,stoppedDuration:0,
                speed:0,maxSpeed:0,avgSpeed:0,ascent:0,descent:0,points:0,battery:null });
@@ -810,6 +918,7 @@ export default function LiveTrackRecorder({
 
   const addWaypoint = useCallback(()=>{
     if (!lastPtRef.current) return;
+    modalOpenRef.current = true;
     setWptName(""); setWptNote(""); setShowWptModal(true);
   },[]);
 
@@ -826,37 +935,63 @@ export default function LiveTrackRecorder({
     L.marker([lat,lng],{icon:WPT_ICON})
       .bindPopup(`<b>${wpt.name}</b>${wpt.note?`<br/><span style="font-size:11px">${wpt.note}</span>`:""}`)
       .addTo(layerGroupRef.current);
+    modalOpenRef.current = false;
+    stillSinceRef.current = null;
     setShowWptModal(false);
   },[wptName,wptNote]);
 
+  const cancelWaypoint = useCallback(() => {
+    modalOpenRef.current = false;
+    stillSinceRef.current = null;
+    setShowWptModal(false);
+  }, []);
+
+  // ── FIX v5.3.3: reset input.value="" before click so Android fires
+  //    the change event for every photo, not just the first one ──────────
   const addPhoto = useCallback(()=>{
     if (!lastPtRef.current) return;
-    photoInputRef.current?.click();
+    modalOpenRef.current = true;
+    stillSinceRef.current = null;
+    if (photoInputRef.current) {
+      photoInputRef.current.value = "";   // ← KEY FIX: allows re-capture on Android
+      photoInputRef.current.click();
+    }
   },[]);
 
+  // ── FIX v5.3.3: clear value BEFORE reading file so re-selecting the
+  //    same image also fires the change event ────────────────────────────
   const handlePhotoCapture = useCallback(e=>{
     const file = e.target.files?.[0];
-    if (!file||!lastPtRef.current) return;
+    // Reset immediately — before the async FileReader — so Android can
+    // fire change again for the next photo without needing a new click.
     e.target.value = "";
+    if (!file || !lastPtRef.current) {
+      modalOpenRef.current = false;
+      return;
+    }
     const reader = new FileReader();
     reader.onload = ev=>{
       const {lat,lng,alt} = lastPtRef.current;
       setPendingPhoto({ dataURL:ev.target.result, lat, lng, alt });
-      setPhotoName(`Photo ${Object.keys(photosRef.current).length+1}`);
+      setPhotoName(`Photo ${photoCounterRef.current + 1}`);
       setPhotoNote("");
+      // modalOpenRef stays true — photo name/note modal is now showing
     };
     reader.readAsDataURL(file);
   },[]);
 
   const confirmPhoto = useCallback(()=>{
-    if (!pendingPhoto) return;
-    const {dataURL,lat,lng,alt} = pendingPhoto;
-    const photoId = `photo_${Date.now()}`;
+    if (!pendingPhotoRef.current) return;
+    const {dataURL,lat,lng,alt} = pendingPhotoRef.current;
+    photoCounterRef.current += 1;
+    const photoId = `photo_${photoCounterRef.current}_${Date.now()}`;
     photosRef.current[photoId] = dataURL;
     const wpt = {
-      id:`wpt_${Date.now()}`, lat, lng, alt,
-      name: photoName.trim()||`Photo ${Object.keys(photosRef.current).length}`,
-      note: photoNote.trim(), time:nowISO(), photo:true, photoId,
+      id:`wpt_${photoCounterRef.current}_${Date.now()}`,
+      lat, lng, alt,
+      name: photoNameRef.current.trim() || `Photo ${photoCounterRef.current}`,
+      note: photoNoteRef.current.trim(),
+      time: nowISO(), photo:true, photoId,
     };
     waypointsRef.current.push(wpt);
     setWaypoints([...waypointsRef.current]);
@@ -864,8 +999,16 @@ export default function LiveTrackRecorder({
     L.marker([lat,lng],{icon:PHOTO_ICON})
       .bindPopup(`<div style="padding:4px"><b>${wpt.name}</b><br/>${thumb}${wpt.note?`<div style="font-size:11px;margin-top:4px">${wpt.note}</div>`:""}</div>`,{maxWidth:240})
       .addTo(layerGroupRef.current);
+    modalOpenRef.current = false;
+    stillSinceRef.current = null;
     setPendingPhoto(null);
-  },[pendingPhoto,photoName,photoNote]);
+  },[]);
+
+  const cancelPhoto = useCallback(() => {
+    modalOpenRef.current = false;
+    stillSinceRef.current = null;
+    setPendingPhoto(null);
+  }, []);
 
   const trackObj = () => ({
     id: trackIdRef.current, name:trackName, color:trackColor,
@@ -906,8 +1049,8 @@ export default function LiveTrackRecorder({
   const isStopped   = status==="stopped";
   const isIdle      = status==="idle";
 
-  // Accent color: red while recording, amber while manually paused, green when done
-  const accentColor = isRecording ? T.red
+  const accentColor = isRecording
+    ? (autoPaused ? T.amber : T.red)
     : isPaused  ? T.amber
     : isStopped ? T.green
     : T.blue;
@@ -928,9 +1071,9 @@ export default function LiveTrackRecorder({
           padding:"8px 14px 8px 12px",
           background:"rgba(6,10,22,0.96)",
           backdropFilter:"blur(24px)", WebkitBackdropFilter:"blur(24px)",
-          border:`1px solid ${isRecording?"rgba(230,57,70,0.4)":"rgba(255,255,255,0.09)"}`,
+          border:`1px solid ${isRecording&&!autoPaused?"rgba(230,57,70,0.4)":"rgba(255,255,255,0.09)"}`,
           borderRadius:100,
-          boxShadow:isRecording?"0 4px 24px rgba(230,57,70,0.25)":"0 4px 20px rgba(0,0,0,0.5)",
+          boxShadow:isRecording&&!autoPaused?"0 4px 24px rgba(230,57,70,0.25)":"0 4px 20px rgba(0,0,0,0.5)",
           cursor:"pointer", userSelect:"none",
           minWidth:240, justifyContent:"space-between",
           fontFamily:FONT_UI,
@@ -938,18 +1081,17 @@ export default function LiveTrackRecorder({
           <div style={{ display:"flex",alignItems:"center",gap:7 }}>
             <div style={{
               width:7,height:7,borderRadius:"50%",background:accentColor,flexShrink:0,
-              animation:isRecording?"recpulse 1.2s infinite":"none",
+              animation:isRecording&&!autoPaused?"recpulse 1.2s infinite":"none",
               boxShadow:`0 0 6px ${accentColor}`,
             }}/>
             <span style={{ fontSize:11,fontWeight:600,color:T.text,
               maxWidth:100,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap" }}>
               {isRecording||isPaused ? trackName : "Track Recorder"}
             </span>
-            {/* Manual pause badge shown in pill when paused */}
-            {isPaused && (
+            {autoPaused && (
               <span style={{ fontSize:8,color:T.amber,fontWeight:700,
                 background:"rgba(244,162,97,0.12)",padding:"1px 5px",borderRadius:4,
-                border:"1px solid rgba(244,162,97,0.25)",letterSpacing:".06em" }}>PAUSED</span>
+                border:"1px solid rgba(244,162,97,0.25)",letterSpacing:".06em" }}>STILL</span>
             )}
           </div>
           <div style={{ display:"flex",alignItems:"center",gap:8 }}>
@@ -986,11 +1128,18 @@ export default function LiveTrackRecorder({
         .tab-btn{transition:color .15s,border-color .15s}
       `}</style>
 
-      <input ref={photoInputRef} type="file" accept="image/*" capture="environment"
-        style={{ display:"none" }} onChange={handlePhotoCapture}/>
+      {/* ── FIX v5.3.3: single shared input — value reset before every click */}
+      <input
+        ref={photoInputRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        style={{ display:"none" }}
+        onChange={handlePhotoCapture}
+      />
 
       {showWptModal && (
-        <Modal onClose={()=>setShowWptModal(false)}>
+        <Modal onClose={cancelWaypoint}>
           <div style={{ color:T.text,fontWeight:700,fontSize:14,marginBottom:2,fontFamily:FONT_UI }}>
             📍 Add Waypoint
           </div>
@@ -1001,13 +1150,13 @@ export default function LiveTrackRecorder({
             placeholder={`WPT ${waypointsRef.current.length+1}`}/>
           <MInput label="Note / Description" value={wptNote} onChange={setWptNote}
             placeholder="Optional note..." multiline/>
-          <MActions onConfirm={confirmWaypoint} onCancel={()=>setShowWptModal(false)}
+          <MActions onConfirm={confirmWaypoint} onCancel={cancelWaypoint}
             confirmLabel="Save Waypoint" confirmColor={T.blue}/>
         </Modal>
       )}
 
       {pendingPhoto && (
-        <Modal onClose={()=>setPendingPhoto(null)}>
+        <Modal onClose={cancelPhoto}>
           <div style={{ color:T.text,fontWeight:700,fontSize:14,marginBottom:2,fontFamily:FONT_UI }}>
             📷 Photo Waypoint
           </div>
@@ -1020,10 +1169,10 @@ export default function LiveTrackRecorder({
             border:`1px solid ${T.border}`,
           }}/>
           <MInput label="Photo Name" autoFocus value={photoName} onChange={setPhotoName}
-            placeholder={`Photo ${Object.keys(photosRef.current).length+1}`}/>
+            placeholder={`Photo ${photoCounterRef.current + 1}`}/>
           <MInput label="Note" value={photoNote} onChange={setPhotoNote}
             placeholder="What are you seeing here?" multiline/>
-          <MActions onConfirm={confirmPhoto} onCancel={()=>setPendingPhoto(null)}
+          <MActions onConfirm={confirmPhoto} onCancel={cancelPhoto}
             confirmLabel="Save Photo" confirmColor={T.amber}/>
         </Modal>
       )}
@@ -1061,16 +1210,16 @@ export default function LiveTrackRecorder({
           }}>
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
               stroke={accentColor} strokeWidth="2.5" strokeLinecap="round">
-              {isRecording
+              {isRecording&&!autoPaused
                 ? <rect x="4" y="4" width="16" height="16" rx="3" fill={T.red} stroke="none"/>
-                : isPaused
+                : isPaused||autoPaused
                   ? <><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></>
                   : isStopped
                     ? <polyline points="20 6 9 17 4 12" strokeWidth="2.5"/>
                     : <polygon points="5 3 19 12 5 21 5 3" fill={T.blue} stroke="none"/>
               }
             </svg>
-            {isRecording && (
+            {isRecording&&!autoPaused && (
               <div style={{ position:"absolute",top:3,right:3,width:4,height:4,
                 borderRadius:"50%",background:T.red,
                 animation:"recpulse 1.2s infinite",boxShadow:`0 0 4px ${T.red}` }}/>
@@ -1103,12 +1252,12 @@ export default function LiveTrackRecorder({
               {uploading
                 ? "⏳ Uploading to server…"
                 : isRecording
-                  ? `● REC · ${stats.points} pts · ±${Math.round(lastPtRef.current?.accuracy??0)}m`
-                  : isPaused
-                    ? `⏸  Manually paused · ${stats.points} pts`
-                    : isStopped
-                      ? `✓  Saved · ${stats.points} pts`
-                      : "GPS track recorder · waypoints · export"}
+                  ? autoPaused
+                    ? `⏸  Standing still · ${stats.points} pts · still recording`
+                    : `● REC · ${stats.points} pts · ±${Math.round(lastPtRef.current?.accuracy??0)}m`
+                  : isPaused  ? `⏸  Paused · ${stats.points} pts`
+                  : isStopped ? `✓  Saved · ${stats.points} pts`
+                  : "GPS track recorder · waypoints · export"}
             </div>
           </div>
 
@@ -1220,12 +1369,11 @@ export default function LiveTrackRecorder({
 
               {tab==="stats" && (
                 <div style={{ display:"flex",flexDirection:"column",gap:5 }}>
-                  {/* Manual pause info banner — only shown when user paused */}
-                  {isPaused && (
+                  {autoPaused && (
                     <div style={{ padding:"5px 10px",borderRadius:7,
                       background:"rgba(244,162,97,0.06)",border:"1px solid rgba(244,162,97,0.18)",
                       color:"#f4a261",fontSize:9,textAlign:"center",fontWeight:600,letterSpacing:".05em" }}>
-                      ⏸ MANUALLY PAUSED — TAP RESUME TO CONTINUE
+                      ⏸ STANDING STILL — RECORDING CONTINUES
                     </div>
                   )}
                   {uploading && (
@@ -1379,17 +1527,16 @@ export default function LiveTrackRecorder({
                 <Divider/>
                 <div style={{ flexShrink:0,display:"flex",gap:5,padding:"7px 10px 10px" }}>
                   {[
-                    { label:"Waypoint", icon:"📍", color:T.blue,  bg:"rgba(72,149,239,0.1)",  border:"rgba(72,149,239,0.22)",  onClick:addWaypoint,    disabled:!isRecording&&!isPaused },
-                    { label:"Photo",    icon:"📷", color:T.amber, bg:"rgba(244,162,97,0.1)",  border:"rgba(244,162,97,0.22)",  onClick:addPhoto,       disabled:!isRecording&&!isPaused },
+                    { label:"Waypoint",icon:"📍",color:T.blue,bg:"rgba(72,149,239,0.1)",border:"rgba(72,149,239,0.22)",onClick:addWaypoint,disabled:!isRecording&&!isPaused },
+                    { label:"Photo",icon:"📷",color:T.amber,bg:"rgba(244,162,97,0.1)",border:"rgba(244,162,97,0.22)",onClick:addPhoto,disabled:!isRecording&&!isPaused },
                     isRecording ? {
-                      label:"Pause",  icon:"⏸", color:T.amber, bg:"rgba(244,162,97,0.1)",  border:"rgba(244,162,97,0.22)",  onClick:pauseRecording, disabled:false,
+                      label:"Pause",icon:"⏸",color:T.amber,bg:"rgba(244,162,97,0.1)",border:"rgba(244,162,97,0.22)",onClick:pauseRecording,disabled:false,
                     } : {
-                      label:"Resume", icon:"▶", color:T.green, bg:"rgba(45,198,83,0.1)",   border:"rgba(45,198,83,0.22)",   onClick:resumeRecording,disabled:false,
+                      label:"Resume",icon:"▶",color:T.green,bg:"rgba(45,198,83,0.1)",border:"rgba(45,198,83,0.22)",onClick:resumeRecording,disabled:false,
                     },
                     {
-                      label:confirmStop?"Confirm?":"Stop",
-                      icon:confirmStop?"!":"■",
-                      color:T.red, bg:confirmStop?"rgba(230,57,70,0.22)":"rgba(230,57,70,0.1)", border:"rgba(230,57,70,0.35)",
+                      label:confirmStop?"Confirm?":"Stop",icon:confirmStop?"!":"■",
+                      color:T.red,bg:confirmStop?"rgba(230,57,70,0.22)":"rgba(230,57,70,0.1)",border:"rgba(230,57,70,0.35)",
                       onClick:()=>{ if(!confirmStop){setConfirmStop(true);return;} setConfirmStop(false);stopRecording();setTab("stats"); },
                       disabled:false,
                     },

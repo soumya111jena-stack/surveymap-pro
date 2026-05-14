@@ -12,6 +12,8 @@ import SatelliteTimeSlider from "./Satellitetimeslider";
 import DroneFlightPath from "./DroneFlightPath";
 import { buildLatLngGrid, removeLatLngGrid } from "./Gridlayer";
 import DataLayersPanel from "./Datalayerspanel";
+import GeoNavRing from "./GeoNavRing";
+
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function haversine(a,b){const R=6371000,r=x=>x*Math.PI/180;const dLat=r(b.lat-a.lat),dLon=r(b.lng-a.lng);const s=Math.sin(dLat/2)**2+Math.cos(r(a.lat))*Math.cos(r(b.lat))*Math.sin(dLon/2)**2;return R*2*Math.atan2(Math.sqrt(s),Math.sqrt(1-s));}
@@ -156,6 +158,7 @@ export default function Globe3DView({savedDrawings=[],onClose}){
   const [convPickMode,setConvPickMode]=useState(false);
   const [convCopied,setConvCopied]=useState("");
   const convPickRef=useRef(null);
+  
 
   const TB=52,PANEL=272,SB=28,BNH=58; // BNH = bottom nav height (mobile only)
 
@@ -864,9 +867,18 @@ function handleKML(e){
   const Cesium=CesiumRef.current,viewer=viewerRef.current;
   const isKmz=file.name.toLowerCase().endsWith(".kmz");
   setKmlName(file.name);setKmlStats(null);setKmlFlyIn(false);
-  if(orbitRef.current){orbitRef.current.active=false;if(orbitRef.current.animFrame){cancelAnimationFrame(orbitRef.current.animFrame);orbitRef.current.animFrame=null;}try{viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);}catch{}orbitRef.current=null;}
 
-  // ── Helper: parse KML AABBGGRR hex → Cesium.Color ────────────────────────
+  // ── Fully release any prior orbit/lookAt lock ─────────────────────────────
+  if(orbitRef.current){
+    orbitRef.current.active=false;
+    if(orbitRef.current.animFrame){
+      cancelAnimationFrame(orbitRef.current.animFrame);
+      orbitRef.current.animFrame=null;
+    }
+    try{viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);}catch{}
+    orbitRef.current=null;
+  }
+
   function kmlColorToCesium(kmlHex,defaultColor){
     if(!kmlHex||kmlHex.length<8)return defaultColor;
     try{
@@ -877,7 +889,6 @@ function handleKML(e){
     }catch{return defaultColor;}
   }
 
-  // ── Helper: sanitize KML text before parsing ──────────────────────────────
   function sanitizeKML(raw){
     let kml=raw;
     kml=kml.replace(/<n>/gi,"<name>").replace(/<\/n>/gi,"</name>");
@@ -886,7 +897,6 @@ function handleKML(e){
     if(!kml.includes('xmlns=')&&!kml.includes('xmlns ')){
       kml=kml.replace(/<kml/i,'<kml xmlns="http://www.opengis.net/kml/2.2"');
     }
-    // Unwrap MultiGeometry into individual Placemarks
     if(/<MultiGeometry/i.test(kml)){
       kml=kml.replace(/(<Placemark[^>]*>)([\s\S]*?)<\/Placemark>/gi,(fullMatch,openTag,inner)=>{
         if(!/<MultiGeometry/i.test(inner))return fullMatch;
@@ -910,6 +920,23 @@ function handleKML(e){
     return kml;
   }
 
+  // ── KEY FIX: a reliable helper that always releases lookAt lock ───────────
+  function releaseCameraLock(){
+    try{
+      if(viewer&&!viewer.isDestroyed()){
+        viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
+      }
+    }catch(_){}
+    if(orbitRef.current){
+      orbitRef.current.active=false;
+      if(orbitRef.current.animFrame){
+        cancelAnimationFrame(orbitRef.current.animFrame);
+        orbitRef.current.animFrame=null;
+      }
+      orbitRef.current=null;
+    }
+  }
+
   const loadKML=(kmlText)=>{
     const sanitized=sanitizeKML(kmlText);
     const blob=new Blob([sanitized],{type:"application/vnd.google-earth.kml+xml"});
@@ -920,60 +947,46 @@ function handleKML(e){
       canvas:viewer.scene.canvas,
       clampToGround:true,
     }).then(ds=>{
-      // ── Apply styles: preserve KML colors, only fix rendering issues ───────
       for(const ent of ds.entities.values){
         try{
-          // POLYLINE: keep color, fix clamping + width
           if(ent.polyline){
             ent.polyline.clampToGround=new Cesium.ConstantProperty(true);
             ent.polyline.arcType=new Cesium.ConstantProperty(Cesium.ArcType.GEODESIC);
-            // Only set width if not already set or too thin
             const existingWidth=ent.polyline.width?.getValue(Cesium.JulianDate.now());
             if(!existingWidth||existingWidth<2){
               ent.polyline.width=new Cesium.ConstantProperty(3);
             }
-            // If material is missing or is a default image, set a solid color
             const mat=ent.polyline.material;
             if(!mat){
               ent.polyline.material=new Cesium.ColorMaterialProperty(Cesium.Color.fromCssColorString("#facc15").withAlpha(0.9));
             }
           }
-
-          // POLYGON: keep fill+outline colors, fix classification
-       if(ent.polygon){
-  ent.polygon.classificationType=new Cesium.ConstantProperty(Cesium.ClassificationType.TERRAIN);
-  
-  // ── Fill: always blue semi-transparent ──────────
-  ent.polygon.material=new Cesium.ColorMaterialProperty(
-    Cesium.Color.fromCssColorString("#1a6bb5").withAlpha(0.35)
-  );
-  
-  // ── Outline: always orange, always visible ──────
-  ent.polygon.outline=new Cesium.ConstantProperty(true);
-  ent.polygon.outlineColor=new Cesium.ConstantProperty(
-    Cesium.Color.fromCssColorString("#f97316")  // 🟠 change hex here for different color
-  );
-  ent.polygon.outlineWidth=new Cesium.ConstantProperty(4);
-  
-  // ── Polyline border fallback (terrain clamping fix) ──
-  try{
-    const hierarchy=ent.polygon.hierarchy?.getValue(Cesium.JulianDate.now());
-    if(hierarchy?.positions){
-      viewer.entities.add({
-        polyline:{
-          positions:[...hierarchy.positions, hierarchy.positions[0]],
-          width:3,
-          material:new Cesium.ColorMaterialProperty(
-            Cesium.Color.fromCssColorString("#f97316")  // 🟠 same color as outlineColor
-          ),
-          clampToGround:true,
-        }
-      });
-    }
-  }catch(_){}
-}
-
-          // BILLBOARD/POINT: fix depth + clamping only
+          if(ent.polygon){
+            ent.polygon.classificationType=new Cesium.ConstantProperty(Cesium.ClassificationType.TERRAIN);
+            ent.polygon.material=new Cesium.ColorMaterialProperty(
+              Cesium.Color.fromCssColorString("#1a6bb5").withAlpha(0.35)
+            );
+            ent.polygon.outline=new Cesium.ConstantProperty(true);
+            ent.polygon.outlineColor=new Cesium.ConstantProperty(
+              Cesium.Color.fromCssColorString("#f97316")
+            );
+            ent.polygon.outlineWidth=new Cesium.ConstantProperty(4);
+            try{
+              const hierarchy=ent.polygon.hierarchy?.getValue(Cesium.JulianDate.now());
+              if(hierarchy?.positions){
+                viewer.entities.add({
+                  polyline:{
+                    positions:[...hierarchy.positions, hierarchy.positions[0]],
+                    width:3,
+                    material:new Cesium.ColorMaterialProperty(
+                      Cesium.Color.fromCssColorString("#f97316")
+                    ),
+                    clampToGround:true,
+                  }
+                });
+              }
+            }catch(_){}
+          }
           if(ent.billboard){
             ent.billboard.heightReference=new Cesium.ConstantProperty(Cesium.HeightReference.CLAMP_TO_GROUND);
             ent.billboard.disableDepthTestDistance=new Cesium.ConstantProperty(Number.POSITIVE_INFINITY);
@@ -985,8 +998,6 @@ function handleKML(e){
               ent.point.pixelSize=new Cesium.ConstantProperty(10);
             }
           }
-
-          // LABEL: fix depth only, keep color
           if(ent.label){
             ent.label.heightReference=new Cesium.ConstantProperty(Cesium.HeightReference.CLAMP_TO_GROUND);
             ent.label.disableDepthTestDistance=new Cesium.ConstantProperty(Number.POSITIVE_INFINITY);
@@ -1011,7 +1022,8 @@ function handleKML(e){
         if(!isFinite(lat)||!isFinite(lng)||lat<-90||lat>90||lng<-180||lng>180)return;
         sumLat+=lat;sumLng+=lng;
         minLat=Math.min(minLat,lat);maxLat=Math.max(maxLat,lat);
-        minLng=Math.min(minLng,lng);maxLng=Math.max(maxLng,lng);ptCount++;
+        minLng=Math.min(minLng,lng);maxLng=Math.max(maxLng,lng);
+        ptCount++;
       };
       for(const ent of entities){
         try{
@@ -1031,75 +1043,152 @@ function handleKML(e){
       const rangeM=Math.min(Math.max(spanDeg*111320*1.6,400),5000000);
       const centerCart=Cesium.Cartesian3.fromDegrees(cLng,cLat,0);
       if(!centerCart||!isFinite(centerCart.x)){viewer.flyTo(ds,{duration:3});return;}
-      orbitRef.current={center:centerCart,range:rangeM,heading:0,pitch:-62,active:false};
+
+      // Store orbit config but do NOT set active yet
+      orbitRef.current={center:centerCart,range:rangeM,heading:0,pitch:-62,active:false,animFrame:null};
+
       setKmlStats({featureCount:entities.length,center:{lat:cLat,lng:cLng},spanKm,bbox:{minLat,maxLat,minLng,maxLng}});
       setKmlFlyIn(true);
 
+      // ── STEP 1: flyTo uses flyTo (NOT lookAt) — camera stays free here ──
       viewer.camera.flyTo({
         destination:Cesium.Cartesian3.fromDegrees(cLng,cLat,rangeM*3.5),
         orientation:{heading:Cesium.Math.toRadians(0),pitch:Cesium.Math.toRadians(-90),roll:0},
         duration:2.2,
         easingFunction:Cesium.EasingFunction.CUBIC_IN_OUT,
-        complete:()=>{
-          const orbitDown=(targetPitch,durationSec,onDone)=>{
-            const o=orbitRef.current;if(!o)return;
-            const startPitch=o.pitch,startHeading=o.heading,startTime=performance.now();
-            const tick=()=>{
-              if(!orbitRef.current){return;}
-              const t=Math.min((performance.now()-startTime)/(durationSec*1000),1);
-              const ease=t<0.5?4*t*t*t:(t-1)*(2*t-2)*(2*t-2)+1;
-              o.pitch=startPitch+(targetPitch-startPitch)*ease;
-              o.heading=startHeading+ease*8;
-              try{viewer.camera.lookAt(o.center,new Cesium.HeadingPitchRange(Cesium.Math.toRadians(o.heading),Cesium.Math.toRadians(o.pitch),o.range));}
-              catch{o.animFrame=null;if(onDone)onDone();return;}
-              if(t<1){o.animFrame=requestAnimationFrame(tick);}
-              else{o.animFrame=null;if(onDone)onDone();}
-            };
-            o.animFrame=requestAnimationFrame(tick);
-          };
-          orbitDown(-62,1.8,()=>{
-            setKmlFlyIn(false);
-            const o=orbitRef.current;if(!o)return;
-            o.active=true;let lastTime=performance.now();
-            const passiveOrbit=()=>{
-              if(!o.active||!orbitRef.current)return;
-              const now=performance.now(),dt=(now-lastTime)/1000;lastTime=now;
-              o.heading=(o.heading+3*dt)%360;
-              try{viewer.camera.lookAt(o.center,new Cesium.HeadingPitchRange(Cesium.Math.toRadians(o.heading),Cesium.Math.toRadians(o.pitch),o.range));}
-              catch{o.active=false;o.animFrame=null;try{viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);}catch{}return;}
-              o.animFrame=requestAnimationFrame(passiveOrbit);
-            };
-            o.animFrame=requestAnimationFrame(passiveOrbit);
-            const stopOrbit=()=>{
-              if(orbitRef.current){orbitRef.current.active=false;if(orbitRef.current.animFrame){cancelAnimationFrame(orbitRef.current.animFrame);orbitRef.current.animFrame=null;}try{viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);}catch{}}
-            };
-            const canvas=viewer.scene.canvas;
-            const once=()=>{stopOrbit();canvas.removeEventListener("mousedown",once);canvas.removeEventListener("touchstart",once);canvas.removeEventListener("wheel",once);};
-            canvas.addEventListener("mousedown",once,{once:true});
-            canvas.addEventListener("touchstart",once,{once:true,passive:true});
-            canvas.addEventListener("wheel",once,{once:true,passive:true});
-            setTimeout(()=>{if(orbitRef.current?.active)once();},12000);
-          });
+        complete: () => {
+  if (!orbitRef.current) { setKmlFlyIn(false); return; }
+
+  // ── STEP 2: tilt down using lookAt (intentional brief lock) ──────────
+  const orbitDown = (targetPitch, durationSec, onDone) => {
+    const o = orbitRef.current; if (!o) return;
+    const startPitch = o.pitch, startHeading = o.heading, startTime = performance.now();
+    const tick = () => {
+      if (!orbitRef.current) { releaseCameraLock(); if (onDone) onDone(); return; }
+      const t = Math.min((performance.now() - startTime) / (durationSec * 1000), 1);
+      const ease = t < 0.5 ? 4 * t * t * t : (t - 1) * (2 * t - 2) * (2 * t - 2) + 1;
+      o.pitch = startPitch + (targetPitch - startPitch) * ease;
+      o.heading = startHeading + ease * 8;
+      try {
+        viewer.camera.lookAt(
+          o.center,
+          new Cesium.HeadingPitchRange(
+            Cesium.Math.toRadians(o.heading),
+            Cesium.Math.toRadians(o.pitch),
+            o.range
+          )
+        );
+      } catch {
+        releaseCameraLock(); if (onDone) onDone(); return;
+      }
+      if (t < 1) { o.animFrame = requestAnimationFrame(tick); }
+      else { o.animFrame = null; if (onDone) onDone(); }
+    };
+    o.animFrame = requestAnimationFrame(tick);
+  };
+orbitDown(-62, 1.8, () => {
+    setKmlFlyIn(false);
+    const o = orbitRef.current; if (!o) return;
+
+    // Release the orbitDown lookAt lock NOW — passiveOrbit uses setView
+    // which needs NO transform pinned
+    releaseCameraLock();
+
+    o.heading = Cesium.Math.toDegrees(viewer.camera.heading);
+    // Capture current camera state so setView picks up from exactly here
+    const startHeading = viewer.camera.heading;
+    const startPitch   = viewer.camera.pitch;
+    const startPos     = viewer.camera.position.clone();
+
+    o.heading = Cesium.Math.toDegrees(startHeading);
+    o.pitch   = Cesium.Math.toDegrees(startPitch);
+    o.active  = true;
+
+    let lastTime = performance.now();
+
+    // ── STEP 3: passive orbit using setView (NEVER locks the camera) ──
+    // setView just repositions the camera each frame without setting a
+    // transform — the user can override it at any time by touching the map
+    // ── Compute center lat/lng ONCE before the loop ───────────────────
+    const centerCarto = Cesium.Cartographic.fromCartesian(o.center);
+    const centerLng   = Cesium.Math.toDegrees(centerCarto.longitude);
+    const centerLat   = Cesium.Math.toDegrees(centerCarto.latitude);
+
+    const passiveOrbit = () => {
+      if (!o.active || !orbitRef.current) {
+        return;
+      }
+      const now = performance.now(), dt = (now - lastTime) / 1000;
+      lastTime = now;
+      o.heading = (o.heading + 3 * dt) % 360;
+
+      try {
+        // setView never pins transform — compass stays free, user can interrupt
+        viewer.camera.setView({
+          destination: Cesium.Cartesian3.fromDegrees(centerLng, centerLat, o.range),
+          orientation: {
+            heading: Cesium.Math.toRadians(o.heading),
+            pitch:   Cesium.Math.toRadians(o.pitch),
+            roll:    0,
+          },
+        });
+      } catch {
+        if (orbitRef.current) orbitRef.current = null;
+        return;
+      }
+      o.animFrame = requestAnimationFrame(passiveOrbit);
+    };
+
+    // ── STEP 4: stop orbit on any user interaction ───────────────────
+   const stopOrbit = () => {
+      if (orbitRef.current) {
+        orbitRef.current.active = false;
+        if (orbitRef.current.animFrame) {
+          cancelAnimationFrame(orbitRef.current.animFrame);
+          orbitRef.current.animFrame = null;
         }
+        orbitRef.current = null;
+      }
+      // setView doesn't pin a transform so no releaseCameraLock needed
+      // but call it anyway to be safe against any residual lock from orbitDown
+      try { viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY); } catch {}
+    };
+
+    const canvas = viewer.scene.canvas;
+    canvas.addEventListener('mousedown',  stopOrbit, { once: true });
+    canvas.addEventListener('touchstart', stopOrbit, { once: true, passive: true });
+    canvas.addEventListener('wheel',      stopOrbit, { once: true, passive: true });
+
+    // Auto-stop after 12 seconds
+    setTimeout(() => {
+      if (orbitRef.current?.active) stopOrbit();
+    }, 12000);
+  });
+}
       });
     }).catch(err=>{
       console.error("KML/KMZ load error:",err);
       URL.revokeObjectURL(url);
+      releaseCameraLock(); // always release on error too
       alert("Failed to load "+(isKmz?"KMZ":"KML")+": "+err.message);
     });
   };
 
-  // Read file — for KMZ use Cesium directly with blob URL
   if(isKmz){
     const url=URL.createObjectURL(file);
     Cesium.KmlDataSource.load(url,{camera:viewer.scene.camera,canvas:viewer.scene.canvas,clampToGround:true})
       .then(ds=>{
-        viewer.dataSources.add(ds);URL.revokeObjectURL(url);
-        viewer.flyTo(ds,{duration:2.5});
+        viewer.dataSources.add(ds);
+        URL.revokeObjectURL(url);
+        viewer.flyTo(ds,{duration:2.5}); // flyTo never locks the camera
         const entities=ds.entities.values;
         setKmlStats({featureCount:entities.length,center:{lat:0,lng:0},spanKm:"?",bbox:{}});
       })
-      .catch(err=>{URL.revokeObjectURL(url);alert("KMZ load failed: "+err.message);});
+      .catch(err=>{
+        URL.revokeObjectURL(url);
+        releaseCameraLock();
+        alert("KMZ load failed: "+err.message);
+      });
   }else{
     const reader=new FileReader();
     reader.onload=evt=>loadKML(evt.target.result);
@@ -1108,7 +1197,6 @@ function handleKML(e){
   }
   e.target.value="";
 }
-  
 
   function handleCSV(e){
     const file=e.target.files[0];if(!file||!ready)return;e.target.value="";
@@ -1520,7 +1608,7 @@ function handleKML(e){
       </div>
 
       {/* ══ ZOOM CONTROLS ══ */}
-      <div className="g3-zoom" style={{position:"fixed",right:14,bottom:SB+160,zIndex:1002,display:"flex",flexDirection:"column",background:"rgba(8,13,25,0.88)",border:"1px solid rgba(255,255,255,.1)",borderRadius:10,boxShadow:"0 4px 24px rgba(0,0,0,.6), inset 0 1px 0 rgba(255,255,255,.06)",backdropFilter:"blur(16px)",overflow:"hidden"}}>
+      <div className="g3-zoom" style={{position:"fixed",right:14,bottom:SB+290,zIndex:1002,display:"flex",flexDirection:"column",background:"rgba(8,13,25,0.88)",border:"1px solid rgba(255,255,255,.1)",borderRadius:10,boxShadow:"0 4px 24px rgba(0,0,0,.6), inset 0 1px 0 rgba(255,255,255,.06)",backdropFilter:"blur(16px)",overflow:"hidden"}}>
         {[[<Icons.ZoomIn/>,zoomIn],[<Icons.ZoomOut/>,zoomOut]].map(([icon,fn],i)=>(
           <button key={i} onClick={fn} style={{width:40,height:40,border:"none",borderBottom:i===0?"1px solid rgba(255,255,255,.07)":"none",background:"transparent",color:"var(--text-secondary)",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",transition:"all .12s"}} onMouseEnter={e=>{e.currentTarget.style.background="rgba(255,255,255,.08)";e.currentTarget.style.color="var(--text-primary)";}} onMouseLeave={e=>{e.currentTarget.style.background="transparent";e.currentTarget.style.color="var(--text-secondary)";}}>
             {icon}
@@ -1528,27 +1616,32 @@ function handleKML(e){
         ))}
       </div>
 
-      {/* ══ COMPASS ══ */}
-      <div className="g3-compass" style={{position:"fixed",bottom:SB+8,right:14,zIndex:1001,display:"flex",flexDirection:"column",alignItems:"center",gap:4}}>
-        <div style={{background:"rgba(8,13,25,.88)",border:"1px solid rgba(255,255,255,.08)",borderRadius:6,padding:"3px 8px",display:"flex",gap:8,alignItems:"center",backdropFilter:"blur(12px)"}}>
-          <span style={{color:"var(--text-dim)",fontSize:9,fontWeight:700,fontFamily:"var(--font-ui)",letterSpacing:".06em"}}>EYE</span>
-          <span style={{color:"var(--text-secondary)",fontSize:10,fontFamily:"var(--font-mono)",fontWeight:500}}>{formatAlt(cameraAlt)}</span>
-        </div>
-        <div style={{width:50,height:50}}>
-          <svg viewBox="0 0 100 100" style={{width:"100%",height:"100%",transform:`rotate(${compassHeading}deg)`,filter:"drop-shadow(0 2px 8px rgba(0,0,0,.7))"}}>
-            <defs><radialGradient id="compassBg" cx="50%" cy="50%" r="50%"><stop offset="0%" stopColor="rgba(20,30,50,.95)"/><stop offset="100%" stopColor="rgba(8,13,25,.98)"/></radialGradient></defs>
-            <circle cx="50" cy="50" r="47" fill="url(#compassBg)" stroke="rgba(255,255,255,.12)" strokeWidth="1.5"/>
-            <circle cx="50" cy="50" r="38" fill="none" stroke="rgba(255,255,255,.04)" strokeWidth="1"/>
-            <polygon points="50,10 54,48 50,44 46,48" fill="#ef4444"/>
-            <polygon points="50,90 54,52 50,56 46,52" fill="#1e3a5f"/>
-            <polygon points="10,50 48,46 52,50 48,54" fill="#1e3a5f"/>
-            <polygon points="90,50 52,46 48,50 52,54" fill="#1e3a5f"/>
-            <text x="50" y="23" textAnchor="middle" fill="#ef4444" fontSize="11" fontWeight="700" fontFamily="var(--font-ui)">N</text>
-            <circle cx="50" cy="50" r="5" fill="rgba(255,255,255,.15)" stroke="rgba(255,255,255,.2)" strokeWidth="1"/>
-            <circle cx="50" cy="50" r="2" fill="rgba(255,255,255,.4)"/>
-          </svg>
-        </div>
-      </div>
+      {/* ══ GOOGLE EARTH NAVIGATION RING ══ */}
+<GeoNavRing
+  viewerRef={viewerRef}
+  CesiumRef={CesiumRef}
+  compassHeading={compassHeading}
+  ready={ready}
+/>
+
+{/* ══ EYE ALTITUDE BAR ══ */}
+<div style={{
+  position:"fixed",
+  bottom:SB+8,
+  right:14,
+  zIndex:1001,
+  background:"rgba(8,13,25,.88)",
+  border:"1px solid rgba(255,255,255,.08)",
+  borderRadius:6,
+  padding:"3px 8px",
+  display:"flex",
+  gap:8,
+  alignItems:"center",
+  backdropFilter:"blur(12px)"
+}}>
+  <span style={{color:"var(--text-dim)",fontSize:9,fontWeight:700,fontFamily:"var(--font-ui)",letterSpacing:".06em"}}>EYE</span>
+  <span style={{color:"var(--text-secondary)",fontSize:10,fontFamily:"var(--font-mono)",fontWeight:500}}>{formatAlt(cameraAlt)}</span>
+</div>
 
       {/* ══ STATUS BAR ══ */}
       <div className="g3-statusbar">

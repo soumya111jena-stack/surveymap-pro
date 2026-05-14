@@ -1,16 +1,12 @@
 /**
- * FeaturePropertiesPanel.jsx — SurveyMap Pro v6.5.0
- * 
- * FIX v6.5.0:
- *  - Coordinate display now respects the coordSystem prop:
- *      "decimalDegrees"  → Latitude / Longitude (decimal)
- *      "dms"             → Latitude / Longitude (DMS display, decimal input)
- *      "decimalMinutes"  → Latitude / Longitude (DDM display, decimal input)
- *      "utm"             → Zone / Easting / Northing  (matches GEP Image 2)
- *      "mgrs"            → MGRS string (read-only)
- *  - UTM fields show Zone (e.g. "45 Q"), Easting (m E), Northing (m N)
- *  - Two-way editing: changing UTM fields updates lat/lng state internally
- *  - All other tabs (Style, View, Altitude, Measurements, Description) unchanged
+ * FeaturePropertiesPanel.jsx — Geoxis Field Edition v6.6.0
+ *
+ * FIXED in v6.6.0:
+ *  - Live style preview: color/opacity/width changes apply to Leaflet layer in real-time
+ *  - _applyStyle hook properly called on every slider/color change via useEffect
+ *  - handleOK correctly applies style before closing
+ *  - KML/Shapefile/GeoJSON layers all supported via _applyStyle attached in SurveyMap
+ *  - Coordinate display respects coordSystem prop (decimalDegrees / dms / decimalMinutes / utm / mgrs)
  */
 
 import { useState, useEffect, useRef } from "react";
@@ -22,10 +18,6 @@ export function getFeatureStyle(featureId) {
 }
 
 /* ─── UTM conversion utilities ───────────────────────────────────────────── */
-/**
- * Convert WGS-84 lat/lng (decimal degrees) → UTM
- * Returns { zone, band, easting, northing, zoneStr }
- */
 function latLngToUTM(lat, lng) {
   const a = 6378137.0;
   const f = 1 / 298.257223563;
@@ -38,7 +30,6 @@ function latLngToUTM(lat, lng) {
   const lngRad = (lng * Math.PI) / 180;
 
   let zoneNumber = Math.floor((lng + 180) / 6) + 1;
-  // Special zones for Norway / Svalbard
   if (lat >= 56 && lat < 64 && lng >= 3 && lng < 12) zoneNumber = 32;
   if (lat >= 72 && lat < 84) {
     if (lng >= 0 && lng < 9) zoneNumber = 31;
@@ -95,9 +86,6 @@ function latLngToUTM(lat, lng) {
   };
 }
 
-/**
- * Convert UTM → WGS-84 lat/lng
- */
 function utmToLatLng(zone, band, easting, northing) {
   const a = 6378137.0;
   const f = 1 / 298.257223563;
@@ -160,7 +148,6 @@ function utmToLatLng(zone, band, easting, northing) {
   };
 }
 
-/** Format decimal degrees as DMS string (display only) */
 function toDMSStr(deg, posLabel, negLabel) {
   const d = Math.abs(deg);
   const di = Math.floor(d);
@@ -170,7 +157,6 @@ function toDMSStr(deg, posLabel, negLabel) {
   return `${di}° ${mi.toString().padStart(2, "0")}' ${s.toFixed(2).padStart(5, "0")}" ${deg >= 0 ? posLabel : negLabel}`;
 }
 
-/** Format as Degrees, Decimal Minutes */
 function toDDMStr(deg, posLabel, negLabel) {
   const d = Math.abs(deg);
   const di = Math.floor(d);
@@ -199,9 +185,14 @@ const COLOR_PRESETS = [
 
 /* ─── KML helpers ─────────────────────────────────────────────────────────── */
 function hexToKmlColor(hex, pct = 100) {
-  const h = (hex || "#ff8800").replace("#", "").padEnd(6, "0");
-  const a = Math.round(Math.max(0, Math.min(100, pct)) / 100 * 255).toString(16).padStart(2, "0");
-  return `${a}${h.slice(4, 6)}${h.slice(2, 4)}${h.slice(0, 2)}`;
+  const h = (hex || "#ff8800").replace("#", "").padEnd(6, "0").slice(0, 6);
+  const rr = h.slice(0, 2);
+  const gg = h.slice(2, 4);
+  const bb = h.slice(4, 6);
+  const a = Math.round(Math.max(0, Math.min(100, pct)) / 100 * 255)
+              .toString(16).padStart(2, "0");
+  // KML color order is AABBGGRR
+  return `${a}${bb}${gg}${rr}`;
 }
 function escXml(s) { return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
 function coordsKml(c) { return c.map(p => `${p[0]},${p[1]},${p[2] ?? 0}`).join("\n"); }
@@ -217,11 +208,52 @@ function geomKml(g) {
 }
 function featureToKml(f, style, name, desc) {
   if (!f) return null;
-  const n = escXml(name || f.properties?.name || "Feature"), d = escXml(desc || "");
+  const n = escXml(name || f.properties?.name || "Feature");
+  const d = escXml(desc || "");
+  const g = geomKml(f.geometry);
+  if (!g) return null;
+
   const lc = hexToKmlColor(style?.color ?? "#ff8800", style?.opacity ?? 100);
   const fc = hexToKmlColor(style?.fillColor ?? "#ff8800", style?.fillOpacity ?? 40);
-  const g = geomKml(f.geometry); if (!g) return null;
-  return `<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>${n}</name><Style id="s"><LineStyle><color>${lc}</color><width>${style?.width ?? 2}</width></LineStyle><PolyStyle><color>${fc}</color></PolyStyle></Style><Placemark><name>${n}</name><description>${d}</description><styleUrl>#s</styleUrl>${g}</Placemark></Document></kml>`;
+  const w  = style?.width ?? 2;
+  const hexColor   = style?.color     ?? "#ff8800";
+  const hexFill    = style?.fillColor ?? "#ff8800";
+  const opacityFrac  = ((style?.opacity     ?? 100) / 100).toFixed(2);
+  const fillOpFrac   = ((style?.fillOpacity ?? 40)  / 100).toFixed(2);
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <name>${n}</name>
+    <Placemark>
+      <name>${n}</name>
+      <description>${d}</description>
+      <Style>
+        <LineStyle>
+          <color>${lc}</color>
+          <width>${w}</width>
+        </LineStyle>
+        <PolyStyle>
+          <color>${fc}</color>
+          <fill>1</fill>
+          <outline>1</outline>
+        </PolyStyle>
+        <IconStyle>
+          <color>${lc}</color>
+          <scale>1.1</scale>
+        </IconStyle>
+      </Style>
+      <ExtendedData>
+        <Data name="stroke"><value>${hexColor}</value></Data>
+        <Data name="stroke-width"><value>${w}</value></Data>
+        <Data name="stroke-opacity"><value>${opacityFrac}</value></Data>
+        <Data name="fill"><value>${hexFill}</value></Data>
+        <Data name="fill-opacity"><value>${fillOpFrac}</value></Data>
+      </ExtendedData>
+      ${g}
+    </Placemark>
+  </Document>
+</kml>`;
 }
 function dlKml(kmlStr, fn) {
   const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(new Blob([kmlStr], { type: "application/vnd.google-earth.kml+xml" })), download: fn });
@@ -397,203 +429,77 @@ function MRows({ valueM, units, activeKey }) {
   });
 }
 
-/* ══════════════════════════════════════════════════════════════════════════
-   COORDINATE FIELDS COMPONENT
-   Renders different fields based on coordSystem prop:
-     "decimalDegrees" | "dms" | "decimalMinutes" → Latitude / Longitude
-     "utm"  → Zone / Easting / Northing  (matches Google Earth Pro image 2)
-     "mgrs" → MGRS string (read-only)
-══════════════════════════════════════════════════════════════════════════ */
+/* ─── CoordinateFields ────────────────────────────────────────────────────── */
 function CoordinateFields({ coordSystem, lat, lng, setLat, setLng, altitude, setAltitude, grounding }) {
-  // Internal UTM state — derived from lat/lng, editable independently
-  const [utmZone,     setUtmZone]     = useState(() => {
-    const u = latLngToUTM(parseFloat(lat) || 0, parseFloat(lng) || 0);
-    return u.zoneStr;
-  });
-  const [utmEasting,  setUtmEasting]  = useState(() => {
-    const u = latLngToUTM(parseFloat(lat) || 0, parseFloat(lng) || 0);
-    return u.easting.toFixed(2);
-  });
-  const [utmNorthing, setUtmNorthing] = useState(() => {
-    const u = latLngToUTM(parseFloat(lat) || 0, parseFloat(lng) || 0);
-    return u.northing.toFixed(2);
-  });
+  const [utmZone,     setUtmZone]     = useState(() => latLngToUTM(parseFloat(lat) || 0, parseFloat(lng) || 0).zoneStr);
+  const [utmEasting,  setUtmEasting]  = useState(() => latLngToUTM(parseFloat(lat) || 0, parseFloat(lng) || 0).easting.toFixed(2));
+  const [utmNorthing, setUtmNorthing] = useState(() => latLngToUTM(parseFloat(lat) || 0, parseFloat(lng) || 0).northing.toFixed(2));
 
-  // Sync UTM fields when lat/lng change from outside (e.g. initial load)
   useEffect(() => {
-    const latN = parseFloat(lat);
-    const lngN = parseFloat(lng);
+    const latN = parseFloat(lat), lngN = parseFloat(lng);
     if (!isNaN(latN) && !isNaN(lngN)) {
       const u = latLngToUTM(latN, lngN);
-      setUtmZone(u.zoneStr);
-      setUtmEasting(u.easting.toFixed(2));
-      setUtmNorthing(u.northing.toFixed(2));
+      setUtmZone(u.zoneStr); setUtmEasting(u.easting.toFixed(2)); setUtmNorthing(u.northing.toFixed(2));
     }
   }, [lat, lng]);
-
-  // When UTM fields change → back-calculate lat/lng
-  const handleUtmEastingChange = (val) => {
-    setUtmEasting(val);
-    tryUpdateLatLngFromUTM(utmZone, val, utmNorthing);
-  };
-  const handleUtmNorthingChange = (val) => {
-    setUtmNorthing(val);
-    tryUpdateLatLngFromUTM(utmZone, utmEasting, val);
-  };
-  const handleUtmZoneChange = (val) => {
-    setUtmZone(val);
-    tryUpdateLatLngFromUTM(val, utmEasting, utmNorthing);
-  };
 
   const tryUpdateLatLngFromUTM = (zoneStr, eastStr, northStr) => {
     try {
       const parts = String(zoneStr).trim().split(/\s+/);
-      const zone = parseInt(parts[0]);
-      const band = parts[1] || "N";
-      const e = parseFloat(eastStr);
-      const n = parseFloat(northStr);
+      const zone = parseInt(parts[0]), band = parts[1] || "N";
+      const e = parseFloat(eastStr), n = parseFloat(northStr);
       if (!isNaN(zone) && !isNaN(e) && !isNaN(n) && zone >= 1 && zone <= 60) {
         const result = utmToLatLng(zone, band, e, n);
-        if (!isNaN(result.lat) && !isNaN(result.lng)) {
-          setLat(result.lat.toFixed(7));
-          setLng(result.lng.toFixed(7));
-        }
+        if (!isNaN(result.lat) && !isNaN(result.lng)) { setLat(result.lat.toFixed(7)); setLng(result.lng.toFixed(7)); }
       }
     } catch (_) {}
   };
 
-  const latN = parseFloat(lat) || 0;
-  const lngN = parseFloat(lng) || 0;
+  const latN = parseFloat(lat) || 0, lngN = parseFloat(lng) || 0;
 
   if (coordSystem === "utm") {
-    // ── UTM mode: Zone / Easting / Northing (matches GEP image 2) ──────────
     return (
       <>
-        <FloatInput
-          label="Zone"
-          value={utmZone}
-          onChange={handleUtmZoneChange}
-        />
-        <FloatInput
-          label="Easting"
-          value={utmEasting}
-          onChange={handleUtmEastingChange}
-          unit="m E"
-        />
-        <FloatInput
-          label="Northing"
-          value={utmNorthing}
-          onChange={handleUtmNorthingChange}
-          unit="m N"
-        />
-        <FloatInput
-          label="Altitude"
-          value={altitude}
-          onChange={setAltitude}
-          unit="m"
-          readOnly={grounding === "clamped"}
-        />
+        <FloatInput label="Zone"     value={utmZone}     onChange={v => { setUtmZone(v);     tryUpdateLatLngFromUTM(v, utmEasting, utmNorthing); }} />
+        <FloatInput label="Easting"  value={utmEasting}  onChange={v => { setUtmEasting(v);  tryUpdateLatLngFromUTM(utmZone, v, utmNorthing); }} unit="m E" />
+        <FloatInput label="Northing" value={utmNorthing} onChange={v => { setUtmNorthing(v); tryUpdateLatLngFromUTM(utmZone, utmEasting, v); }} unit="m N" />
+        <FloatInput label="Altitude" value={altitude}    onChange={setAltitude} unit="m" readOnly={grounding === "clamped"} />
       </>
     );
   }
-
   if (coordSystem === "dms") {
-    // ── DMS display mode (read-only display, decimal editing) ───────────────
     return (
       <>
-        <FloatInput
-          label="Latitude (DMS)"
-          value={toDMSStr(latN, "N", "S")}
-          readOnly
-        />
-        <FloatInput
-          label="Latitude (decimal)"
-          value={lat}
-          onChange={setLat}
-          unit="°"
-        />
-        <FloatInput
-          label="Longitude (DMS)"
-          value={toDMSStr(lngN, "E", "W")}
-          readOnly
-        />
-        <FloatInput
-          label="Longitude (decimal)"
-          value={lng}
-          onChange={setLng}
-          unit="°"
-        />
-        <FloatInput
-          label="Altitude"
-          value={altitude}
-          onChange={setAltitude}
-          unit="m"
-          readOnly={grounding === "clamped"}
-        />
+        <FloatInput label="Latitude (DMS)"     value={toDMSStr(latN, "N", "S")} readOnly />
+        <FloatInput label="Latitude (decimal)" value={lat} onChange={setLat} unit="°" />
+        <FloatInput label="Longitude (DMS)"    value={toDMSStr(lngN, "E", "W")} readOnly />
+        <FloatInput label="Longitude (decimal)"value={lng} onChange={setLng} unit="°" />
+        <FloatInput label="Altitude"           value={altitude} onChange={setAltitude} unit="m" readOnly={grounding === "clamped"} />
       </>
     );
   }
-
   if (coordSystem === "decimalMinutes") {
-    // ── Degrees, Decimal Minutes ────────────────────────────────────────────
     return (
       <>
-        <FloatInput
-          label="Latitude (DDM)"
-          value={toDDMStr(latN, "N", "S")}
-          readOnly
-        />
-        <FloatInput
-          label="Latitude (decimal)"
-          value={lat}
-          onChange={setLat}
-          unit="°"
-        />
-        <FloatInput
-          label="Longitude (DDM)"
-          value={toDDMStr(lngN, "E", "W")}
-          readOnly
-        />
-        <FloatInput
-          label="Longitude (decimal)"
-          value={lng}
-          onChange={setLng}
-          unit="°"
-        />
-        <FloatInput
-          label="Altitude"
-          value={altitude}
-          onChange={setAltitude}
-          unit="m"
-          readOnly={grounding === "clamped"}
-        />
+        <FloatInput label="Latitude (DDM)"     value={toDDMStr(latN, "N", "S")} readOnly />
+        <FloatInput label="Latitude (decimal)" value={lat} onChange={setLat} unit="°" />
+        <FloatInput label="Longitude (DDM)"    value={toDDMStr(lngN, "E", "W")} readOnly />
+        <FloatInput label="Longitude (decimal)"value={lng} onChange={setLng} unit="°" />
+        <FloatInput label="Altitude"           value={altitude} onChange={setAltitude} unit="m" readOnly={grounding === "clamped"} />
       </>
     );
   }
-
-  // ── Default: Decimal Degrees (matches GEP image 1) ──────────────────────
   return (
     <>
       <FloatInput label="Latitude"  value={lat}      onChange={setLat}      unit="°" />
       <FloatInput label="Longitude" value={lng}      onChange={setLng}      unit="°" />
-      <FloatInput
-        label="Altitude"
-        value={altitude}
-        onChange={setAltitude}
-        unit="m"
-        readOnly={grounding === "clamped"}
-      />
+      <FloatInput label="Altitude"  value={altitude} onChange={setAltitude} unit="m" readOnly={grounding === "clamped"} />
     </>
   );
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
    MAIN COMPONENT
-   
-   NEW PROP:
-     coordSystem — one of: "decimalDegrees" | "dms" | "decimalMinutes" | "utm" | "mgrs"
-                   Pass this from your app settings (mirrors the 3D View Options
-                   "Show Lat/Long" selection). Defaults to "decimalDegrees".
 ══════════════════════════════════════════════════════════════════════════ */
 export default function FeaturePropertiesPanel({
   drawing,
@@ -602,7 +508,7 @@ export default function FeaturePropertiesPanel({
   onClose,
   onSave,
   onDelete,
-  coordSystem = "decimalDegrees",  // ← NEW PROP: pass from app settings
+  coordSystem = "decimalDegrees",
 }) {
   const isDrawing = !!drawing;
   const nameRef = useRef(null);
@@ -614,18 +520,18 @@ export default function FeaturePropertiesPanel({
     ? (drawing.description || "")
     : (geojsonFeature?.properties?.description || geojsonFeature?.properties?.Description || "");
 
-  const stats = isDrawing ? drawingStats(drawing) : computeStats(geojsonFeature?.geometry);
-  const props = geojsonFeature?.properties || {};
+  const stats    = isDrawing ? drawingStats(drawing) : computeStats(geojsonFeature?.geometry);
+  const props    = geojsonFeature?.properties || {};
   const fileType = geojsonFeature?._fileType || "";
   const fileName = geojsonFeature?._fileName || "";
-  const fid = isDrawing ? null : resolveId(geojsonFeature);
-  const savedOv = fid ? STYLE_OVERRIDES.get(fid) : null;
+  const fid      = isDrawing ? null : resolveId(geojsonFeature);
+  const savedOv  = fid ? STYLE_OVERRIDES.get(fid) : null;
 
-  const rawColor = isDrawing ? (drawing.color || "#1a73e8") : resColor(props, "#1a73e8");
-  const rawFill = isDrawing ? (drawing.fillColor || "#1a73e8") : resColor({ ...props, stroke: undefined }, "#1a73e8");
-  const rawWidth = isDrawing ? (drawing.width ?? 2) : (props["stroke-width"] ?? props.strokeWidth ?? 2);
-  const rawOp = isDrawing ? (drawing.opacity ?? 100) : (props["stroke-opacity"] != null ? Math.round(props["stroke-opacity"] * 100) : 100);
-  const rawFillOp = isDrawing ? (drawing.fillOpacity ?? 40) : (props["fill-opacity"] != null ? Math.round(props["fill-opacity"] * 100) : 40);
+  const rawColor   = isDrawing ? (drawing.color     || "#1a73e8") : resColor(props,              "#1a73e8");
+  const rawFill    = isDrawing ? (drawing.fillColor  || "#1a73e8") : resColor({ ...props, stroke: undefined }, "#1a73e8");
+  const rawWidth   = isDrawing ? (drawing.width   ?? 2)  : (props["stroke-width"] ?? props.strokeWidth ?? 2);
+  const rawOp      = isDrawing ? (drawing.opacity ?? 100) : (props["stroke-opacity"] != null ? Math.round(props["stroke-opacity"] * 100) : 100);
+  const rawFillOp  = isDrawing ? (drawing.fillOpacity ?? 40) : (props["fill-opacity"] != null ? Math.round(props["fill-opacity"] * 100) : 40);
 
   const initC = (() => {
     if (stats?.kind === "point") return { lat: stats.lat, lng: stats.lng, alt: stats.alt || 0 };
@@ -635,28 +541,31 @@ export default function FeaturePropertiesPanel({
   })();
 
   /* ── State ─────────────────────────────────────────────────────────────── */
-  const [name,        setName]       = useState(rawName);
-  const [desc,        setDesc]       = useState(rawDesc);
-  const [lat,         setLat]        = useState(initC.lat.toFixed(7));
-  const [lng,         setLng]        = useState(initC.lng.toFixed(7));
-  const [altitude,    setAltitude]   = useState(initC.alt.toFixed(7));
-  const [grounding,   setGnd]        = useState("clamped");
-  const [heading,     setHeading]    = useState("0.0000000");
-  const [tilt,        setTilt]       = useState("0.0000000");
-  const [range,       setRange]      = useState("1031.2695758");
-  const [color,       setColor]      = useState(savedOv?.color ?? rawColor);
-  const [fillColor,   setFillColor]  = useState(savedOv?.fillColor ?? rawFill);
-  const [width,       setWidth]      = useState(savedOv?.width ?? rawWidth);
-  const [opacity,     setOpacity]    = useState(savedOv?.opacity ?? rawOp);
-  const [fillOp,      setFillOp]     = useState(savedOv?.fillOpacity ?? rawFillOp);
-  const [tab,         setTab]        = useState("Placemark");
-  const [areaUnit,    setAreaUnit]   = useState("m2");
-  const [perimUnit,   setPerimUnit]  = useState("m");
-  const [lenUnit,     setLenUnit]    = useState("m");
-  const [saved,       setSaved]      = useState(false);
+  const [name,        setName]      = useState(rawName);
+  const [desc,        setDesc]      = useState(rawDesc);
+  const [lat,         setLat]       = useState(initC.lat.toFixed(7));
+  const [lng,         setLng]       = useState(initC.lng.toFixed(7));
+  const [altitude,    setAltitude]  = useState(initC.alt.toFixed(7));
+  const [grounding,   setGnd]       = useState("clamped");
+  const [heading,     setHeading]   = useState("0.0000000");
+  const [tilt,        setTilt]      = useState("0.0000000");
+  const [range,       setRange]     = useState("1031.2695758");
 
-  const [iconKey,          setIconKey]          = useState("pin");
-  const [iconSize,         setIconSize]         = useState("medium");
+  // ── Style state — initialised from savedOv (persisted) or raw feature values ──
+  const [color,     setColor]    = useState(savedOv?.color       ?? rawColor);
+  const [fillColor, setFillColor]= useState(savedOv?.fillColor   ?? rawFill);
+  const [width,     setWidth]    = useState(savedOv?.width       ?? rawWidth);
+  const [opacity,   setOpacity]  = useState(savedOv?.opacity     ?? rawOp);
+  const [fillOp,    setFillOp]   = useState(savedOv?.fillOpacity ?? rawFillOp);
+
+  const [tab,       setTab]      = useState("Placemark");
+  const [areaUnit,  setAreaUnit] = useState("m2");
+  const [perimUnit, setPerimUnit]= useState("m");
+  const [lenUnit,   setLenUnit]  = useState("m");
+  const [saved,     setSaved]    = useState(false);
+
+  const [iconKey,          setIconKey]          = useState(savedOv?.iconKey  ?? drawing?.iconKey  ?? "pin");
+  const [iconSize,         setIconSize]         = useState(savedOv?.iconSize ?? drawing?.iconSize ?? "medium");
   const [iconColor,        setIconColor]        = useState(savedOv?.iconColor ?? rawColor);
   const [labelsEnabled,    setLabelsEnabled]    = useState(true);
   const [labelSize,        setLabelSize]        = useState("medium");
@@ -665,47 +574,134 @@ export default function FeaturePropertiesPanel({
 
   const featureKind = stats?.kind || (drawing?.type === "marker" ? "point" : drawing?.type === "polygon" ? "polygon" : "line");
 
+  /* ── Focus name on new point ────────────────────────────────────────────── */
   useEffect(() => { if (isNewPoint && nameRef.current) { nameRef.current.focus(); nameRef.current.select(); } }, [isNewPoint]);
+
+  /* ── Escape key closes ──────────────────────────────────────────────────── */
   useEffect(() => {
     const h = e => { if (e.key === "Escape") onClose?.(); };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
   }, [onClose]);
 
+  /* ══════════════════════════════════════════════════════════════════════════
+     LIVE PREVIEW — apply style to the Leaflet layer in real-time as the user
+     moves sliders or picks colors. Works for KML, Shapefile, GeoJSON features.
+     The layer must have _applyStyle attached (done in SurveyMap's
+     attachFeatureClickHandlers). For drawings, savedDrawings state drives
+     re-render so no extra step is needed here.
+  ══════════════════════════════════════════════════════════════════════════ */
+useEffect(() => {
+  if (isDrawing) return;
+
+  const stylePayload = { color, width, opacity, fillColor, fillOpacity: fillOp, iconColor: color };
+
+  // Apply to the feature's own layer (markers, single polygons)
+  if (typeof geojsonFeature?._applyStyle === "function") {
+    geojsonFeature._applyStyle(stylePayload);
+  }
+
+  // Also walk any _leafletLayer or _parentLayer group that was stored
+  const parentLayer = geojsonFeature?._leafletLayer ?? geojsonFeature?._parentLayer;
+  if (parentLayer && typeof parentLayer.eachLayer === "function") {
+    parentLayer.eachLayer((child) => {
+      if (typeof child._applyStyle === "function") child._applyStyle(stylePayload);
+    });
+  }
+}, [color, width, opacity, fillColor, fillOp, isDrawing, geojsonFeature]);
+
+  /* ── buildStyleOv helper ────────────────────────────────────────────────── */
+  const buildStyleOv = () => ({
+    color, width, opacity,
+    fillColor, fillOpacity: fillOp,
+    iconKey, iconSize, iconColor,
+    labelColor, labelSize,
+  });
+
+  /* ── handleOK ───────────────────────────────────────────────────────────── */
   const handleOK = () => {
-    const styleOv = { color, width, opacity, fillColor, fillOpacity: fillOp, iconKey, iconSize, iconColor, labelColor, labelSize };
+    const styleOv = buildStyleOv();
+
     if (isDrawing) {
-      onSave?.({ ...drawing, name, description: desc, color, width, opacity, fillColor, fillOpacity: fillOp, iconKey, iconSize });
+      // Drawings: pass full updated drawing to parent; SavedDrawingsLayer re-renders
+      onSave?.({
+        ...drawing,
+        name,
+        description: desc,
+        color,
+        width,
+        opacity,
+        fillColor,
+        fillOpacity: fillOp,
+        iconKey,
+        iconSize,
+      });
     } else {
+      // GeoJSON / KML / Shapefile features
+      // 1. Persist override so re-opens show the edited style
       if (fid) STYLE_OVERRIDES.set(fid, styleOv);
-      if (geojsonFeature?.properties) Object.assign(geojsonFeature.properties, { name, description: desc, stroke: color, color, "stroke-width": width, "stroke-opacity": opacity / 100, fill: fillColor, "fill-opacity": fillOp / 100 });
-      geojsonFeature?._applyStyle?.(styleOv);
-      if (fileType === "kml" || fileType === "kmz" || fileType === "") { const k = featureToKml(geojsonFeature, styleOv, name, desc); if (k) dlKml(k, `${(fileName || "feature").replace(/\.(kml|kmz)$/i, "")}_edited.kml`); }
-      onSave?.({ _featureId: fid, _fileType: fileType, _fileName: fileName, name, description: desc, style: styleOv });
+
+      // 2. Mutate GeoJSON properties for downstream consumers
+      if (geojsonFeature?.properties) {
+        Object.assign(geojsonFeature.properties, {
+          name,
+          description:      desc,
+          stroke:           color,
+          color:            color,
+          "stroke-width":   width,
+          "stroke-opacity": opacity / 100,
+          fill:             fillColor,
+          "fill-opacity":   fillOp / 100,
+        });
+      }
+
+      // 3. Apply to Leaflet layer one final time (covers edge case where
+      //    the live-preview effect fired before the final values settled)
+      if (typeof geojsonFeature?._applyStyle === "function") {
+        geojsonFeature._applyStyle(styleOv);
+      }
+
+      // 4. Export KML for KML/KMZ source files
+      if (fileType === "kml" || fileType === "kmz") {
+        const k = featureToKml(geojsonFeature, styleOv, name, desc);
+        if (k) dlKml(k, `${(fileName || "feature").replace(/\.(kml|kmz)$/i, "")}_edited.kml`);
+      }
+
+      onSave?.({
+        _featureId: fid,
+        _fileType:  fileType,
+        _fileName:  fileName,
+        name,
+        description: desc,
+        style: styleOv,
+      });
     }
+
     setSaved(true);
     setTimeout(() => onClose?.(), 350);
   };
 
+  /* ── Constants ──────────────────────────────────────────────────────────── */
   const TABS = [
-    { id: "Placemark",    label: "Placemark" },
+    { id: "Placemark",    label: "Placemark"    },
     { id: "Style",        label: "Style, Color" },
-    { id: "View",         label: "View" },
-    { id: "Altitude",     label: "Altitude" },
+    { id: "View",         label: "View"         },
+    { id: "Altitude",     label: "Altitude"     },
     { id: "Measurements", label: "Measurements" },
-    { id: "Description",  label: "Description" },
+    { id: "Description",  label: "Description"  },
   ];
   const GND = [
-    { value: "clamped",  label: "Clamp to ground" },
+    { value: "clamped",  label: "Clamp to ground"    },
     { value: "relative", label: "Relative to ground" },
-    { value: "absolute", label: "Absolute" },
+    { value: "absolute", label: "Absolute"            },
   ];
   const SIZE_OPTIONS = [
-    { key: "small",  label: "Small" },
+    { key: "small",  label: "Small"            },
     { key: "medium", label: "Medium (default)" },
-    { key: "large",  label: "Large" },
+    { key: "large",  label: "Large"            },
   ];
 
+  /* ── TopIconRow ─────────────────────────────────────────────────────────── */
   const TopIconRow = () => (
     <div style={{ padding: "12px 16px 0", borderBottom: "1px solid #e8eaed" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 20, marginBottom: 12 }}>
@@ -723,17 +719,17 @@ export default function FeaturePropertiesPanel({
       <div style={{ display: "flex", alignItems: "flex-end", gap: 8, marginBottom: 12 }}>
         <div style={{ flex: "0 0 80px" }}>
           <div style={{ fontSize: 10, color: "#5f6368", marginBottom: 3, fontFamily: "'Google Sans','Roboto',Arial,sans-serif" }}>Icon</div>
-          <GEDropdown value={iconKey} onChange={setIconKey} options={ICON_OPTIONS} renderValue={(opt) => opt ? (<span style={{ display: "flex", alignItems: "center" }}>{opt.svg}</span>) : null} />
+          <GEDropdown value={iconKey} onChange={setIconKey} options={ICON_OPTIONS} renderValue={opt => opt ? <span style={{ display: "flex", alignItems: "center" }}>{opt.svg}</span> : null} />
         </div>
         <div style={{ flex: "0 0 140px" }}>
           <div style={{ fontSize: 10, color: "#5f6368", marginBottom: 3, fontFamily: "'Google Sans','Roboto',Arial,sans-serif" }}>Icon size</div>
-          <GEDropdown value={iconSize} onChange={setIconSize} options={SIZE_OPTIONS} renderValue={(opt) => opt ? (<span style={{ fontSize: 13, color: "#202124", fontFamily: "'Google Sans','Roboto',Arial,sans-serif" }}>{opt.label}</span>) : null} />
+          <GEDropdown value={iconSize} onChange={setIconSize} options={SIZE_OPTIONS} renderValue={opt => opt ? <span style={{ fontSize: 13, color: "#202124", fontFamily: "'Google Sans','Roboto',Arial,sans-serif" }}>{opt.label}</span> : null} />
         </div>
         <ColorSwatchDropdown value={iconColor} onChange={v => { setIconColor(v); setColor(v); }} label="Color" />
       </div>
 
       <button onClick={() => setMoreSettingsOpen(p => !p)}
-        style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", padding: "10px 0 10px", background: "none", border: "none", cursor: "pointer", fontFamily: "'Google Sans','Roboto',Arial,sans-serif", fontSize: 13, fontWeight: 500, color: "#202124", textAlign: "left" }}>
+        style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", padding: "10px 0", background: "none", border: "none", cursor: "pointer", fontFamily: "'Google Sans','Roboto',Arial,sans-serif", fontSize: 13, fontWeight: 500, color: "#202124", textAlign: "left" }}>
         More settings
         <svg width="18" height="18" viewBox="0 0 24 24" fill="#5f6368" style={{ marginLeft: "auto", transform: moreSettingsOpen ? "rotate(180deg)" : "none", transition: "transform 0.15s" }}>
           <path d="M7 10l5 5 5-5z" />
@@ -753,7 +749,7 @@ export default function FeaturePropertiesPanel({
             <div style={{ display: "flex", alignItems: "flex-end", gap: 8 }}>
               <div style={{ flex: 1 }}>
                 <div style={{ fontSize: 10, color: "#5f6368", marginBottom: 3, fontFamily: "'Google Sans','Roboto',Arial,sans-serif" }}>Label size</div>
-                <GEDropdown value={labelSize} onChange={setLabelSize} options={SIZE_OPTIONS} renderValue={(opt) => opt ? (<span style={{ fontSize: 13, color: "#202124", fontFamily: "'Google Sans','Roboto',Arial,sans-serif" }}>{opt.label}</span>) : null} />
+                <GEDropdown value={labelSize} onChange={setLabelSize} options={SIZE_OPTIONS} renderValue={opt => opt ? <span style={{ fontSize: 13, color: "#202124", fontFamily: "'Google Sans','Roboto',Arial,sans-serif" }}>{opt.label}</span> : null} />
               </div>
               <ColorSwatchDropdown value={labelColor} onChange={setLabelColor} label="Color" />
             </div>
@@ -763,13 +759,16 @@ export default function FeaturePropertiesPanel({
     </div>
   );
 
+  /* ══════════════════════════════════════════════════════════════════════════
+     RENDER
+  ══════════════════════════════════════════════════════════════════════════ */
   return (
     <div onClick={e => { if (e.target === e.currentTarget) onClose?.(); }}
       style={{ position: "fixed", inset: 0, zIndex: 9700, background: "rgba(0,0,0,0.42)", display: "flex", alignItems: "flex-start", justifyContent: "flex-end", paddingTop: 72, paddingRight: 10, fontFamily: "'Google Sans','Roboto',Arial,sans-serif" }}>
       <div onClick={e => e.stopPropagation()}
         style={{ background: "#fff", borderRadius: 8, boxShadow: "0 8px 40px rgba(0,0,0,0.25)", width: 440, maxHeight: "calc(100vh - 88px)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
 
-        {/* ── Header ─────────────────────────────────────────────────────── */}
+        {/* ── Header ── */}
         <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "13px 16px 10px", borderBottom: "1px solid #e8eaed", flexShrink: 0 }}>
           <div style={{ width: 28, height: 28, borderRadius: "50%", background: "#e8f0fe", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#1a73e8" strokeWidth="2" strokeLinecap="round">
@@ -785,121 +784,146 @@ export default function FeaturePropertiesPanel({
           <button onClick={onClose} style={{ background: "none", border: "none", color: "#5f6368", cursor: "pointer", fontSize: 22, lineHeight: 1, padding: 0, display: "flex", alignItems: "center" }}>×</button>
         </div>
 
-        {/* ── Icon/label controls ────────────────────────────────────────── */}
+        {/* ── Icon/label controls ── */}
         <TopIconRow />
 
-        {/* ── Tabs ───────────────────────────────────────────────────────── */}
+        {/* ── Tabs ── */}
         <div style={{ display: "flex", borderBottom: "1px solid #e8eaed", overflowX: "auto", flexShrink: 0 }}>
           {TABS.map(t => <Tab key={t.id} label={t.label} active={tab === t.id} onClick={() => setTab(t.id)} />)}
         </div>
 
-        {/* ── Content ────────────────────────────────────────────────────── */}
+        {/* ── Content ── */}
         <div style={{ flex: 1, overflowY: "auto", background: "#fff" }}>
 
-          {/* PLACEMARK TAB */}
+          {/* ══ PLACEMARK TAB ══ */}
           {tab === "Placemark" && (
             <div style={{ padding: "20px 16px 24px", display: "flex", flexDirection: "column", gap: 10 }}>
               <div style={{ fontSize: 13, fontWeight: 500, color: "#202124", marginBottom: 4 }}>Placemark placement</div>
-
-              {/* ── COORDINATE FIELDS — respects coordSystem prop ── */}
               <CoordinateFields
-                coordSystem={coordSystem}
-                lat={lat}
-                lng={lng}
-                setLat={setLat}
-                setLng={setLng}
-                altitude={altitude}
-                setAltitude={setAltitude}
+                coordSystem={coordSystem} lat={lat} lng={lng}
+                setLat={setLat} setLng={setLng}
+                altitude={altitude} setAltitude={setAltitude}
                 grounding={grounding}
               />
-
               <FloatSelect label="Grounding" value={grounding} onChange={setGnd} options={GND} />
-
               <div style={{ fontSize: 13, fontWeight: 500, color: "#202124", marginTop: 14, marginBottom: 4 }}>Camera view</div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
                 <FloatInput label="Heading" value={heading} onChange={setHeading} unit="°" />
                 <FloatInput label="Tilt"    value={tilt}    onChange={setTilt}    unit="°" />
               </div>
               <FloatInput label="Range" value={range} onChange={setRange} unit="m" />
-
-              {/* Coord system indicator badge */}
               <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
                 <span style={{ fontSize: 11, color: "#5f6368" }}>Coordinate system:</span>
-                <span style={{
-                  fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 10,
-                  background: coordSystem === "utm" ? "#fce8e6" : "#e8f0fe",
-                  color: coordSystem === "utm" ? "#d93025" : "#1a73e8",
-                  fontFamily: "'Roboto Mono',monospace",
-                }}>
-                  {coordSystem === "decimalDegrees"  ? "Decimal Degrees" :
-                   coordSystem === "dms"             ? "Deg Min Sec" :
-                   coordSystem === "decimalMinutes"  ? "Deg Decimal Min" :
-                   coordSystem === "utm"             ? "UTM" :
-                   coordSystem === "mgrs"            ? "MGRS" :
-                   coordSystem}
+                <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 10, background: coordSystem === "utm" ? "#fce8e6" : "#e8f0fe", color: coordSystem === "utm" ? "#d93025" : "#1a73e8", fontFamily: "'Roboto Mono',monospace" }}>
+                  {coordSystem === "decimalDegrees" ? "Decimal Degrees" : coordSystem === "dms" ? "Deg Min Sec" : coordSystem === "decimalMinutes" ? "Deg Decimal Min" : coordSystem === "utm" ? "UTM" : coordSystem === "mgrs" ? "MGRS" : coordSystem}
                 </span>
               </div>
             </div>
           )}
 
-          {/* STYLE TAB */}
+          {/* ══ STYLE TAB ══ */}
           {tab === "Style" && (
             <div style={{ padding: "20px 16px" }}>
+
+              {/* Live preview strip */}
               <div style={{ marginBottom: 16, borderRadius: 6, overflow: "hidden", border: "1px solid #e8eaed" }}>
-                <div style={{ height: Math.max(4, width * 2.5), background: color, opacity: opacity / 100 }} />
-                {featureKind === "polygon" && <div style={{ height: 32, background: fillColor, opacity: fillOp / 100 }} />}
-                <div style={{ padding: "4px 10px", background: "#f8f9fa", color: "#5f6368", fontSize: 10, display: "flex", gap: 12 }}>
+                <div style={{ height: Math.max(4, width * 2.5), background: color, opacity: opacity / 100, transition: "height 0.1s, background 0.1s, opacity 0.1s" }} />
+                {featureKind === "polygon" && (
+                  <div style={{ height: 32, background: fillColor, opacity: fillOp / 100, transition: "background 0.1s, opacity 0.1s" }} />
+                )}
+                <div style={{ padding: "4px 10px", background: "#f8f9fa", color: "#5f6368", fontSize: 10, display: "flex", gap: 12, flexWrap: "wrap" }}>
                   <span>Line: <b style={{ color: "#1a73e8" }}>{color.toUpperCase()}</b> · {width}px · {opacity}%</span>
-                  {featureKind === "polygon" && <span>Fill: <b style={{ color: "#1a73e8" }}>{fillColor.toUpperCase()}</b> · {fillOp}%</span>}
+                  {featureKind === "polygon" && (
+                    <span>Fill: <b style={{ color: "#1a73e8" }}>{fillColor.toUpperCase()}</b> · {fillOp}%</span>
+                  )}
                 </div>
               </div>
+
+              {/* ── Line style ── */}
               <p style={{ fontSize: 11, fontWeight: 600, color: "#5f6368", letterSpacing: "0.08em", textTransform: "uppercase", margin: "0 0 10px" }}>Line style</p>
               <div style={{ display: "grid", gridTemplateColumns: "110px 1fr", rowGap: 14, alignItems: "center", marginBottom: 20 }}>
                 <label style={{ fontSize: 13, color: "#202124" }}>Color</label>
                 <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                  <input type="color" value={color} onChange={e => setColor(e.target.value)} style={{ width: 36, height: 28, padding: 0, border: "1.5px solid #dadce0", borderRadius: 4, cursor: "pointer" }} />
+                  <input type="color" value={color} onChange={e => { setColor(e.target.value); setIconColor(e.target.value); }}
+                    style={{ width: 36, height: 28, padding: 0, border: "1.5px solid #dadce0", borderRadius: 4, cursor: "pointer" }} />
                   <span style={{ fontSize: 12, color: "#5f6368", fontFamily: "monospace" }}>{color.toUpperCase()}</span>
+                  {/* Preset swatches inline for quick pick */}
+                  <div style={{ display: "flex", gap: 4, flexWrap: "wrap", flex: 1 }}>
+                    {COLOR_PRESETS.slice(0, 8).map(c => (
+                      <button key={c} onClick={() => { setColor(c); setIconColor(c); }}
+                        title={c}
+                        style={{ width: 18, height: 18, borderRadius: 3, background: c, border: color === c ? "2px solid #1a73e8" : "1px solid rgba(0,0,0,0.15)", cursor: "pointer", padding: 0, flexShrink: 0 }} />
+                    ))}
+                  </div>
                 </div>
+
                 <label style={{ fontSize: 13, color: "#202124" }}>Width</label>
                 <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                  <input type="range" min={1} max={12} value={width} onChange={e => setWidth(Number(e.target.value))} style={{ flex: 1, accentColor: "#1a73e8" }} />
+                  <input type="range" min={1} max={12} value={width} onChange={e => setWidth(Number(e.target.value))}
+                    style={{ flex: 1, accentColor: "#1a73e8" }} />
                   <span style={{ fontSize: 13, color: "#202124", minWidth: 20 }}>{width}</span>
                 </div>
+
                 <label style={{ fontSize: 13, color: "#202124" }}>Opacity</label>
                 <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                  <input type="range" min={0} max={100} value={opacity} onChange={e => setOpacity(Number(e.target.value))} style={{ flex: 1, accentColor: "#1a73e8" }} />
+                  <input type="range" min={0} max={100} value={opacity} onChange={e => setOpacity(Number(e.target.value))}
+                    style={{ flex: 1, accentColor: "#1a73e8" }} />
                   <span style={{ fontSize: 13, color: "#202124", minWidth: 36 }}>{opacity}%</span>
                 </div>
               </div>
-              {featureKind === "polygon" && <>
-                <p style={{ fontSize: 11, fontWeight: 600, color: "#5f6368", letterSpacing: "0.08em", textTransform: "uppercase", margin: "0 0 10px" }}>Area fill</p>
-                <div style={{ display: "grid", gridTemplateColumns: "110px 1fr", rowGap: 14, alignItems: "center" }}>
-                  <label style={{ fontSize: 13, color: "#202124" }}>Fill color</label>
-                  <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                    <input type="color" value={fillColor} onChange={e => setFillColor(e.target.value)} style={{ width: 36, height: 28, padding: 0, border: "1.5px solid #dadce0", borderRadius: 4, cursor: "pointer" }} />
-                    <span style={{ fontSize: 12, color: "#5f6368", fontFamily: "monospace" }}>{fillColor.toUpperCase()}</span>
+
+              {/* ── Area fill (polygon only) ── */}
+              {featureKind === "polygon" && (
+                <>
+                  <p style={{ fontSize: 11, fontWeight: 600, color: "#5f6368", letterSpacing: "0.08em", textTransform: "uppercase", margin: "0 0 10px" }}>Area fill</p>
+                  <div style={{ display: "grid", gridTemplateColumns: "110px 1fr", rowGap: 14, alignItems: "center" }}>
+                    <label style={{ fontSize: 13, color: "#202124" }}>Fill color</label>
+                    <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                      <input type="color" value={fillColor} onChange={e => setFillColor(e.target.value)}
+                        style={{ width: 36, height: 28, padding: 0, border: "1.5px solid #dadce0", borderRadius: 4, cursor: "pointer" }} />
+                      <span style={{ fontSize: 12, color: "#5f6368", fontFamily: "monospace" }}>{fillColor.toUpperCase()}</span>
+                      <div style={{ display: "flex", gap: 4, flexWrap: "wrap", flex: 1 }}>
+                        {COLOR_PRESETS.slice(0, 8).map(c => (
+                          <button key={c} onClick={() => setFillColor(c)}
+                            title={c}
+                            style={{ width: 18, height: 18, borderRadius: 3, background: c, border: fillColor === c ? "2px solid #1a73e8" : "1px solid rgba(0,0,0,0.15)", cursor: "pointer", padding: 0, flexShrink: 0 }} />
+                        ))}
+                      </div>
+                    </div>
+
+                    <label style={{ fontSize: 13, color: "#202124" }}>Fill opacity</label>
+                    <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                      <input type="range" min={0} max={100} value={fillOp} onChange={e => setFillOp(Number(e.target.value))}
+                        style={{ flex: 1, accentColor: "#1a73e8" }} />
+                      <span style={{ fontSize: 13, color: "#202124", minWidth: 36 }}>{fillOp}%</span>
+                    </div>
                   </div>
-                  <label style={{ fontSize: 13, color: "#202124" }}>Fill opacity</label>
-                  <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                    <input type="range" min={0} max={100} value={fillOp} onChange={e => setFillOp(Number(e.target.value))} style={{ flex: 1, accentColor: "#1a73e8" }} />
-                    <span style={{ fontSize: 13, color: "#202124", minWidth: 36 }}>{fillOp}%</span>
-                  </div>
+                </>
+              )}
+
+              {/* Live-preview notice */}
+              {!isDrawing && (
+                <div style={{ marginTop: 16, padding: "8px 12px", background: "#e8f5e9", borderRadius: 6, border: "1px solid #c8e6c9", display: "flex", alignItems: "center", gap: 8 }}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="#34a853"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z"/></svg>
+                  <span style={{ fontSize: 11, color: "#2e7d32", fontFamily: "'Google Sans','Roboto',Arial,sans-serif" }}>
+                    Changes preview live on the map — click <b>Done</b> to save.
+                  </span>
                 </div>
-              </>}
+              )}
             </div>
           )}
 
-          {/* VIEW TAB */}
+          {/* ══ VIEW TAB ══ */}
           {tab === "View" && (
             <div style={{ padding: "20px 16px" }}>
               <p style={{ fontSize: 13, fontWeight: 500, color: "#202124", margin: "0 0 14px" }}>View position</p>
               {[
-                ["Center latitude",  initC.lat.toFixed(8) + "°"],
-                ["Center longitude", initC.lng.toFixed(8) + "°"],
-                ["Coordinate system","WGS-84 (EPSG:4326)"],
-                ["Heading",          heading + "°"],
-                ["Tilt",             tilt + "°"],
-                ["Range",            range + " m"],
+                ["Center latitude",   initC.lat.toFixed(8) + "°"],
+                ["Center longitude",  initC.lng.toFixed(8) + "°"],
+                ["Coordinate system", "WGS-84 (EPSG:4326)"],
+                ["Heading",           heading + "°"],
+                ["Tilt",              tilt + "°"],
+                ["Range",             range + " m"],
               ].map(([k, v]) => (
                 <div key={k} style={{ display: "flex", justifyContent: "space-between", padding: "9px 0", borderBottom: "1px solid #f1f3f4" }}>
                   <span style={{ fontSize: 13, color: "#5f6368" }}>{k}</span>
@@ -909,7 +933,7 @@ export default function FeaturePropertiesPanel({
             </div>
           )}
 
-          {/* ALTITUDE TAB */}
+          {/* ══ ALTITUDE TAB ══ */}
           {tab === "Altitude" && (
             <div style={{ padding: "20px 16px", display: "flex", flexDirection: "column", gap: 14 }}>
               <p style={{ fontSize: 13, fontWeight: 500, color: "#202124", margin: 0 }}>Altitude mode</p>
@@ -924,62 +948,111 @@ export default function FeaturePropertiesPanel({
             </div>
           )}
 
-          {/* MEASUREMENTS TAB */}
+          {/* ══ MEASUREMENTS TAB ══ */}
           {tab === "Measurements" && (
             <div>
               {!stats && <div style={{ padding: "40px 20px", textAlign: "center", color: "#5f6368", fontSize: 13 }}>No geometry available.</div>}
+
               {stats?.kind === "point" && (
                 <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                  <thead><tr><td colSpan={2} style={{ padding: "10px 16px 6px", fontSize: 11, fontWeight: 600, color: "#5f6368", letterSpacing: "0.08em", background: "#f8f9fa", borderBottom: "1px solid #e8eaed", textTransform: "uppercase" }}>Position</td></tr></thead>
+                  <thead>
+                    <tr><td colSpan={2} style={{ padding: "10px 16px 6px", fontSize: 11, fontWeight: 600, color: "#5f6368", letterSpacing: "0.08em", background: "#f8f9fa", borderBottom: "1px solid #e8eaed", textTransform: "uppercase" }}>Position</td></tr>
+                  </thead>
                   <tbody>
-                    {[["Latitude", `${stats.lat.toFixed(8)}°`, stats.lat.toFixed(8)], ["Longitude", `${stats.lng.toFixed(8)}°`, stats.lng.toFixed(8)], ["Altitude", `${(stats.alt || 0).toFixed(2)} m`, `${(stats.alt || 0).toFixed(2)} m`]].map(([lbl, val, cp]) => (
+                    {[
+                      ["Latitude",  `${stats.lat.toFixed(8)}°`, stats.lat.toFixed(8)],
+                      ["Longitude", `${stats.lng.toFixed(8)}°`, stats.lng.toFixed(8)],
+                      ["Altitude",  `${(stats.alt || 0).toFixed(2)} m`, `${(stats.alt || 0).toFixed(2)} m`],
+                    ].map(([lbl, val, cp]) => (
                       <tr key={lbl} style={{ borderBottom: "1px solid #f1f3f4" }}>
                         <td style={{ padding: "10px 16px", fontSize: 13, color: "#5f6368", width: 130 }}>{lbl}</td>
-                        <td style={{ padding: "10px 8px" }}><div style={{ display: "flex", alignItems: "center", gap: 8 }}><span style={{ fontSize: 13, color: "#1a73e8", fontFamily: "'Roboto Mono',monospace", fontWeight: 500, minWidth: 120, textAlign: "right" }}>{val}</span><CopyBtn text={cp} /></div></td>
+                        <td style={{ padding: "10px 8px" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                            <span style={{ fontSize: 13, color: "#1a73e8", fontFamily: "'Roboto Mono',monospace", fontWeight: 500, minWidth: 120, textAlign: "right" }}>{val}</span>
+                            <CopyBtn text={cp} />
+                          </div>
+                        </td>
                       </tr>
                     ))}
-                    {/* Show UTM in measurements if coordSystem is utm */}
                     {coordSystem === "utm" && (() => {
                       const u = latLngToUTM(stats.lat, stats.lng);
                       return [
-                        ["UTM Zone",    u.zoneStr,                  u.zoneStr],
-                        ["Easting",     `${u.easting.toFixed(2)} m E`, `${u.easting.toFixed(2)} m E`],
-                        ["Northing",    `${u.northing.toFixed(2)} m N`, `${u.northing.toFixed(2)} m N`],
+                        ["UTM Zone",  u.zoneStr,                     u.zoneStr],
+                        ["Easting",   `${u.easting.toFixed(2)} m E`, `${u.easting.toFixed(2)} m E`],
+                        ["Northing",  `${u.northing.toFixed(2)} m N`,`${u.northing.toFixed(2)} m N`],
                       ].map(([lbl, val, cp]) => (
                         <tr key={lbl} style={{ borderBottom: "1px solid #f1f3f4", background: "#fffde7" }}>
                           <td style={{ padding: "10px 16px", fontSize: 13, color: "#5f6368", width: 130 }}>{lbl}</td>
-                          <td style={{ padding: "10px 8px" }}><div style={{ display: "flex", alignItems: "center", gap: 8 }}><span style={{ fontSize: 13, color: "#e37400", fontFamily: "'Roboto Mono',monospace", fontWeight: 500, minWidth: 120, textAlign: "right" }}>{val}</span><CopyBtn text={cp} /></div></td>
+                          <td style={{ padding: "10px 8px" }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                              <span style={{ fontSize: 13, color: "#e37400", fontFamily: "'Roboto Mono',monospace", fontWeight: 500, minWidth: 120, textAlign: "right" }}>{val}</span>
+                              <CopyBtn text={cp} />
+                            </div>
+                          </td>
                         </tr>
                       ));
                     })()}
-                    <tr><td colSpan={2} style={{ padding: "8px 16px", fontSize: 11, color: "#5f6368", fontFamily: "monospace", background: "#f8f9fa", borderTop: "1px solid #e8eaed" }}>{toDMS(stats.lat, "N", "S")} &nbsp; {toDMS(stats.lng, "E", "W")}</td></tr>
+                    <tr>
+                      <td colSpan={2} style={{ padding: "8px 16px", fontSize: 11, color: "#5f6368", fontFamily: "monospace", background: "#f8f9fa", borderTop: "1px solid #e8eaed" }}>
+                        {toDMS(stats.lat, "N", "S")} &nbsp; {toDMS(stats.lng, "E", "W")}
+                      </td>
+                    </tr>
                   </tbody>
                 </table>
               )}
+
               {stats?.kind === "polygon" && (
                 <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                  <thead><tr><td colSpan={2} style={{ padding: "10px 16px 6px", fontSize: 11, fontWeight: 600, color: "#5f6368", letterSpacing: "0.08em", background: "#f8f9fa", borderBottom: "1px solid #e8eaed", textTransform: "uppercase" }}>
-                    Area <select value={areaUnit} onChange={e => setAreaUnit(e.target.value)} style={{ marginLeft: 8, fontSize: 10, border: "1px solid #dadce0", borderRadius: 4, padding: "1px 4px", color: "#202124" }}>{AREA.map(u => <option key={u.key} value={u.key}>{u.label}</option>)}</select>
-                  </td></tr></thead>
+                  <thead>
+                    <tr>
+                      <td colSpan={2} style={{ padding: "10px 16px 6px", fontSize: 11, fontWeight: 600, color: "#5f6368", letterSpacing: "0.08em", background: "#f8f9fa", borderBottom: "1px solid #e8eaed", textTransform: "uppercase" }}>
+                        Area&nbsp;
+                        <select value={areaUnit} onChange={e => setAreaUnit(e.target.value)} style={{ fontSize: 10, border: "1px solid #dadce0", borderRadius: 4, padding: "1px 4px", color: "#202124" }}>
+                          {AREA.map(u => <option key={u.key} value={u.key}>{u.label}</option>)}
+                        </select>
+                      </td>
+                    </tr>
+                  </thead>
                   <tbody><MRows valueM={stats.areaSqM} units={AREA} activeKey={areaUnit} /></tbody>
-                  <thead><tr><td colSpan={2} style={{ padding: "10px 16px 6px", fontSize: 11, fontWeight: 600, color: "#5f6368", letterSpacing: "0.08em", background: "#f8f9fa", borderBottom: "1px solid #e8eaed", borderTop: "1px solid #e8eaed", textTransform: "uppercase" }}>
-                    Perimeter <select value={perimUnit} onChange={e => setPerimUnit(e.target.value)} style={{ marginLeft: 8, fontSize: 10, border: "1px solid #dadce0", borderRadius: 4, padding: "1px 4px", color: "#202124" }}>{DIST.map(u => <option key={u.key} value={u.key}>{u.label}</option>)}</select>
-                  </td></tr></thead>
-                  <tbody><MRows valueM={stats.perimM} units={DIST} activeKey={perimUnit} /><tr><td colSpan={2} style={{ padding: "8px 16px", fontSize: 11, color: "#5f6368", fontFamily: "monospace", background: "#f8f9fa", borderTop: "1px solid #e8eaed" }}>WGS-84 · Spherical Haversine</td></tr></tbody>
+                  <thead>
+                    <tr>
+                      <td colSpan={2} style={{ padding: "10px 16px 6px", fontSize: 11, fontWeight: 600, color: "#5f6368", letterSpacing: "0.08em", background: "#f8f9fa", borderBottom: "1px solid #e8eaed", borderTop: "1px solid #e8eaed", textTransform: "uppercase" }}>
+                        Perimeter&nbsp;
+                        <select value={perimUnit} onChange={e => setPerimUnit(e.target.value)} style={{ fontSize: 10, border: "1px solid #dadce0", borderRadius: 4, padding: "1px 4px", color: "#202124" }}>
+                          {DIST.map(u => <option key={u.key} value={u.key}>{u.label}</option>)}
+                        </select>
+                      </td>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <MRows valueM={stats.perimM} units={DIST} activeKey={perimUnit} />
+                    <tr><td colSpan={2} style={{ padding: "8px 16px", fontSize: 11, color: "#5f6368", fontFamily: "monospace", background: "#f8f9fa", borderTop: "1px solid #e8eaed" }}>WGS-84 · Spherical Haversine</td></tr>
+                  </tbody>
                 </table>
               )}
+
               {stats?.kind === "line" && (
                 <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                  <thead><tr><td colSpan={2} style={{ padding: "10px 16px 6px", fontSize: 11, fontWeight: 600, color: "#5f6368", letterSpacing: "0.08em", background: "#f8f9fa", borderBottom: "1px solid #e8eaed", textTransform: "uppercase" }}>
-                    Length <select value={lenUnit} onChange={e => setLenUnit(e.target.value)} style={{ marginLeft: 8, fontSize: 10, border: "1px solid #dadce0", borderRadius: 4, padding: "1px 4px", color: "#202124" }}>{DIST.map(u => <option key={u.key} value={u.key}>{u.label}</option>)}</select>
-                  </td></tr></thead>
-                  <tbody><MRows valueM={stats.lengthM} units={DIST} activeKey={lenUnit} /><tr><td colSpan={2} style={{ padding: "8px 16px", fontSize: 11, color: "#5f6368", fontFamily: "monospace", background: "#f8f9fa", borderTop: "1px solid #e8eaed" }}>WGS-84 · Spherical Haversine</td></tr></tbody>
+                  <thead>
+                    <tr>
+                      <td colSpan={2} style={{ padding: "10px 16px 6px", fontSize: 11, fontWeight: 600, color: "#5f6368", letterSpacing: "0.08em", background: "#f8f9fa", borderBottom: "1px solid #e8eaed", textTransform: "uppercase" }}>
+                        Length&nbsp;
+                        <select value={lenUnit} onChange={e => setLenUnit(e.target.value)} style={{ fontSize: 10, border: "1px solid #dadce0", borderRadius: 4, padding: "1px 4px", color: "#202124" }}>
+                          {DIST.map(u => <option key={u.key} value={u.key}>{u.label}</option>)}
+                        </select>
+                      </td>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <MRows valueM={stats.lengthM} units={DIST} activeKey={lenUnit} />
+                    <tr><td colSpan={2} style={{ padding: "8px 16px", fontSize: 11, color: "#5f6368", fontFamily: "monospace", background: "#f8f9fa", borderTop: "1px solid #e8eaed" }}>WGS-84 · Spherical Haversine</td></tr>
+                  </tbody>
                 </table>
               )}
             </div>
           )}
 
-          {/* DESCRIPTION TAB */}
+          {/* ══ DESCRIPTION TAB ══ */}
           {tab === "Description" && (
             <div style={{ padding: "20px 16px" }}>
               <p style={{ fontSize: 11, fontWeight: 600, color: "#5f6368", letterSpacing: "0.08em", textTransform: "uppercase", margin: "0 0 10px" }}>Description</p>
@@ -990,13 +1063,16 @@ export default function FeaturePropertiesPanel({
                 <div style={{ marginTop: 16 }}>
                   <p style={{ fontSize: 11, fontWeight: 600, color: "#5f6368", letterSpacing: "0.08em", textTransform: "uppercase", margin: "0 0 8px" }}>Attributes ({Object.keys(props).length})</p>
                   <div style={{ border: "1px solid #e8eaed", borderRadius: 6, overflow: "hidden" }}>
-                    {Object.entries(props).filter(([k]) => !["styleUrl", "styleHash", "Style"].includes(k)).slice(0, 20).map(([k, v], i, arr) => (
-                      <div key={k} style={{ display: "flex", alignItems: "center", padding: "7px 12px", borderBottom: i < arr.length - 1 ? "1px solid #f1f3f4" : "none", gap: 10, background: i % 2 === 0 ? "#fff" : "#fafafa" }}>
-                        <span style={{ color: "#5f6368", fontSize: 11, width: 110, flexShrink: 0, fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis" }}>{k}</span>
-                        <span style={{ color: "#202124", fontSize: 12, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{String(v ?? "—")}</span>
-                        <CopyBtn text={String(v ?? "")} />
-                      </div>
-                    ))}
+                    {Object.entries(props)
+                      .filter(([k]) => !["styleUrl", "styleHash", "Style"].includes(k))
+                      .slice(0, 20)
+                      .map(([k, v], i, arr) => (
+                        <div key={k} style={{ display: "flex", alignItems: "center", padding: "7px 12px", borderBottom: i < arr.length - 1 ? "1px solid #f1f3f4" : "none", gap: 10, background: i % 2 === 0 ? "#fff" : "#fafafa" }}>
+                          <span style={{ color: "#5f6368", fontSize: 11, width: 110, flexShrink: 0, fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis" }}>{k}</span>
+                          <span style={{ color: "#202124", fontSize: 12, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{String(v ?? "—")}</span>
+                          <CopyBtn text={String(v ?? "")} />
+                        </div>
+                      ))}
                   </div>
                 </div>
               )}
@@ -1004,7 +1080,7 @@ export default function FeaturePropertiesPanel({
           )}
         </div>
 
-        {/* ── Footer ─────────────────────────────────────────────────────── */}
+        {/* ── Footer ── */}
         <div style={{ padding: "12px 16px", borderTop: "1px solid #e8eaed", display: "flex", alignItems: "center", gap: 12, flexShrink: 0, background: "#fff" }}>
           <button onClick={handleOK}
             style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 26px", borderRadius: 24, cursor: "pointer", background: saved ? "#34a853" : "#1a73e8", border: "none", color: "#fff", fontSize: 14, fontWeight: 500, fontFamily: "'Google Sans','Roboto',Arial,sans-serif", boxShadow: "0 2px 8px rgba(26,115,232,0.32)", transition: "background 0.2s" }}>

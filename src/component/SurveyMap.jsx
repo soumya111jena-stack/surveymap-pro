@@ -96,6 +96,7 @@ import { MobileSearchBar, MobileBottomNav, CompactMobileHUD } from "../component
 import { MapFlyController, MapRefCapture, ElevationClickCapture } from "./map/MapHelpers.jsx";
 import MobileFileFolder     from "../components/MobileFileFolder.jsx";
 import MobileElevationSheet from "../components/MobileElevationSheet.jsx";
+import AboutGeoxis from "./tools/AboutGeoxis.jsx";
 
 /* ─────────────────────────────────────────────────────────────────────────────
    Layout constants
@@ -180,7 +181,7 @@ const UNIFIED_MENU_DEFS = {
   ],
   Help: [
     { label: "Keyboard Shortcuts",   icon: "Keyboard", action: "shortcuts" },
-    { label: "About SurveyMap Pro",  icon: "Star",     action: "about" },
+    { label: "About Geoxis",  icon: "Star",     action: "about" },
     { divider: true },
     { label: "OpenStreetMap",        icon: "Maps",     action: "osmLink" },
     { label: "Leaflet Docs",         icon: "Maps",     action: "leafletLink" },
@@ -771,10 +772,22 @@ export default function SurveyMap() {
   }, [restoredDrawings]);
 
   /* ── BACKEND: requireAuth guard ────────────────────────────────────────── */
-  const requireAuth = useCallback(() => {
-    if (!isLoggedIn()) { navigate("/login"); return false; }
-    return true;
-  }, [navigate]);
+ const requireAuth = useCallback((action) => {
+if (!isLoggedIn()) {
+sessionStorage.setItem("loginIntent", action || "");
+navigate("/login");
+return false;
+}
+return true;
+}, [navigate]);
+// Auto-open tracker after login redirect
+useEffect(() => {
+const intent = sessionStorage.getItem("loginIntent");
+if (intent === "openTracker" && isLoggedIn()) {
+sessionStorage.removeItem("loginIntent");
+setTimeout(() => setTrackerOpen(true), 300);
+}
+}, []);
 
   /* ── attachFeatureClickHandlers ──────────────────────────────────────────── */
   const attachFeatureClickHandlers = useCallback((lyr, fileType, fileName) => {
@@ -1148,7 +1161,8 @@ export default function SurveyMap() {
     if (A === "toggleOfflineMode")   { setOfflineMode(p => !p); return; }
     if (A === "openElevation")       { if (isMobile) setActiveSheet("elevation"); else setElevOpen(true); return; }
     if (A === "openCompassNav")      { compass.compassNavActive ? compass.stopCompassNav() : compass.startCompassNav(); return; }
-    if (A === "about" || A === "options") { setOptionsOpen(true); return; }
+    if (A === "about") { setShowAbout(true); return; }
+    if (A === "options"){ setOptionsOpen(true); return;}
     if (A === "openKMLProcessing")   { setKmlProcessingOpen(true); return; }
     if (A === "shortcuts")           { setShowShortcuts(true); return; }
     if (A === "osmLink")             { window.open("https://www.openstreetmap.org", "_blank"); return; }
@@ -1430,9 +1444,8 @@ export default function SurveyMap() {
           <button className={`tb-btn ${surveyMode ? "active" : "inactive"}`} onClick={handleToggleSurvey}><Ico name="Survey" size={14} /><span>Survey</span></button>
 
           <div style={{ width: 1, height: 22, background: "rgba(255,255,255,0.08)", margin: "0 3px", flexShrink: 0 }} />
-          <button className={`tb-btn ${isTracking ? "tracker-active" : "inactive"}`} onClick={() => setTrackerOpen(p => !p)} style={{ position: "relative", minWidth: 52 }}>
-            <Ico name="Record" size={14} /><span>Track</span>
-            {isTracking && <span style={{ position: "absolute", top: 4, right: 4, width: 6, height: 6, borderRadius: "50%", background: "#ef4444", animation: "blink 1s infinite" }} />}
+          <button className={`tb-btn ${isTracking ? "tracker-active" : "inactive"}`} onClick={() => { if(!requireAuth("openTracker")) return; setTrackerOpen(p => !p); }} style={{ position: "relative", minWidth: 52 }}><Ico name="Record" size={14} /><span>Track</span>
+          {isTracking && <span style={{ position: "absolute", top: 4, right: 4, width: 6, height: 6, borderRadius: "50%", background: "#ef4444", animation: "blink 1s infinite" }} />}
           </button>
 
           <div style={{ width: 1, height: 22, background: "rgba(255,255,255,0.08)", margin: "0 3px", flexShrink: 0 }} />
@@ -1497,6 +1510,33 @@ export default function SurveyMap() {
           >
             <span style={{ fontSize: 13 }}>🧭</span><span>Directions</span>
           </button>
+          
+          {/* ── APK Download toolbar button ── */}
+
+ <a href="/Geoxis.apk"
+  download="Geoxis.apk"
+  style={{
+    display: "flex",
+    alignItems: "center",
+    gap: 5,
+    padding: "0 10px",
+    height: "100%",
+    background: "rgba(34,197,94,0.14)",
+    border: "1px solid rgba(34,197,94,0.4)",
+    borderRadius: 7,
+    color: "#4ade80",
+    fontSize: 11,
+    fontWeight: 700,
+    textDecoration: "none",
+    whiteSpace: "nowrap",
+    cursor: "pointer",
+    fontFamily: "'DM Sans', sans-serif",
+  }}
+  title="Download Geoxis APK"
+>
+  <span style={{ fontSize: 13 }}>📱</span>
+  <span>Get App</span>
+</a>
 
           <div style={{ flex: 1 }} />
 
@@ -1544,7 +1584,7 @@ export default function SurveyMap() {
         <div style={{ 
           position: "absolute", 
           top: isMobile ? 58 : TOP_H, 
-          left: isMobile ? 0 : (directionsOpen ? SB_W + 300 : SB_W), 
+         left: isMobile ? 0 : (directionsOpen ? 320 : SB_W),
           right: 0, 
           bottom: isMobile ? 68 : STAT_H, 
           zIndex: 1,
@@ -1776,13 +1816,31 @@ export default function SurveyMap() {
                 { label:"Compass Navigation",   sub:compass.compassNavActive ? `Active · ${Math.round(((compass.compassHeading??0)%360+360)%360)}°` : "Map stays north-up", color:"#0ea5e9", active:compass.compassNavActive, action:() => { setActiveSheet(null); compass.compassNavActive ? compass.stopCompassNav() : compass.startCompassNav(); } },
                 { label:"Survey Route",         sub:surveyMode ? `${route.length} pts · recording` : "Tap points for route", color:"#3b82f6", active:surveyMode, action:() => { handleToggleSurvey(); setActiveSheet(null); } },
                 { label:"3D Globe View",        sub:"Interactive 3D earth", color:"#a78bfa", action:() => { setShow3D(true); setActiveSheet(null); } },
-                { label:"Live Track Recorder",  sub:isTracking ? "Recording GPS track" : "GPS · GPX/KML export", color:"#ef4444", active:isTracking, action:() => { setTrackerOpen(true); setActiveSheet(null); } },
+                { label:"Live Track Recorder",  sub:isTracking ? "Recording GPS track" : "GPS · GPX/KML export", color:"#ef4444", active:isTracking, action:() => { if(!requireAuth("openTracker")) return; setTrackerOpen(true); setActiveSheet(null); } },
                 { label:offlineMode ? "🗺 Go Live (Online)" : "📴 Use Cached Map", sub:offlineMode ? "Switch to live tiles" : `${cacheStats?.tileCount??0} tiles cached`, color:offlineMode?"#4ade80":"#10b981", active:offlineMode, action:() => { setOfflineMode(p => !p); setActiveSheet(null); } },
                 { label:"Offline Map Manager",  sub:"Download tiles for offline", color:"#14b8a6", action:() => { setOfflineOpen(true); setActiveSheet(null); } },
                 { label:"Night Mode Auto",      sub:nightModeAuto ? "Active — switches at sunset" : "Off", color:"#818cf8", active:nightModeAuto, action:() => { setNightModeAuto(p => !p); setActiveSheet(null); } },
                 { label:"🖨 Print / Save Image", sub:"Export map as PNG or print", color:"#80c4ff", action:() => { setActiveSheet(null); setPrintOpen(true); } },
+            { label:"📱 Download Android App", sub:"Download & install Geoxis APK", color:"#4ade80",
+  action:() => { window.open("/Geoxis.apk", "_blank"); }
+},
                 { label:"🧭 Get Directions",     sub:"Point-to-point routing", color:"#80c4ff", action:() => { setActiveSheet(null); setDirectionsOpen(true); } },
-              ].map(({ label, sub, color, active, action }) => (
+             ...(isLoggedIn() ? [
+  {
+    label: "Logout",
+    sub: `Signed in as ${getLoggedInUser().username || "user"}`,
+    color: "#f87171",
+    action: () => { localStorage.clear(); setActiveSheet(null); navigate("/login"); }
+  },
+] : [
+  {
+    label: "Sign In",
+    sub: "Login to use Live Track",
+    color: "#4a9eff",
+    action: () => { navigate("/login"); setActiveSheet(null); }
+  },
+]),
+     ].map(({ label, sub, color, active, action }) => (
                 <button key={label} onClick={action} style={{ width:"100%",display:"flex",alignItems:"center",gap:14,padding:"13px 20px",background:"transparent",border:"none",borderBottom:"1px solid rgba(255,255,255,0.035)",cursor:"pointer",textAlign:"left" }}>
                   <div style={{ width:44,height:44,borderRadius:14,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",background:active?`${color}18`:"rgba(255,255,255,0.04)",border:`1px solid ${active?color+"35":"rgba(255,255,255,0.07)"}` }}>
                     <div style={{ width:8,height:8,borderRadius:"50%",background:active?color:"rgba(255,255,255,0.2)" }} />
@@ -2060,17 +2118,8 @@ export default function SurveyMap() {
         )}
 
         {/* About Modal */}
-        {showAbout && (
-          <div style={{ position:"fixed",inset:0,zIndex:3000,background:"rgba(0,0,0,0.75)",display:"flex",alignItems:"center",justifyContent:"center",padding:"0 16px",backdropFilter:"blur(12px)" }}>
-            <div style={{ background:"rgba(5,12,24,0.98)",borderRadius:16,padding:28,width:"100%",maxWidth:360,boxShadow:"0 24px 72px rgba(0,0,0,0.85)",border:"1px solid rgba(74,158,255,0.18)",fontFamily:"'DM Sans',sans-serif" }}>
-              <div style={{ display:"flex",alignItems:"center",justifyContent:"center",marginBottom:14 }}><div style={{ width:52,height:52,borderRadius:14,background:"linear-gradient(135deg,rgba(74,158,255,0.22),rgba(37,99,235,0.22))",border:"1px solid rgba(74,158,255,0.32)",display:"flex",alignItems:"center",justifyContent:"center" }}><Ico name="Compass" size={26} style={{ color:"#4a9eff" }}/></div></div>
-              <div style={{ color:"#c8e0f8",fontWeight:700,fontSize:20,textAlign:"center",marginBottom:5 }}>SurveyMap Pro</div>
-              <div style={{ color:"rgba(255,255,255,0.32)",fontSize:12,textAlign:"center",marginBottom:18 }}>Version 7.2.1 · KML Processing + Backend Integration + Print Map + Directions</div>
-              <PrimaryButton onClick={() => setShowAbout(false)} variant="blue"><Ico name="Check" size={13}/>Close</PrimaryButton>
-            </div>
-          </div>
-        )}
-
+        {showAbout && <AboutGeoxis onClose={() => setShowAbout(false)} />}
+          
         {/* Shortcuts Modal */}
         {showShortcuts && (
           <div style={{ position:"fixed",inset:0,zIndex:3000,background:"rgba(0,0,0,0.75)",display:"flex",alignItems:"center",justifyContent:"center",padding:"0 16px",backdropFilter:"blur(12px)" }}>

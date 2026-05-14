@@ -17,6 +17,7 @@
     "@capacitor/geolocation": "^8.1.0",
     "@capacitor/share": "^8.0.1",
     "@mapbox/leaflet-omnivore": "^0.3.4",
+    "@mapbox/sphericalmercator": "^2.0.2",
     "@nasaworldwind/worldwind": "^0.11.1",
     "@turf/turf": "^7.3.4",
     "axios": "^1.13.5",

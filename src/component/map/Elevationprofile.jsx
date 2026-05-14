@@ -1,51 +1,58 @@
 /**
- * ElevationProfile.jsx  —  src/component/map/ElevationProfile.jsx
+ * ElevationProfile.jsx
  *
- * v3.0 — Fixed & matching Google Earth Pro elevation profile exactly
+ * v6.0 — Google Earth Pro EXACT match
  *
- * KEY FIXES:
- *  ✅ useElevation hook correctly called with route/measure/draw points
- *  ✅ getElevationProfile fetches real SRTM/Open-Elevation API data
- *  ✅ Chart renders correctly with proper scaling & padding
- *  ✅ Hover crosshair + tooltip (elevation badge, slope%, dist, lat/lng)
- *  ✅ Top stats bar: Graph Min · Avg · Max  + red Elevation badge
- *  ✅ Range Totals: Distance · Elev Gain/Loss · Max Slope · Avg Slope
- *  ✅ Slope % labels at bottom of chart (pill badges)
- *  ✅ Min/Max marker pins at lowest/highest points
- *  ✅ Red/pink fill + red line (GEP colour scheme)
- *  ✅ Resizable panel via drag handle
- *  ✅ CSV export
- *  ✅ Mode tabs: Survey / Measure / Draw / Click
- *  ✅ All hooks unconditional (no early-return before hooks)
- *
- * ELEVATION DATA SOURCE (built-in fallback chain):
- *   1. open-elevation.com  (free, global SRTM)
- *   2. open-meteo.com      (elevation API, free)
- *   Both return metres above sea level.
+ * KEY CHANGES vs v5:
+ *  ✅ WHITE/LIGHT background chart (not dark) — matches GE Pro exactly
+ *  ✅ Light pink fill (#f4a0a0 → transparent) under elevation line
+ *  ✅ Thin dark red elevation line (#b91c1c, 1.5px)
+ *  ✅ Full-height thin WHITE spike line on hover
+ *  ✅ Small filled RED dot on the elevation line at hover point
+ *  ✅ RED elevation badge ABOVE the dot (compact, GE style)
+ *  ✅ Connector line from badge to dot
+ *  ✅ Distance label pinned below x-axis at spike position
+ *  ✅ Slope % badge at bottom of spike
+ *  ✅ ARROW CURSOR (pointer) on chart — GE uses crosshair + pointer
+ *  ✅ Panel background stays dark (only chart area is light)
+ *  ✅ All API fallback chain preserved
  */
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 
-/* ── fonts ───────────────────────────────────────────────────────── */
 const ff = "'DM Sans',system-ui,sans-serif";
 const fm = "'DM Mono','Fira Code','Courier New',monospace";
 
-/* ── helpers ──────────────────────────────────────────────────────── */
-const fmElev  = m   => (m == null ? "–" : `${Math.round(m)} m`);
-const fmDist  = m   => {
+const fmElev = m   => (m == null ? "–" : `${Math.round(m)} m`);
+const fmDist = m   => {
   if (m == null) return "–";
   return m >= 1000 ? `${(m / 1000).toFixed(2)} km` : `${Math.round(m)} m`;
 };
-const slopePct = (rise, run) => (!run || run < 0.1) ? null : (rise / run) * 100;
-const fmSlope  = pct => pct == null ? "–" : `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`;
+const slopePct  = (rise, run) => (!run || run < 0.1) ? null : (rise / run) * 100;
+const fmSlope   = pct => pct == null ? "–" : `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`;
 const slopeColor = pct => {
   if (pct == null) return "#94a3b8";
-  if (pct >  2)   return "#4ade80";
-  if (pct < -2)   return "#f87171";
-  return "#94a3b8";
+  if (pct >  2)   return "#16a34a";
+  if (pct < -2)   return "#dc2626";
+  return "#64748b";
 };
 
-/* ── haversine distance in metres ─────────────────────────────────── */
+function normPt(p) {
+  if (!p) return null;
+  if (Array.isArray(p)) {
+    if (Math.abs(p[0]) > 90) return { lat: p[1], lng: p[0] };
+    return { lat: p[0], lng: p[1] };
+  }
+  if (p.lat != null && p.lng != null) return { lat: p.lat, lng: p.lng };
+  if (p.lat != null && p.lon != null) return { lat: p.lat, lng: p.lon };
+  if (p.latitude != null)             return { lat: p.latitude, lng: p.longitude };
+  return null;
+}
+function normPts(arr) {
+  if (!Array.isArray(arr)) return [];
+  return arr.map(normPt).filter(Boolean);
+}
+
 function haverDist(a, b) {
   const R = 6371000;
   const dLat = (b.lat - a.lat) * Math.PI / 180;
@@ -58,60 +65,70 @@ function haverDist(a, b) {
   return R * 2 * Math.atan2(Math.sqrt(s), Math.sqrt(1 - s));
 }
 
-/* ══════════════════════════════════════════════════════════════════
-   INTERNAL ELEVATION FETCHER
-   — fetches real elevation data from open APIs.
-   Call: fetchElevationProfile(arrayOf{lat,lng}) → arrayOf{lat,lng,elevation,distance}
-══════════════════════════════════════════════════════════════════ */
-async function fetchElevationProfile(inputPts) {
-  if (!inputPts || inputPts.length < 2) return [];
+function interpolatePts(pts, maxPts = 100) {
+  if (pts.length <= maxPts) return pts;
+  const result = [];
+  const step = (pts.length - 1) / (maxPts - 1);
+  for (let i = 0; i < maxPts; i++) {
+    const idx = Math.min(Math.round(i * step), pts.length - 1);
+    result.push(pts[idx]);
+  }
+  return result;
+}
 
-  /* --- 1. build cumulative distances --- */
-  const withDist = inputPts.map((p, i) => ({
+/* ══════════════════════════════════════════════════════════════════
+   ELEVATION FETCHER — 3-API fallback chain
+══════════════════════════════════════════════════════════════════ */
+async function fetchElevationProfile(inputPts, signal) {
+  if (!inputPts || inputPts.length < 2) return [];
+  const pts = interpolatePts(inputPts, 100);
+  const withDist = pts.map((p, i) => ({
     ...p,
-    distance: i === 0 ? 0 : inputPts.slice(0, i + 1).reduce((sum, _, j) =>
-      j === 0 ? 0 : sum + haverDist(inputPts[j - 1], inputPts[j]), 0
-    ),
+    distance: i === 0 ? 0
+      : pts.slice(0, i).reduce((sum, _, j) => sum + haverDist(pts[j], pts[j + 1]), 0),
   }));
 
-  /* --- 2. try open-elevation.com (batch, free, SRTM) --- */
+  /* PRIMARY: open-meteo */
   try {
-    const locations = inputPts.map(p => ({ latitude: p.lat, longitude: p.lng }));
+    const lats = pts.map(p => p.lat.toFixed(6)).join(",");
+    const lngs = pts.map(p => p.lng.toFixed(6)).join(",");
+    const url  = `https://api.open-meteo.com/v1/elevation?latitude=${lats}&longitude=${lngs}`;
+    const res  = await fetch(url, { signal: signal ?? AbortSignal.timeout(12000) });
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data?.elevation) && data.elevation.length === pts.length)
+        return withDist.map((p, i) => ({ ...p, elevation: data.elevation[i] }));
+    }
+  } catch (err) { if (err.name === "AbortError") throw err; }
+
+  /* SECONDARY: open-elevation.com */
+  try {
+    const locations = pts.map(p => ({ latitude: p.lat, longitude: p.lng }));
     const res = await fetch("https://api.open-elevation.com/api/v1/lookup", {
       method: "POST",
-      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
       body: JSON.stringify({ locations }),
-      signal: AbortSignal.timeout(12000),
+      signal: AbortSignal.timeout(14000),
     });
     if (res.ok) {
       const data = await res.json();
-      if (data?.results?.length === inputPts.length) {
-        return withDist.map((p, i) => ({
-          ...p,
-          elevation: data.results[i].elevation,
-        }));
-      }
+      if (data?.results?.length === pts.length)
+        return withDist.map((p, i) => ({ ...p, elevation: data.results[i].elevation }));
     }
-  } catch (_) { /* fall through */ }
+  } catch (err) { if (err.name === "AbortError") throw err; }
 
-  /* --- 3. fallback: open-meteo elevation API --- */
+  /* TERTIARY: opentopodata SRTM30 */
   try {
-    const lats = inputPts.map(p => p.lat).join(",");
-    const lngs = inputPts.map(p => p.lng).join(",");
-    const url  = `https://api.open-meteo.com/v1/elevation?latitude=${lats}&longitude=${lngs}`;
-    const res  = await fetch(url, { signal: AbortSignal.timeout(10000) });
+    const locStr = pts.map(p => `${p.lat.toFixed(6)},${p.lng.toFixed(6)}`).join("|");
+    const url    = `https://api.opentopodata.org/v1/srtm30m?locations=${locStr}`;
+    const res    = await fetch(url, { signal: AbortSignal.timeout(15000) });
     if (res.ok) {
       const data = await res.json();
-      if (Array.isArray(data?.elevation) && data.elevation.length === inputPts.length) {
-        return withDist.map((p, i) => ({
-          ...p,
-          elevation: data.elevation[i],
-        }));
-      }
+      if (data?.status === "OK" && data.results?.length === pts.length)
+        return withDist.map((p, i) => ({ ...p, elevation: data.results[i].elevation }));
     }
-  } catch (_) { /* fall through */ }
+  } catch (err) { if (err.name === "AbortError") throw err; }
 
-  /* --- 4. last resort: return points with null elevation --- */
   return withDist.map(p => ({ ...p, elevation: null }));
 }
 
@@ -121,89 +138,106 @@ async function fetchElevationProfile(inputPts) {
 export default function ElevationProfile({
   visible,
   onClose,
-  profileData,        // external pre-fetched data (optional)
-  loading: extLoading,// external loading flag (optional)
+  profileData,
+  loading: extLoading,
   isOnline = true,
   sourceLabel: extSourceLabel,
   leafletMap,
   onRequestPoints,
   activeMode,
-  /* NEW props — pass these so the panel can self-fetch */
-  route         = [],   // [{lat,lng}, …] survey route
-  measurePoints = [],   // [{lat,lng}, …] measure tool
-  drawPoints    = [],   // [{lat,lng}, …] draw tool
+  route         = [],
+  measurePoints = [],
+  drawPoints    = [],
 }) {
-  /* ════════════════════════════════════════════════════════════
-     ALL HOOKS UNCONDITIONALLY FIRST
-  ════════════════════════════════════════════════════════════ */
   const [hoverIdx,    setHoverIdx]    = useState(null);
-  const [panelH,      setPanelH]      = useState(290);
+  const [panelH,      setPanelH]      = useState(300);
   const [internalPts, setInternalPts] = useState([]);
   const [fetching,    setFetching]    = useState(false);
   const [fetchError,  setFetchError]  = useState(null);
   const [customPts,   setCustomPts]   = useState([]);
   const [localMode,   setLocalMode]   = useState(activeMode || null);
 
-  const svgRef       = useRef(null);
-  const abortRef     = useRef(null);
+  const svgRef   = useRef(null);
+  const abortRef = useRef(null);
 
-  /* sync external mode */
   useEffect(() => { if (activeMode) setLocalMode(activeMode); }, [activeMode]);
+  useEffect(() => { setHoverIdx(null); }, [profileData, internalPts, customPts]);
 
-  /* reset hover when data changes */
-  useEffect(() => { setHoverIdx(null); }, [profileData, internalPts]);
-
-  /* ── auto-load when panel becomes visible or mode changes ── */
   useEffect(() => {
     if (!visible) return;
-    const mode = localMode;
-    if (!mode || mode === "custom") return;
+    if (!localMode) {
+      if      (route.length >= 2)         setLocalMode("survey");
+      else if (measurePoints.length >= 2) setLocalMode("measure");
+      else if (drawPoints.length >= 2)    setLocalMode("draw");
+    }
+  }, [visible]); // eslint-disable-line
 
-    let pts = [];
-    if      (mode === "survey"  && route.length >= 2)         pts = route.map(p => ({ lat: p[0] ?? p.lat, lng: p[1] ?? p.lng }));
-    else if (mode === "measure" && measurePoints.length >= 2) pts = measurePoints.map(p => ({ lat: p.lat, lng: p.lng }));
-    else if (mode === "draw"    && drawPoints.length >= 2)    pts = drawPoints.map(p => ({ lat: p.lat, lng: p.lng }));
-    else return;
+  /* Click mode: register Leaflet click */
+  useEffect(() => {
+    if (!visible || localMode !== "custom" || !leafletMap) return;
+    const handleClick = (e) => {
+      e.originalEvent?.stopPropagation?.();
+      const { lat, lng } = e.latlng;
+      setCustomPts(prev => [...prev, { lat, lng }]);
+    };
+    leafletMap.on("click", handleClick);
+    leafletMap.getContainer().style.cursor = "crosshair";
+    return () => {
+      leafletMap.off("click", handleClick);
+      leafletMap.getContainer().style.cursor = "";
+    };
+  }, [visible, localMode, leafletMap]);
 
-    /* abort any in-flight request */
+  /* Fetch elevation on source change */
+  useEffect(() => {
+    if (!visible || !localMode) return;
+    let rawPts = [];
+    if      (localMode === "custom")  rawPts = customPts;
+    else if (localMode === "survey")  rawPts = normPts(route);
+    else if (localMode === "measure") rawPts = normPts(measurePoints);
+    else if (localMode === "draw")    rawPts = normPts(drawPoints);
+
+    if (rawPts.length < 2) { setInternalPts([]); return; }
+
     abortRef.current?.abort?.();
     const ac = new AbortController();
     abortRef.current = ac;
-
     setFetching(true);
     setFetchError(null);
+    setInternalPts([]);
 
-    fetchElevationProfile(pts).then(result => {
-      if (ac.signal.aborted) return;
-      setInternalPts(result);
-      setFetching(false);
-    }).catch(() => {
-      if (!ac.signal.aborted) {
+    fetchElevationProfile(rawPts, ac.signal)
+      .then(result => {
+        if (ac.signal.aborted) return;
+        setInternalPts(result);
+        setFetching(false);
+      })
+      .catch(err => {
+        if (ac.signal.aborted || err.name === "AbortError") return;
         setFetchError("Could not load elevation data.");
         setFetching(false);
-      }
-    });
+      });
 
     return () => ac.abort();
-  }, [visible, localMode, route, measurePoints, drawPoints]);
+  }, [visible, localMode, route, measurePoints, drawPoints, customPts]);
 
-  /* ── chart geometry ── */
-  const chartW = 700;
-  const PAD    = { top: 18, right: 14, bottom: 40, left: 52 };
-  const chartH = Math.max(110, panelH - 148);
+  useEffect(() => () => abortRef.current?.abort?.(), []);
+
+  /* Chart geometry */
+  const chartW = 800;
+  const PAD    = { top: 18, right: 20, bottom: 44, left: 56 };
+  const chartH = Math.max(140, panelH - 120);
   const innerW = chartW - PAD.left - PAD.right;
   const innerH = chartH - PAD.top  - PAD.bottom;
 
-  /* decide which data to show */
   const pts = useMemo(() => {
     if (profileData && profileData.length >= 2) return profileData;
-    if (localMode === "custom") return customPts;
     return internalPts;
-  }, [profileData, internalPts, customPts, localMode]);
+  }, [profileData, internalPts]);
 
   const isLoading = extLoading || fetching;
 
-  /* ── SVG hover handler ── */
+  /* Hover handler */
   const onSvgMove = useCallback((e) => {
     if (!svgRef.current || pts.length === 0) return;
     const rect    = svgRef.current.getBoundingClientRect();
@@ -223,24 +257,21 @@ export default function ElevationProfile({
     setHoverIdx(best);
   }, [pts, chartW, innerW, PAD.left]);
 
-  /* click on chart → pan leaflet map to point */
   const onSvgClick = useCallback(() => {
     if (hoverIdx == null || !leafletMap || !pts[hoverIdx]) return;
     const p = pts[hoverIdx];
     leafletMap.panTo([p.lat, p.lng], { animate: true, duration: 0.5 });
   }, [hoverIdx, pts, leafletMap]);
 
-  /* drag to resize */
   const onDragStart = useCallback((e) => {
     e.preventDefault();
     const startY = e.clientY, startH = panelH;
-    const onMove = (ev) => setPanelH(Math.max(230, Math.min(650, startH - (ev.clientY - startY))));
+    const onMove = (ev) => setPanelH(Math.max(220, Math.min(600, startH - (ev.clientY - startY))));
     const onUp   = () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup",   onUp);
   }, [panelH]);
 
-  /* CSV export */
   const exportCSV = useCallback(() => {
     if (!pts.length) return;
     const header = "index,latitude,longitude,elevation_m,distance_m,slope_pct\n";
@@ -254,21 +285,18 @@ export default function ElevationProfile({
     const blob = new Blob([header + rows], { type: "text/csv" });
     const a    = document.createElement("a");
     a.href     = URL.createObjectURL(blob);
-    a.download = `elevation_profile_${Date.now()}.csv`;
+    a.download = `elevation_${Date.now()}.csv`;
     a.click();
   }, [pts]);
 
-  /* ════════════════════════════════════════════════════════════
-     SAFE EARLY RETURN — all hooks already called above
-  ════════════════════════════════════════════════════════════ */
   if (!visible) return null;
 
-  /* ── stats ── */
-  const validPts = pts.filter(p => p.elevation != null);
-  const elevs    = validPts.map(p => p.elevation);
-  const minElev  = elevs.length ? Math.min(...elevs) : null;
-  const maxElev  = elevs.length ? Math.max(...elevs) : null;
-  const avgElev  = elevs.length ? elevs.reduce((a, b) => a + b, 0) / elevs.length : null;
+  /* Stats */
+  const validPts  = pts.filter(p => p.elevation != null);
+  const elevs     = validPts.map(p => p.elevation);
+  const minElev   = elevs.length ? Math.min(...elevs) : null;
+  const maxElev   = elevs.length ? Math.max(...elevs) : null;
+  const avgElev   = elevs.length ? elevs.reduce((a, b) => a + b, 0) / elevs.length : null;
   const totalDist = pts.length ? (pts[pts.length - 1]?.distance ?? 0) : 0;
 
   let gain = 0, loss = 0, maxSlopePct = 0;
@@ -282,33 +310,33 @@ export default function ElevationProfile({
     if (dE < 0) loss += -dE;
     if (sp != null && Math.abs(sp) > Math.abs(maxSlopePct)) maxSlopePct = sp;
   }
-  const avgSlopePct  = totalDist > 0 ? slopePct(gain + loss, totalDist) : null;
+  const avgSlopePct   = totalDist > 0 ? slopePct(gain + loss, totalDist) : null;
   const hoverSlopePct = hoverIdx != null && hoverIdx > 0 ? (slopePerSeg[hoverIdx] ?? null) : null;
   const hoverElev     = hoverIdx != null ? pts[hoverIdx]?.elevation : null;
 
-  /* ── GEP elevation badge text ── */
   const hovElevStr = hoverElev != null
     ? `${Math.round(hoverElev)} m`
     : (avgElev != null ? `${Math.round(avgElev)} m` : "–");
 
-  /* ── chart SVG coordinates ── */
+  /* SVG path building */
   let svgPath = "", svgFillPath = "", hoverCoord = null;
-  let yLabels = [], xLabels = [], slopeLabels = [];
-  let minCoord = null, maxCoord = null;
+  let yLabels = [], xLabels = [];
 
   if (pts.length >= 2 && validPts.length >= 2) {
-    const maxD   = pts[pts.length - 1]?.distance || 1;
-    const eMin   = minElev - (maxElev - minElev) * 0.12;
-    const eRange = Math.max(maxElev - eMin, 1);
+    const maxD    = pts[pts.length - 1]?.distance || 1;
+    const padding = (maxElev - minElev) * 0.18;
+    const eMin    = minElev - padding;
+    const eMax    = maxElev + padding * 0.4;
+    const eRange  = Math.max(eMax - eMin, 1);
 
-    const toX = d => PAD.left + (d / maxD) * innerW;
-    const toY = e => PAD.top  + innerH - ((e - eMin) / eRange) * innerH;
+    const toX  = d => PAD.left + (d / maxD) * innerW;
+    const toY  = e => PAD.top  + innerH - ((e - eMin) / eRange) * innerH;
     const baseY = PAD.top + innerH;
 
     const coords = pts.map((p, i) => ({
-      x:        toX(p.distance),
-      y:        p.elevation != null ? toY(p.elevation) : null,
-      slope:    i < slopePerSeg.length ? slopePerSeg[i] : null,
+      x:         toX(p.distance),
+      y:         p.elevation != null ? toY(p.elevation) : null,
+      slope:     i < slopePerSeg.length ? slopePerSeg[i] : null,
       elevation: p.elevation,
       distance:  p.distance,
       lat:       p.lat,
@@ -319,7 +347,9 @@ export default function ElevationProfile({
     let pathStr = "", inSeg = false;
     for (const c of coords) {
       if (c.y == null) { inSeg = false; continue; }
-      pathStr += inSeg ? `L${c.x.toFixed(1)},${c.y.toFixed(1)} ` : `M${c.x.toFixed(1)},${c.y.toFixed(1)} `;
+      pathStr += inSeg
+        ? `L${c.x.toFixed(1)},${c.y.toFixed(1)} `
+        : `M${c.x.toFixed(1)},${c.y.toFixed(1)} `;
       inSeg = true;
     }
     svgPath = pathStr;
@@ -334,74 +364,57 @@ export default function ElevationProfile({
       svgFillPath = fp;
     }
 
-    /* hover coord */
     if (hoverIdx != null && coords[hoverIdx]?.y != null) hoverCoord = coords[hoverIdx];
 
-    /* min / max pins */
-    const minC = coords.find(c => c.elevation === minElev && c.y != null);
-    const maxC = coords.find(c => c.elevation === maxElev && c.y != null);
-    if (minC) minCoord = minC;
-    if (maxC) maxCoord = maxC;
-
-    /* Y-axis labels — 5 ticks */
+    /* y-axis: 5 ticks */
     for (let i = 0; i <= 4; i++) {
       const e = eMin + (eRange * i) / 4;
-      yLabels.push({ y: toY(e), label: `${Math.round(e)}` });
+      yLabels.push({ y: toY(e), label: `${Math.round(e)} m` });
     }
 
-    /* X-axis distance labels */
-    const xSteps = Math.min(7, pts.length - 1);
+    /* x-axis */
+    const xSteps = Math.min(6, pts.length - 1);
     for (let i = 0; i <= xSteps; i++) {
       xLabels.push({ x: toX((maxD * i) / xSteps), label: fmDist((maxD * i) / xSteps) });
     }
-
-    /* Slope labels below chart — 6 evenly-spaced samples */
-    const slopeSteps = 7;
-    for (let i = 1; i < slopeSteps; i++) {
-      const frac    = i / slopeSteps;
-      const targetD = frac * maxD;
-      let best = 1, bestDiff = Infinity;
-      for (let j = 1; j < coords.length; j++) {
-        const diff = Math.abs(coords[j].distance - targetD);
-        if (diff < bestDiff) { bestDiff = diff; best = j; }
-      }
-      const sp = coords[best]?.slope;
-      if (sp != null) slopeLabels.push({ x: coords[best].x, pct: sp });
-    }
   }
 
-  /* ── colours matching GEP screenshot ── */
-  const RED_LINE = "#d94040";
-  const RED_FILL = "url(#gepFill)";
+  const modeAvail = {
+    survey:  normPts(route).length >= 2,
+    measure: normPts(measurePoints).length >= 2,
+    draw:    normPts(drawPoints).length >= 2,
+    custom:  true,
+  };
 
-  /* ── stat pill component ── */
-  const Stat = ({ label, value, color = "#94a3b8", highlight }) => (
-    <div style={{ display: "flex", alignItems: "center", gap: 3 }}>
-      <span style={{ color: "#475569", fontSize: 9.5, fontFamily: fm, textTransform: "uppercase", letterSpacing: ".07em" }}>{label}:</span>
-      <span style={{
-        color:      highlight ? "#fff" : color,
-        fontSize:   10.5, fontWeight: 700, fontFamily: fm,
-        background: highlight ? "rgba(210,50,50,0.82)" : "transparent",
-        padding:    highlight ? "1px 7px" : 0, borderRadius: 4,
-      }}>{value}</span>
-    </div>
-  );
-
-  /* ── source label resolution ── */
   const resolvedSource = extSourceLabel || (
-    localMode === "survey"  ? `Survey · ${route.length} pts` :
-    localMode === "measure" ? `Measure · ${measurePoints.length} pts` :
-    localMode === "draw"    ? `Draw · ${drawPoints.length} pts` :
+    localMode === "survey"  ? `Survey · ${normPts(route).length} pts` :
+    localMode === "measure" ? `Measure · ${normPts(measurePoints).length} pts` :
+    localMode === "draw"    ? `Draw · ${normPts(drawPoints).length} pts` :
     localMode === "custom"  ? `Custom · ${customPts.length} pts` : ""
   );
 
-  /* source-mode availability indicators */
-  const modeAvail = {
-    survey:  route.length >= 2,
-    measure: measurePoints.length >= 2,
-    draw:    drawPoints.length >= 2,
-    custom:  true,
-  };
+  const emptyMsg = (() => {
+    if (localMode === "custom") {
+      if (customPts.length === 0) return "Click points on the map to build a custom elevation profile";
+      if (customPts.length === 1) return "Click at least one more point on the map";
+      return "Loading elevation data…";
+    }
+    if (!localMode)            return "Select a source — Survey, Measure, Draw, or Click";
+    if (!modeAvail[localMode]) return `Start a ${localMode} on the map first`;
+    return "Loading elevation data…";
+  })();
+
+  /* Stat inline component — dark panel style */
+  const StatItem = ({ label, value, color = "#94a3b8" }) => (
+    <div style={{ display:"flex", alignItems:"center", gap:4 }}>
+      <span style={{ color:"#475569", fontSize:9, fontFamily:fm, textTransform:"uppercase", letterSpacing:".06em", whiteSpace:"nowrap" }}>{label}:</span>
+      <span style={{ color, fontSize:10, fontWeight:700, fontFamily:fm, whiteSpace:"nowrap" }}>{value}</span>
+    </div>
+  );
+
+  const Divider = () => (
+    <div style={{ width:1, height:12, background:"rgba(255,255,255,0.08)", flexShrink:0 }} />
+  );
 
   return (
     <div style={{
@@ -411,198 +424,220 @@ export default function ElevationProfile({
       right:          0,
       height:         panelH,
       zIndex:         1055,
-      background:     "rgba(6, 12, 22, 0.98)",
-      backdropFilter: "blur(20px)",
-      WebkitBackdropFilter: "blur(20px)",
-      borderTop:      "1.5px solid rgba(200, 50, 50, 0.4)",
+      background:     "rgba(13, 20, 32, 0.97)",
+      backdropFilter: "blur(16px)",
+      WebkitBackdropFilter: "blur(16px)",
+      borderTop:      "1px solid rgba(180,28,28,0.3)",
       fontFamily:     ff,
       display:        "flex",
       flexDirection:  "column",
       overflow:       "hidden",
       userSelect:     "none",
-      boxShadow:      "0 -8px 40px rgba(0,0,0,0.7)",
+      boxShadow:      "0 -6px 28px rgba(0,0,0,0.55)",
     }}>
 
-      {/* ── drag handle ── */}
-      <div
-        onMouseDown={onDragStart}
-        style={{
-          height: 7, cursor: "ns-resize", flexShrink: 0,
-          background: "rgba(255,255,255,0.015)",
-          display: "flex", alignItems: "center", justifyContent: "center",
-        }}
-      >
-        <div style={{ width: 44, height: 3, borderRadius: 2, background: "rgba(255,255,255,0.1)" }} />
+      {/* Drag handle */}
+      <div onMouseDown={onDragStart} style={{
+        height:6, cursor:"ns-resize", flexShrink:0,
+        display:"flex", alignItems:"center", justifyContent:"center",
+        background:"rgba(255,255,255,0.01)",
+      }}>
+        <div style={{ width:38, height:3, borderRadius:2, background:"rgba(255,255,255,0.07)" }} />
       </div>
 
-      {/* ══════════════════════════════════════════════════════════
-          ROW 1 — GEP-style top stats bar
-          "Graph: Min · Avg · Max   Elevation: 87 m"
-      ══════════════════════════════════════════════════════════ */}
+      {/* ── TOP BAR ── */}
       <div style={{
-        display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
-        padding: "4px 12px 3px",
-        borderBottom: "1px solid rgba(255,255,255,0.05)",
-        background: "rgba(0,0,0,0.30)", flexShrink: 0,
+        display:"flex", alignItems:"center", gap:7, flexWrap:"wrap",
+        padding:"3px 10px 3px",
+        borderBottom:"1px solid rgba(255,255,255,0.05)",
+        background:"rgba(0,0,0,0.22)", flexShrink:0,
+        minHeight:28,
       }}>
-        <span style={{ color: "#2d3f55", fontSize: 9.5, fontFamily: fm, fontWeight: 700, letterSpacing: ".06em" }}>GRAPH:</span>
-        <Stat label="Min" value={fmElev(minElev)} color="#38bdf8" />
-        <Stat label="Avg" value={fmElev(avgElev)} color="#94a3b8" />
-        <Stat label="Max" value={fmElev(maxElev)} color="#f472b6" />
-        <div style={{ width: 1, height: 14, background: "rgba(255,255,255,0.07)" }} />
+        <span style={{ color:"#334155", fontSize:9, fontFamily:fm, fontWeight:700, letterSpacing:".06em", flexShrink:0 }}>
+          Graph. Min. Avg. Max.
+        </span>
+        {/* GE elevation pill */}
+        <div style={{
+          background:"#b91c1c", color:"#fff",
+          fontSize:10.5, fontWeight:800, fontFamily:fm,
+          padding:"1px 11px", borderRadius:3, letterSpacing:".04em", flexShrink:0,
+        }}>
+          Elevation: {hovElevStr}
+        </div>
+        <StatItem label="Min" value={fmElev(minElev)} color="#60a5fa" />
+        <StatItem label="Avg" value={fmElev(avgElev)} color="#94a3b8" />
+        <StatItem label="Max" value={fmElev(maxElev)} color="#f472b6" />
 
-        <span style={{ color: "#475569", fontSize: 9.5, fontFamily: fm, textTransform: "uppercase", letterSpacing: ".07em" }}>Elevation:</span>
-        {/* RED highlight badge — current hover or avg, matching GEP screenshot */}
-        <span style={{
-          background: "rgba(195, 45, 45, 0.85)", color: "#fff",
-          fontSize: 10.5, fontWeight: 800, fontFamily: fm,
-          padding: "2px 10px", borderRadius: 4, letterSpacing: ".03em",
-          minWidth: 56, textAlign: "center",
-        }}>{hovElevStr}</span>
-
-        {/* right: mode tabs + CSV + close */}
-        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 3, flexWrap: "wrap" }}>
-          {[["survey","Survey"], ["measure","Measure"], ["draw","Draw"], ["custom","Click"]].map(([mode, label]) => {
+        {/* Mode tabs */}
+        <div style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:2 }}>
+          {[["survey","Survey"],["measure","Measure"],["draw","Draw"],["custom","Click"]].map(([mode,label]) => {
             const isActive = localMode === mode;
             const avail    = modeAvail[mode];
             return (
               <button key={mode}
                 onClick={() => {
-                  setLocalMode(mode);
+                  setLocalMode(mode); setInternalPts([]); setFetchError(null);
                   onRequestPoints?.(mode);
-                  if (mode === "custom") { setCustomPts([]); setInternalPts([]); }
+                  if (mode === "custom") setCustomPts([]);
                 }}
                 style={{
-                  padding: "3px 9px", borderRadius: 10, border: "none", cursor: "pointer",
-                  background:   isActive ? "rgba(210,50,50,0.2)"   : "rgba(255,255,255,0.04)",
-                  color:        isActive ? "#f87171"                : avail ? "#64748b" : "#2d3f55",
-                  fontSize: 9.5, fontWeight: 700, fontFamily: ff,
-                  borderBottom: isActive ? "2px solid #ef4444"     : "2px solid transparent",
-                  opacity: avail ? 1 : 0.5,
-                  transition: "all .15s",
+                  padding:"2px 9px", borderRadius:3, border:"none", cursor:"pointer",
+                  background:   isActive ? "rgba(185,28,28,0.22)" : "transparent",
+                  color:        isActive ? "#fca5a5" : avail ? "#64748b" : "#2d3f55",
+                  fontSize:9.5, fontWeight:700, fontFamily:ff,
+                  borderBottom: isActive ? "2px solid #ef4444" : "2px solid transparent",
+                  opacity: avail ? 1 : 0.45,
+                  transition:"all .12s",
                 }}
-              >{label}{avail && !isActive ? <span style={{ marginLeft: 3, color: "#22c55e", fontSize: 7 }}>●</span> : null}</button>
+              >
+                {label}
+                {avail && !isActive
+                  ? <span style={{ marginLeft:2, color:"#22c55e", fontSize:6 }}>●</span>
+                  : null}
+              </button>
             );
           })}
         </div>
 
-        <button onClick={exportCSV} disabled={!pts.length} title="Export CSV" style={{
-          padding: "3px 9px", borderRadius: 6,
-          border: "1px solid rgba(220,60,60,0.3)",
-          background: "rgba(220,60,60,0.1)", color: "#f87171",
-          fontSize: 9.5, fontWeight: 700, cursor: "pointer", fontFamily: ff,
+        {localMode === "custom" && customPts.length > 0 && (
+          <button
+            onClick={() => { setCustomPts([]); setInternalPts([]); }}
+            style={{
+              padding:"2px 7px", borderRadius:3,
+              border:"1px solid rgba(100,116,139,0.22)",
+              background:"rgba(100,116,139,0.07)", color:"#64748b",
+              fontSize:9, fontWeight:700, cursor:"pointer", fontFamily:ff,
+            }}
+          >× Clear ({customPts.length})</button>
+        )}
+
+        <button onClick={exportCSV} disabled={!pts.length} style={{
+          padding:"2px 7px", borderRadius:3,
+          border:"1px solid rgba(185,28,28,0.28)",
+          background:"rgba(185,28,28,0.07)", color:"#fca5a5",
+          fontSize:9, fontWeight:700, cursor:"pointer", fontFamily:ff,
           opacity: pts.length ? 1 : 0.4,
         }}>↓ CSV</button>
 
         {!isOnline && (
           <span style={{
-            fontSize: 9, padding: "2px 7px", borderRadius: 10,
-            background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.3)", color: "#fbbf24",
+            fontSize:8.5, padding:"1px 6px", borderRadius:3,
+            background:"rgba(251,191,36,0.09)",
+            border:"1px solid rgba(251,191,36,0.22)", color:"#fbbf24",
           }}>OFFLINE</span>
         )}
+
         <button onClick={onClose} style={{
-          background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.09)",
-          color: "#64748b", borderRadius: 6, width: 22, height: 22, cursor: "pointer",
-          display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0,
+          background:"rgba(255,255,255,0.04)", border:"1px solid rgba(255,255,255,0.07)",
+          color:"#64748b", borderRadius:3, width:20, height:20, cursor:"pointer",
+          display:"flex", alignItems:"center", justifyContent:"center", fontSize:14, flexShrink:0,
         }}>×</button>
       </div>
 
-      {/* ══════════════════════════════════════════════════════════
-          ROW 2 — GEP-style second stats bar
-          "Range Totals: Distance · Gain/Loss · Max/Avg Slope"
-      ══════════════════════════════════════════════════════════ */}
+      {/* ── SECOND BAR ── */}
       <div style={{
-        display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
-        padding: "3px 12px",
-        borderBottom: "1px solid rgba(255,255,255,0.05)",
-        background: "rgba(0,0,0,0.18)", flexShrink: 0,
+        display:"flex", alignItems:"center", gap:7, flexWrap:"wrap",
+        padding:"2px 10px",
+        borderBottom:"1px solid rgba(255,255,255,0.04)",
+        background:"rgba(0,0,0,0.1)", flexShrink:0,
+        minHeight:21,
       }}>
-        <span style={{ color: "#2d3f55", fontSize: 9, fontFamily: fm, fontWeight: 700, letterSpacing: ".05em" }}>RANGE TOTALS:</span>
-        <Stat label="Distance"  value={fmDist(totalDist)}           color="#a78bfa" />
-        <div style={{ width: 1, height: 12, background: "rgba(255,255,255,0.06)" }} />
-        <Stat label="Elev Gain" value={`+${Math.round(gain)} m`}   color="#4ade80" />
-        <Stat label="Loss"      value={`-${Math.round(loss)} m`}   color="#f87171" />
-        <div style={{ width: 1, height: 12, background: "rgba(255,255,255,0.06)" }} />
-        <Stat label="Max Slope" value={fmSlope(maxSlopePct)}        color={slopeColor(maxSlopePct)} />
-        <Stat label="Avg Slope" value={fmSlope(avgSlopePct)}        color={slopeColor(avgSlopePct)} />
+        <span style={{ color:"#334155", fontSize:8.5, fontFamily:fm, fontWeight:700, letterSpacing:".04em" }}>Range Totals:</span>
+        <StatItem label="Distance"       value={fmDist(totalDist)}        color="#a78bfa" />
+        <Divider />
+        <StatItem label="Elev Gain/Loss" value={`+${Math.round(gain)} m · -${Math.round(loss)} m`} color="#94a3b8" />
+        <Divider />
+        <StatItem label="Max Slope"      value={fmSlope(maxSlopePct)}      color={slopeColor(maxSlopePct)} />
+        <StatItem label="Avg Slope"      value={fmSlope(avgSlopePct)}      color={slopeColor(avgSlopePct)} />
         {resolvedSource && (
           <>
-            <div style={{ width: 1, height: 12, background: "rgba(255,255,255,0.06)" }} />
-            <span style={{ fontSize: 9, color: "#2d3f55", fontFamily: fm }}>{resolvedSource}</span>
+            <Divider />
+            <span style={{ fontSize:8.5, color:"#334155", fontFamily:fm }}>{resolvedSource}</span>
           </>
         )}
-        {/* Hover slope badge */}
         {hoverSlopePct != null && (
           <span style={{
-            marginLeft: "auto",
-            background: hoverSlopePct > 2 ? "rgba(74,222,128,0.18)" : hoverSlopePct < -2 ? "rgba(248,113,113,0.18)" : "rgba(148,163,184,0.12)",
-            border: `1px solid ${slopeColor(hoverSlopePct)}44`,
+            marginLeft:"auto",
+            background: hoverSlopePct > 2 ? "rgba(22,163,74,0.16)" : hoverSlopePct < -2 ? "rgba(185,28,28,0.2)" : "rgba(100,116,139,0.11)",
+            border:`1px solid ${slopeColor(hoverSlopePct)}44`,
             color: slopeColor(hoverSlopePct),
-            fontSize: 10, fontWeight: 800, fontFamily: fm,
-            padding: "1px 8px", borderRadius: 4,
+            fontSize:9, fontWeight:800, fontFamily:fm,
+            padding:"1px 7px", borderRadius:3,
           }}>{fmSlope(hoverSlopePct)}</span>
         )}
       </div>
 
-      {/* ══════════════════════════════════════════════════════════
-          CHART AREA
-      ══════════════════════════════════════════════════════════ */}
-      <div style={{ flex: 1, position: "relative", overflow: "hidden", padding: "2px 4px 0" }}>
+      {/* ── CHART AREA — Google Earth light background ── */}
+      <div style={{ flex:1, position:"relative", overflow:"hidden", background:"#f8f9fa" }}>
 
-        {/* Loading overlay */}
+        <style>{`@keyframes gepSpin { to { transform:rotate(360deg); } }`}</style>
+
+        {/* Loading */}
         {isLoading && (
           <div style={{
-            position: "absolute", inset: 0, display: "flex", alignItems: "center",
-            justifyContent: "center", zIndex: 10, background: "rgba(6,12,22,0.75)",
+            position:"absolute", inset:0, display:"flex", alignItems:"center",
+            justifyContent:"center", zIndex:10, background:"rgba(248,249,250,0.85)",
           }}>
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
+            <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:8 }}>
               <div style={{
-                width: 36, height: 36, border: "3px solid rgba(220,60,60,0.15)",
-                borderTop: "3px solid #e05050", borderRadius: "50%",
-                animation: "gepSpin 0.9s linear infinite",
+                width:28, height:28,
+                border:"2.5px solid rgba(185,28,28,0.18)",
+                borderTop:"2.5px solid #b91c1c", borderRadius:"50%",
+                animation:"gepSpin 0.8s linear infinite",
               }} />
-              <span style={{ color: "#f87171", fontSize: 11, fontFamily: fm }}>Fetching elevation data…</span>
+              <span style={{ color:"#b91c1c", fontSize:10, fontFamily:fm }}>Fetching elevation…</span>
             </div>
           </div>
         )}
 
-        {/* Error state */}
+        {/* Error */}
         {fetchError && !isLoading && (
           <div style={{
-            position: "absolute", inset: 0, display: "flex", flexDirection: "column",
-            alignItems: "center", justifyContent: "center", gap: 8,
+            position:"absolute", inset:0, display:"flex", flexDirection:"column",
+            alignItems:"center", justifyContent:"center", gap:8,
+            background:"#f8f9fa",
           }}>
-            <span style={{ fontSize: 28, opacity: 0.3 }}>⚠️</span>
-            <span style={{ color: "#f87171", fontSize: 11, fontFamily: fm }}>{fetchError}</span>
-            <button onClick={() => { setFetchError(null); setLocalMode(localMode); }}
-              style={{ padding: "5px 14px", borderRadius: 6, border: "1px solid rgba(220,60,60,0.4)", background: "rgba(220,60,60,0.1)", color: "#f87171", cursor: "pointer", fontSize: 11, fontFamily: ff }}>
-              Retry
-            </button>
+            <span style={{ fontSize:22, opacity:0.3 }}>⚠️</span>
+            <span style={{ color:"#b91c1c", fontSize:10, fontFamily:fm }}>{fetchError}</span>
+            <button
+              onClick={() => {
+                setFetchError(null); setInternalPts([]);
+                const m = localMode; setLocalMode(null);
+                setTimeout(() => setLocalMode(m), 50);
+              }}
+              style={{
+                padding:"3px 11px", borderRadius:3,
+                border:"1px solid rgba(185,28,28,0.35)",
+                background:"rgba(185,28,28,0.09)", color:"#b91c1c",
+                cursor:"pointer", fontSize:10, fontFamily:ff,
+              }}
+            >Retry</button>
           </div>
         )}
 
-        {/* Empty / waiting state */}
+        {/* Empty */}
         {!isLoading && !fetchError && pts.length < 2 && (
           <div style={{
-            position: "absolute", inset: 0, display: "flex", flexDirection: "column",
-            alignItems: "center", justifyContent: "center", gap: 10,
+            position:"absolute", inset:0, display:"flex", flexDirection:"column",
+            alignItems:"center", justifyContent:"center", gap:10,
+            background:"#f8f9fa",
           }}>
-            <span style={{ fontSize: 36, opacity: 0.07 }}>⛰</span>
-            <div style={{ color: "#1e3a5f", fontSize: 11, textAlign: "center", maxWidth: 340, lineHeight: 1.7, fontFamily: fm }}>
-              {localMode === "custom"
-                ? "Click points on the map to build a custom elevation profile"
-                : !localMode
-                  ? "Select a source tab above — Survey, Measure, Draw, or Click"
-                  : !modeAvail[localMode]
-                    ? `Start a ${localMode} on the map first, then return here`
-                    : "Loading elevation data…"}
+            <span style={{ fontSize:30, opacity:0.1 }}>⛰</span>
+            <div style={{ color:"#94a3b8", fontSize:11, textAlign:"center", maxWidth:360, lineHeight:1.8, fontFamily:fm }}>
+              {emptyMsg}
             </div>
-            {/* Quick-start buttons */}
             {!localMode && (
-              <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
-                {Object.entries(modeAvail).filter(([, v]) => v).map(([mode]) => (
-                  <button key={mode} onClick={() => { setLocalMode(mode); onRequestPoints?.(mode); }}
-                    style={{ padding: "5px 12px", borderRadius: 8, border: "1px solid rgba(220,60,60,0.3)", background: "rgba(220,60,60,0.08)", color: "#f87171", cursor: "pointer", fontSize: 10.5, fontFamily: ff, fontWeight: 600, textTransform: "capitalize" }}>
+              <div style={{ display:"flex", gap:5, marginTop:4 }}>
+                {Object.entries(modeAvail).filter(([,v]) => v).map(([mode]) => (
+                  <button key={mode}
+                    onClick={() => { setLocalMode(mode); onRequestPoints?.(mode); }}
+                    style={{
+                      padding:"3px 10px", borderRadius:3,
+                      border:"1px solid rgba(185,28,28,0.28)",
+                      background:"rgba(185,28,28,0.06)", color:"#b91c1c",
+                      cursor:"pointer", fontSize:10, fontFamily:ff, fontWeight:600,
+                      textTransform:"capitalize",
+                    }}>
                     {mode}
                   </button>
                 ))}
@@ -611,52 +646,86 @@ export default function ElevationProfile({
           </div>
         )}
 
-        {/* SVG Chart */}
+        {/* ══════════════════════════════════════════════════════════
+            SVG CHART — Google Earth Pro EXACT style
+            Light background, pink fill, thin red line,
+            white vertical spike, red dot, compact badges
+        ══════════════════════════════════════════════════════════ */}
         {pts.length >= 2 && !fetchError && (
           <svg
             ref={svgRef}
             viewBox={`0 0 ${chartW} ${chartH}`}
             preserveAspectRatio="none"
-            style={{ width: "100%", height: "100%", cursor: "crosshair", display: "block" }}
+            style={{
+              width:"100%", height:"100%",
+              cursor: hoverCoord ? "pointer" : "crosshair",
+              display:"block",
+              background:"#f8f9fa",
+            }}
             onMouseMove={onSvgMove}
             onMouseLeave={() => setHoverIdx(null)}
             onClick={onSvgClick}
             onTouchMove={e => { e.preventDefault(); onSvgMove(e); }}
           >
             <defs>
-              {/* GEP-style red/pink vertical gradient */}
-              <linearGradient id="gepFill" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%"    stopColor="#d94040" stopOpacity="0.55" />
-                <stop offset="55%"   stopColor="#e05050" stopOpacity="0.22" />
-                <stop offset="100%"  stopColor="#e05050" stopOpacity="0.04" />
+              {/* GE fill: light pink → very transparent */}
+              <linearGradient id="geFillLight" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%"   stopColor="#f87171" stopOpacity="0.55" />
+                <stop offset="60%"  stopColor="#fca5a5" stopOpacity="0.25" />
+                <stop offset="100%" stopColor="#fecaca" stopOpacity="0.08" />
               </linearGradient>
-              <linearGradient id="gepLine" x1="0" y1="0" x2="1" y2="0">
-                <stop offset="0%"   stopColor="#d94040" />
-                <stop offset="50%"  stopColor="#f87171" />
-                <stop offset="100%" stopColor="#d94040" />
-              </linearGradient>
-              <filter id="gepGlow">
-                <feGaussianBlur stdDeviation="1.5" result="blur" />
-                <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+              {/* Dot glow */}
+              <filter id="dotGlowLight" x="-80%" y="-80%" width="260%" height="260%">
+                <feGaussianBlur stdDeviation="2.5" result="blur"/>
+                <feMerge>
+                  <feMergeNode in="blur"/>
+                  <feMergeNode in="SourceGraphic"/>
+                </feMerge>
               </filter>
-              <style>{`@keyframes gepSpin { to { transform: rotate(360deg); } }`}</style>
+              {/* Drop shadow for badges */}
+              <filter id="badgeShadow" x="-10%" y="-20%" width="120%" height="140%">
+                <feDropShadow dx="0" dy="1" stdDeviation="1.5" floodColor="#00000033"/>
+              </filter>
             </defs>
+
+            {/* Chart background — white */}
+            <rect
+              x={PAD.left} y={PAD.top}
+              width={innerW} height={innerH}
+              fill="#ffffff"
+              stroke="#e2e8f0"
+              strokeWidth="0.5"
+            />
 
             {/* Horizontal grid lines */}
             {yLabels.map((yl, i) => (
               <line key={i}
-                x1={PAD.left} y1={yl.y} x2={chartW - PAD.right} y2={yl.y}
-                stroke="rgba(255,255,255,0.045)" strokeWidth="1"
+                x1={PAD.left} y1={yl.y}
+                x2={chartW - PAD.right} y2={yl.y}
+                stroke="#e2e8f0" strokeWidth="0.8"
+                strokeDasharray={i > 0 ? "3,4" : "none"}
               />
             ))}
 
-            {/* Fill */}
-            {svgFillPath && <path d={svgFillPath} fill={RED_FILL} />}
+            {/* Vertical grid lines */}
+            {xLabels.map((xl, i) => (
+              i > 0 && i < xLabels.length - 1 && (
+                <line key={i}
+                  x1={xl.x} y1={PAD.top}
+                  x2={xl.x} y2={PAD.top + innerH}
+                  stroke="#e2e8f0" strokeWidth="0.6"
+                  strokeDasharray="3,4"
+                />
+              )
+            ))}
 
-            {/* Profile line */}
+            {/* Fill — GE light pink */}
+            {svgFillPath && <path d={svgFillPath} fill="url(#geFillLight)" />}
+
+            {/* Elevation line — thin dark red, clean */}
             {svgPath && (
               <path d={svgPath} fill="none"
-                stroke="url(#gepLine)" strokeWidth="1.8"
+                stroke="#b91c1c" strokeWidth="1.5"
                 strokeLinejoin="round" strokeLinecap="round"
               />
             )}
@@ -664,123 +733,160 @@ export default function ElevationProfile({
             {/* Y-axis labels */}
             {yLabels.map((yl, i) => (
               <text key={i}
-                x={PAD.left - 6} y={yl.y + 3.5} textAnchor="end"
-                fill="#2d4a6a" fontSize="9.5" fontFamily={fm}>
+                x={PAD.left - 6} y={yl.y + 3.5}
+                textAnchor="end" fill="#6b7280" fontSize="9" fontFamily={fm}
+              >
                 {yl.label}
               </text>
             ))}
 
-            {/* X-axis distance labels */}
+            {/* X-axis labels */}
             {xLabels.map((xl, i) => (
               <text key={i}
-                x={xl.x} y={chartH - PAD.bottom + 14} textAnchor="middle"
-                fill="#2d4a6a" fontSize="8.5" fontFamily={fm}>
+                x={xl.x} y={chartH - PAD.bottom + 14}
+                textAnchor="middle" fill="#6b7280" fontSize="8.5" fontFamily={fm}
+              >
                 {xl.label}
               </text>
             ))}
 
-            {/* Slope % pills BELOW chart — GEP bottom row */}
-            {slopeLabels.map((sl, i) => (
-              <g key={i}>
-                <line x1={sl.x} y1={PAD.top + innerH} x2={sl.x} y2={PAD.top + innerH + 5}
-                  stroke="rgba(255,255,255,0.07)" strokeWidth="1" />
-                <rect x={sl.x - 14} y={PAD.top + innerH + 6} width={28} height={13} rx="3"
-                  fill={sl.pct > 2 ? "rgba(74,222,128,0.1)" : sl.pct < -2 ? "rgba(248,113,113,0.14)" : "rgba(100,116,139,0.1)"} />
-                <text x={sl.x} y={PAD.top + innerH + 15.5} textAnchor="middle"
-                  fill={slopeColor(sl.pct)} fontSize="8" fontFamily={fm} fontWeight="700">
-                  {sl.pct >= 0 ? "+" : ""}{sl.pct.toFixed(1)}%
-                </text>
-              </g>
-            ))}
+            {/* Axis borders */}
+            <line x1={PAD.left} y1={PAD.top}
+                  x2={PAD.left} y2={PAD.top + innerH}
+              stroke="#94a3b8" strokeWidth="1" />
+            <line x1={PAD.left} y1={PAD.top + innerH}
+                  x2={chartW - PAD.right} y2={PAD.top + innerH}
+              stroke="#94a3b8" strokeWidth="1" />
 
-            {/* Axes */}
-            <line x1={PAD.left} y1={PAD.top} x2={PAD.left} y2={PAD.top + innerH}
-              stroke="rgba(255,255,255,0.07)" strokeWidth="1" />
-            <line x1={PAD.left} y1={PAD.top + innerH} x2={chartW - PAD.right} y2={PAD.top + innerH}
-              stroke="rgba(255,255,255,0.07)" strokeWidth="1" />
-
-            {/* Min pin — blue */}
-            {minCoord && (
-              <g>
-                <line x1={minCoord.x} y1={minCoord.y} x2={minCoord.x} y2={minCoord.y + 12}
-                  stroke="#38bdf8" strokeWidth="1" strokeDasharray="2 2" />
-                <rect x={minCoord.x - 17} y={minCoord.y - 17} width={34} height={14} rx="3"
-                  fill="rgba(10,25,45,0.95)" stroke="rgba(56,189,248,0.55)" strokeWidth="1" />
-                <text x={minCoord.x} y={minCoord.y - 6.5} textAnchor="middle"
-                  fill="#38bdf8" fontSize="8.5" fontFamily={fm} fontWeight="700">
-                  {fmElev(minCoord.elevation)}
-                </text>
-              </g>
-            )}
-
-            {/* Max pin — pink */}
-            {maxCoord && (
-              <g>
-                <line x1={maxCoord.x} y1={maxCoord.y} x2={maxCoord.x} y2={maxCoord.y - 12}
-                  stroke="#f472b6" strokeWidth="1" strokeDasharray="2 2" />
-                <rect x={maxCoord.x - 17} y={maxCoord.y + 4} width={34} height={14} rx="3"
-                  fill="rgba(30,8,30,0.95)" stroke="rgba(244,114,182,0.55)" strokeWidth="1" />
-                <text x={maxCoord.x} y={maxCoord.y + 14} textAnchor="middle"
-                  fill="#f472b6" fontSize="8.5" fontFamily={fm} fontWeight="700">
-                  {fmElev(maxCoord.elevation)}
-                </text>
-              </g>
-            )}
-
-            {/* Hover crosshair + tooltip — GEP style */}
+            {/* ════════════════════════════════════════════════════
+                GOOGLE EARTH PRO HOVER SPIKE — EXACT MATCH:
+                1. Thin WHITE vertical line (full chart height)
+                2. Small filled RED dot on the elevation line
+                3. Compact red elevation badge ABOVE the dot
+                4. Thin connector line badge → dot
+                5. Distance label below x-axis
+                6. Slope badge at bottom
+                + ARROW / POINTER cursor on hover
+            ════════════════════════════════════════════════════ */}
             {hoverCoord && (() => {
-              const ttW = 138, ttH = 58;
-              const ttX = Math.min(hoverCoord.x + 12, chartW - ttW - PAD.right - 4);
-              const ttY = Math.max(PAD.top + 2, hoverCoord.y - ttH - 12);
-              const sp  = hoverSlopePct;
+              const cx   = hoverCoord.x;
+              const cy   = hoverCoord.y;
+              const topY = PAD.top;
+              const botY = PAD.top + innerH;
+              const sp   = hoverSlopePct;
+
+              /* Elevation badge */
+              const bW = 54, bH = 19;
+              const bX = Math.min(Math.max(cx - bW / 2, PAD.left + 2), chartW - PAD.right - bW - 2);
+              const bY = Math.max(topY + 2, cy - bH - 8);
+
+              /* Distance label */
+              const dW = 58, dH = 14;
+              const dX = Math.min(Math.max(cx - dW / 2, PAD.left + 2), chartW - PAD.right - dW - 2);
+
+              /* Slope badge */
+              const sW = 50, sH = 14;
+              const sX = Math.min(Math.max(cx - sW / 2, PAD.left + 2), chartW - PAD.right - sW - 2);
+              const sY = botY + dH + 4;
 
               return (
                 <>
-                  {/* vertical dashed crosshair line */}
+                  {/* 1. Full-height thin WHITE spike line */}
                   <line
-                    x1={hoverCoord.x} y1={PAD.top}
-                    x2={hoverCoord.x} y2={PAD.top + innerH}
-                    stroke="rgba(210,60,60,0.55)" strokeWidth="1" strokeDasharray="4 3"
-                  />
-                  {/* dot on profile */}
-                  <circle cx={hoverCoord.x} cy={hoverCoord.y} r="5.5"
-                    fill={RED_LINE} stroke="rgba(6,12,22,0.95)" strokeWidth="2"
-                    filter="url(#gepGlow)"
+                    x1={cx} y1={topY}
+                    x2={cx} y2={botY}
+                    stroke="rgba(255,255,255,0.95)"
+                    strokeWidth="1.5"
                   />
 
-                  {/* tooltip box */}
-                  <rect x={ttX} y={ttY} width={ttW} height={ttH} rx="5"
-                    fill="rgba(6,12,22,0.97)" stroke="rgba(210,50,50,0.5)" strokeWidth="1" />
+                  {/* Subtle shadow behind the spike for visibility on light bg */}
+                  <line
+                    x1={cx} y1={topY}
+                    x2={cx} y2={botY}
+                    stroke="rgba(100,100,100,0.18)"
+                    strokeWidth="3"
+                  />
+                  {/* The white spike on top */}
+                  <line
+                    x1={cx} y1={topY}
+                    x2={cx} y2={botY}
+                    stroke="white"
+                    strokeWidth="1.5"
+                  />
 
-                  {/* elevation — big red badge */}
-                  <rect x={ttX + 6} y={ttY + 7} width={ttW - 12} height={18} rx="3"
-                    fill="rgba(195,40,40,0.78)" />
-                  <text x={ttX + ttW / 2} y={ttY + 19.5} textAnchor="middle"
-                    fill="#fff" fontSize="12" fontFamily={fm} fontWeight="800">
+                  {/* 2. Dot: outer halo + filled red circle */}
+                  <circle cx={cx} cy={cy} r="8"
+                    fill="rgba(185,28,28,0.15)"
+                  />
+                  <circle cx={cx} cy={cy} r="4.5"
+                    fill="#b91c1c"
+                    stroke="white"
+                    strokeWidth="1.8"
+                    filter="url(#dotGlowLight)"
+                  />
+
+                  {/* 3. Elevation badge above the dot */}
+                  <rect x={bX} y={bY} width={bW} height={bH} rx="3"
+                    fill="#b91c1c"
+                    filter="url(#badgeShadow)"
+                  />
+                  <text x={bX + bW / 2} y={bY + 13}
+                    textAnchor="middle"
+                    fill="white" fontSize="11" fontFamily={fm} fontWeight="800"
+                  >
                     {fmElev(hoverCoord.elevation)}
                   </text>
 
-                  {/* distance */}
-                  <text x={ttX + 8} y={ttY + 35} fill="#475569" fontSize="8.5" fontFamily={fm}>
-                    {fmDist(hoverCoord.distance)} from start
+                  {/* 4. Connector line: badge bottom → dot top */}
+                  {bY + bH + 2 < cy - 5 && (
+                    <line
+                      x1={cx} y1={bY + bH}
+                      x2={cx} y2={cy - 5}
+                      stroke="#b91c1c" strokeWidth="1.2" opacity="0.6"
+                      strokeDasharray="2,2"
+                    />
+                  )}
+
+                  {/* 5. Distance label below x-axis */}
+                  <rect x={dX} y={botY + 2} width={dW} height={dH} rx="2"
+                    fill="rgba(185,28,28,0.12)"
+                    stroke="rgba(185,28,28,0.25)"
+                    strokeWidth="0.5"
+                  />
+                  <text x={cx} y={botY + 12}
+                    textAnchor="middle"
+                    fill="#b91c1c" fontSize="8" fontFamily={fm} fontWeight="700"
+                  >
+                    {fmDist(hoverCoord.distance)}
                   </text>
 
-                  {/* slope badge */}
+                  {/* 6. Slope badge */}
                   {sp != null && (
                     <>
-                      <rect x={ttX + 6} y={ttY + 40} width={54} height={12} rx="2"
-                        fill={sp > 2 ? "rgba(74,222,128,0.14)" : sp < -2 ? "rgba(248,113,113,0.14)" : "rgba(100,116,139,0.1)"} />
-                      <text x={ttX + 33} y={ttY + 49} textAnchor="middle"
-                        fill={slopeColor(sp)} fontSize="8" fontFamily={fm} fontWeight="700">
-                        slope {fmSlope(sp)}
+                      <rect x={sX} y={sY} width={sW} height={sH} rx="2"
+                        fill={
+                          sp > 2  ? "rgba(22,163,74,0.15)"
+                          : sp < -2 ? "rgba(185,28,28,0.15)"
+                          : "rgba(100,116,139,0.12)"
+                        }
+                        stroke={`${slopeColor(sp)}55`} strokeWidth="0.5"
+                      />
+                      <text x={cx} y={sY + 10}
+                        textAnchor="middle"
+                        fill={slopeColor(sp)}
+                        fontSize="8.5" fontFamily={fm} fontWeight="700"
+                      >
+                        {fmSlope(sp)}
                       </text>
                     </>
                   )}
 
-                  {/* lat / lng */}
-                  <text x={ttX + 8} y={ttY + 56.5} fill="#1e3a5f" fontSize="7.5" fontFamily={fm}>
-                    {hoverCoord.lat?.toFixed(5)}, {hoverCoord.lng?.toFixed(5)}
-                  </text>
+                  {/* Arrow / pointer indicator — GE style small triangle arrow */}
+                  <polygon
+                    points={`${cx-5},${cy+14} ${cx+5},${cy+14} ${cx},${cy+22}`}
+                    fill="#b91c1c"
+                    opacity="0.7"
+                  />
                 </>
               );
             })()}

@@ -1,5 +1,5 @@
 import React, { Suspense, lazy } from "react";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { HashRouter, Routes, Route, Navigate } from "react-router-dom";
 
 import SurveyMap from "./component/SurveyMap";
 
@@ -27,7 +27,6 @@ function Loader() {
   );
 }
 
-// ── Fixed: now checks accessToken + role instead of adminToken ─────────────
 function Protected({ children }) {
   const token = localStorage.getItem("accessToken");
   const role  = localStorage.getItem("role");
@@ -70,7 +69,7 @@ class PageErrorBoundary extends React.Component {
 
 export default function App() {
   return (
-    <BrowserRouter>
+    <HashRouter>
       <Routes>
 
         {/* PUBLIC — map */}
@@ -122,6 +121,6 @@ export default function App() {
         <Route path="/*splat" element={<Navigate to="/" replace />} />
 
       </Routes>
-    </BrowserRouter>
+    </HashRouter>
   );
 }
