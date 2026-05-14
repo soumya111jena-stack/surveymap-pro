@@ -11,7 +11,7 @@
  */
 
 import React from "react";
-import { COLOR_RAMPS } from "../component/loaders/Demloader";
+import { COLOR_RAMPS } from "../component/loaders/DEMLoader";
 import { exportDEM } from "../utils/exportDem";
 
 /* ─── tiny gradient swatch for each ramp ─────────────────────────────── */
