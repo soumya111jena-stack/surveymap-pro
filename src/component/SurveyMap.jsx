@@ -42,7 +42,7 @@ import KMLLoader          from "./loaders/KMLLoader";
 import KMZLoader          from "./loaders/KMZLoader";
 import CSVLoader          from "./loaders/CSVLoader";
 import ShapefileLoader    from "./loaders/ShapefileLoader";
-import DEMLoader          from "./loaders/Demloader";
+import DEMLoader from "./loaders/DEMLoader";
 import DEMElevationDrape  from "./loaders/Demelevationdrape";
 import { exportShapefile } from "../utils/exportShapefile";
 import GeoJSONLoader      from "./loaders/GeoJSONLoader";
