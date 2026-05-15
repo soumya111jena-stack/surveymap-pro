@@ -2,6 +2,9 @@ import { BASE_URL } from "./apiConfig";
 
 const BASE = BASE_URL;
 
+const CLOUDINARY_CLOUD_NAME    = "dmqqvyc6w";
+const CLOUDINARY_UPLOAD_PRESET = "geoxis_tracks"; // unsigned preset
+
 const authHeaders = () => ({
   "Content-Type": "application/json",
   Authorization: `Bearer ${localStorage.getItem("accessToken") || ""}`,
@@ -28,6 +31,62 @@ function dataURLtoBlob(dataURL) {
     return new Blob([bytes], { type: mime });
   } catch (e) {
     console.warn("[dataURLtoBlob] failed:", e.message);
+    return null;
+  }
+}
+
+// Compress image before upload (reduces size from ~3MB to ~200KB)
+async function compressImage(dataURL, maxWidth = 1024, quality = 0.6) {
+  return new Promise((resolve) => {
+    try {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        let width = img.width;
+        let height = img.height;
+        if (width > maxWidth) {
+          height = Math.round((height * maxWidth) / width);
+          width = maxWidth;
+        }
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL("image/jpeg", quality));
+      };
+      img.onerror = () => resolve(dataURL);
+      img.src = dataURL;
+    } catch (e) {
+      resolve(dataURL);
+    }
+  });
+}
+
+// ── Upload a single blob directly to Cloudinary (bypasses Render) ──────────
+async function uploadToCloudinaryDirect(blob, filename) {
+  try {
+    const form = new FormData();
+    form.append("file", new File([blob], filename, { type: blob.type || "image/jpeg" }));
+    form.append("upload_preset", CLOUDINARY_UPLOAD_PRESET);
+    form.append("folder", "geoxis/tracks");
+    form.append("public_id", filename.replace(/\.[^.]+$/, "")); // strip extension
+
+    const res = await fetch(
+      `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`,
+      { method: "POST", body: form }
+    );
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      console.error("[cloudinary] upload error:", err);
+      return null;
+    }
+
+    const data = await res.json();
+    console.log("[cloudinary] upload success:", data.secure_url);
+    return data.secure_url;
+  } catch (e) {
+    console.error("[cloudinary] upload exception:", e.message);
     return null;
   }
 }
@@ -71,8 +130,8 @@ export const saveTrack = async (
     startedAt      = null,
     endedAt        = null,
     distanceMeters = 0,
-    photos         = [],        // ← NEW: full array [{dataURL, filename, name, note, lat, lng, time}]
-    photoDataURL   = null,      // ← legacy single photo fallback
+    photos         = [],        // [{dataURL, filename, name, note, lat, lng, time}]
+    photoDataURL   = null,      // legacy single photo fallback
     photoFilename  = "photo.jpg",
     photoName      = null,
     photoNote      = null,
@@ -85,7 +144,7 @@ export const saveTrack = async (
     Array.isArray(p) ? [p[1], p[0]] : [p.lng, p.lat]
   );
 
-  // ── Normalise: prefer photos[], else fall back to legacy single photo ──
+  // Normalise: prefer photos[], else fall back to legacy single photo
   const allPhotos = photos && photos.length > 0
     ? photos
     : photoDataURL
@@ -94,84 +153,101 @@ export const saveTrack = async (
 
   console.log(`[saveTrack] allPhotos count: ${allPhotos.length}`);
 
-  // ── Send multipart/form-data when photos exist ────────────────────────
-  if (allPhotos.length > 0) {
-    const form = new FormData();
-    form.append("clientId",        clientId);
-    form.append("sessionClientId", sessionClientId);
-    form.append("name",            name);
-    form.append("coordinates",     JSON.stringify(coordinates));
-    form.append("distanceMeters",  String(distanceMeters));
-    if (startedAt) form.append("startedAt", startedAt);
-    if (endedAt)   form.append("endedAt",   endedAt);
+  // ── STEP 1: Upload all photos directly to Cloudinary ──────────────────
+  // Bypasses Render entirely. No multer, no timeout.
+  const uploadedPhotos = [];
 
-    const photosMeta  = [];
-    let   successCount = 0;
-
-    for (let i = 0; i < allPhotos.length; i++) {
-      const p = allPhotos[i];
-      if (!p.dataURL) {
-        console.warn(`[saveTrack] photo_${i} has no dataURL — skipping`);
-        continue;
-      }
-
-      // Use dataURLtoBlob() — works for ALL sizes on Android, never fails
-      const blob = dataURLtoBlob(p.dataURL);
-      if (!blob) {
-        console.warn(`[saveTrack] photo_${i} blob conversion failed — skipping`);
-        continue;
-      }
-
-      const filename = p.filename || `photo_${i + 1}.jpg`;
-      const file     = new File([blob], filename, { type: blob.type || "image/jpeg" });
-
-      form.append(`photo_${i}`, file);
-      photosMeta.push({
-        index:    i,
-        filename,
-        name:     p.name  || `Photo ${i + 1}`,
-        note:     p.note  || null,
-        lat:      p.lat   != null ? p.lat  : null,
-        lng:      p.lng   != null ? p.lng  : null,
-        time:     p.time  || null,
-      });
-      successCount++;
-      console.log(`[saveTrack] attached photo_${i}: ${filename} (${Math.round(blob.size/1024)}KB)`);
+  for (let i = 0; i < allPhotos.length; i++) {
+    const p = allPhotos[i];
+    if (!p.dataURL) {
+      console.warn(`[saveTrack] photo_${i} has no dataURL — skipping`);
+      continue;
     }
 
-    if (successCount > 0) {
-      form.append("photosMeta", JSON.stringify(photosMeta));
-      form.append("photoName",  photosMeta[0]?.name || "");
-      form.append("photoNote",  photosMeta[0]?.note || "");
+    const compressedDataURL = await compressImage(p.dataURL, 1024, 0.6);
+    console.log(`[saveTrack] compressed photo_${i}`);
 
-      console.log(`[saveTrack] sending ${successCount}/${allPhotos.length} photo(s) for: ${name}`);
+    const blob = dataURLtoBlob(compressedDataURL);
+    if (!blob) {
+      console.warn(`[saveTrack] photo_${i} blob conversion failed — skipping`);
+      continue;
+    }
 
-      try {
-        const res = await fetch(`${BASE}/api/tracks`, {
-          method:  "POST",
-          headers: { Authorization: `Bearer ${localStorage.getItem("accessToken") || ""}` },
-          body:    form,
-        });
-        return throwIfNotOk(res);
-      } catch (err) {
-        console.warn("[saveTrack] multipart POST failed:", err.message);
-        // fall through to JSON fallback
-      }
+    const filename = p.filename || `photo_${Date.now()}_${i}.jpg`;
+    const url = await uploadToCloudinaryDirect(blob, filename);
+
+    if (url) {
+      uploadedPhotos.push({
+        index: i,
+        url,
+        name:  p.name || `Photo ${i + 1}`,
+        note:  p.note || null,
+        lat:   p.lat  != null ? p.lat : null,
+        lng:   p.lng  != null ? p.lng : null,
+        time:  p.time || null,
+      });
+    } else {
+      console.warn(`[saveTrack] photo_${i} Cloudinary upload failed — skipping`);
     }
   }
 
-  // ── Fallback: JSON without photos ─────────────────────────────────────
-  console.log("[saveTrack] sending JSON (no photos)");
+  console.log(`[saveTrack] ${uploadedPhotos.length}/${allPhotos.length} photo(s) uploaded to Cloudinary`);
+
+  // ── STEP 2: Build waypointsMeta entries (same shape backend already uses)
+  const photoWaypoints = uploadedPhotos.map(p => ({
+    photo: true,
+    url:   p.url,
+    name:  p.name,
+    note:  p.note,
+    lat:   p.lat,
+    lng:   p.lng,
+    time:  p.time,
+  }));
+
+  const firstPhoto = uploadedPhotos[0];
+
+  // ── STEP 3: POST plain JSON to backend (no binary files, no multer timeout)
+  // Your existing tracks.js backend reads:
+  //   body.coordinates, body.photoUrl, body.photoName, body.photoNote,
+  //   body.photosMeta (JSON string), body.waypointsMeta (JSON string)
+  // All of that is preserved here — backend needs ZERO changes.
+  const payload = {
+    clientId,
+    sessionClientId,
+    name,
+    coordinates:    JSON.stringify(coordinates),  // backend does JSON.parse()
+    distanceMeters: String(distanceMeters),
+    startedAt:      startedAt || undefined,
+    endedAt:        endedAt   || undefined,
+
+    // Legacy single-photo fields (backward compat with your backend SQL)
+    photoUrl:  firstPhoto?.url  || undefined,
+    photoName: firstPhoto?.name || photoName || undefined,
+    photoNote: firstPhoto?.note || photoNote || undefined,
+
+    // Multi-photo meta — backend iterates this to build waypointsMeta
+    photosMeta: JSON.stringify(
+      uploadedPhotos.map(p => ({
+        index:    p.index,
+        filename: `cloudinary_${p.index}`,
+        name:     p.name,
+        note:     p.note,
+        lat:      p.lat,
+        lng:      p.lng,
+        time:     p.time,
+      }))
+    ),
+
+    // Pre-built waypointsMeta so backend merges correctly
+    waypointsMeta: JSON.stringify(photoWaypoints),
+  };
+
+  console.log("[saveTrack] sending JSON to backend (no binary files)");
+
   const res = await fetch(`${BASE}/api/tracks`, {
     method:  "POST",
-    headers: authHeaders(),
-    body: JSON.stringify({
-      clientId, sessionClientId, name, coordinates, distanceMeters,
-      startedAt:  startedAt  || undefined,
-      endedAt:    endedAt    || undefined,
-      photoName:  photoName  || undefined,
-      photoNote:  photoNote  || undefined,
-    }),
+    headers: authHeaders(), // Content-Type: application/json
+    body:    JSON.stringify(payload),
   });
   return throwIfNotOk(res);
 };
