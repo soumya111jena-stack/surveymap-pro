@@ -43,6 +43,35 @@ function cleanCoords(coordinates) {
   );
 }
 
+// ── Reverse geocode using OpenStreetMap Nominatim (free, no API key) ──────────
+const geocodeCache = {};
+async function reverseGeocode(lat, lng) {
+  if (lat == null || lng == null) return null;
+  const key = `${Number(lat).toFixed(4)},${Number(lng).toFixed(4)}`;
+  if (geocodeCache[key] !== undefined) return geocodeCache[key];
+  try {
+    const res = await fetch(
+      `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&zoom=14`,
+      { headers: { "Accept-Language": "en" } }
+    );
+    if (!res.ok) { geocodeCache[key] = null; return null; }
+    const data = await res.json();
+    const a = data.address || {};
+    // Build a short readable place name
+    const parts = [
+      a.village || a.suburb || a.neighbourhood || a.town || a.city_district,
+      a.city || a.town || a.county,
+      a.state,
+    ].filter(Boolean);
+    const place = parts.slice(0, 2).join(", ") || data.display_name?.split(",").slice(0,2).join(",") || null;
+    geocodeCache[key] = place;
+    return place;
+  } catch {
+    geocodeCache[key] = null;
+    return null;
+  }
+}
+
 // ── Download helper ───────────────────────────────────────────────────────────
 async function downloadPhoto(url, filename) {
   try {
@@ -59,6 +88,36 @@ async function downloadPhoto(url, filename) {
   } catch {
     window.open(url, "_blank");
   }
+}
+
+// ── Export Photos CSV (with place names from Nominatim) ───────────────────────
+async function exportPhotosCSV(track) {
+  const photos = getTrackPhotos(track);
+  if (!photos.length) { alert("No photos in this track."); return; }
+
+  // Fetch place names for all photos in parallel
+  const placeNames = await Promise.all(
+    photos.map(p => reverseGeocode(p.lat, p.lng))
+  );
+
+  const header = "photo_no,name,note,latitude,longitude,place_name,time,photo_url\n";
+  const rows = photos.map((p, i) => {
+    const name      = (p.name        || `Photo ${i+1}`).replace(/,/g, " ");
+    const note      = (p.note        || "").replace(/,/g, " ");
+    const place     = (placeNames[i] || "").replace(/,/g, " ");
+    const time      = p.time ? new Date(p.time).toLocaleString("en-IN") : "";
+    const lat       = p.lat  != null ? Number(p.lat).toFixed(6)  : "";
+    const lng       = p.lng  != null ? Number(p.lng).toFixed(6) : "";
+    const url       = p.url  || "";
+    return `${i+1},${name},${note},${lat},${lng},${place},${time},${url}`;
+  }).join("\n");
+
+  const blob = new Blob([header + rows], { type: "text/csv" });
+  const a    = document.createElement("a");
+  a.href     = URL.createObjectURL(blob);
+  a.download = `photos_${track.name || track.id}_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
 }
 
 // ── CSS Variables & Global Styles ─────────────────────────────────────────────
@@ -154,6 +213,9 @@ const GlobalStyles = () => (
 
     .btn-cyan { background: rgba(6,182,212,0.1); color: #06b6d4; border-color: rgba(6,182,212,0.25); }
     .btn-cyan:hover:not(:disabled) { background: rgba(6,182,212,0.18); }
+
+    .btn-purple { background: rgba(139,92,246,0.1); color: #8b5cf6; border-color: rgba(139,92,246,0.25); }
+    .btn-purple:hover:not(:disabled) { background: rgba(139,92,246,0.2); }
 
     .badge {
       display: inline-flex; align-items: center; gap: 5px;
@@ -294,6 +356,15 @@ const GlobalStyles = () => (
     }
     .submit-btn:hover:not(:disabled) { transform: translateY(-1px); opacity: 0.9; }
     .submit-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .place-tag {
+      display: inline-flex; align-items: center; gap: 4px;
+      font-size: 10px; color: #10b981;
+      background: rgba(16,185,129,0.08);
+      border: 1px solid rgba(16,185,129,0.2);
+      border-radius: 4px; padding: 2px 6px;
+      margin-top: 4px; font-family: var(--mono);
+    }
   `}</style>
 );
 
@@ -428,16 +499,8 @@ function PhotoLightbox({ photos, startIndex, onClose }) {
   return (
     <div className="modal-backdrop" onClick={onClose} style={{ background: "rgba(0,0,0,0.95)" }}>
       <div onClick={e => e.stopPropagation()} style={{ position: "relative", maxWidth: "90vw", maxHeight: "90vh" }}>
-
-        {/* top action buttons */}
         <div style={{ position: "absolute", top: -50, right: 0, display: "flex", alignItems: "center", gap: 8 }}>
-          {/* Download button */}
-          <button
-            onClick={() => downloadPhoto(photoUrl, photoName)}
-            className="btn btn-cyan"
-            style={{ fontSize: 12 }}
-            title="Download photo"
-          >
+          <button onClick={() => downloadPhoto(photoUrl, photoName)} className="btn btn-cyan" style={{ fontSize: 12 }} title="Download photo">
             <Icons.Download/> Download
           </button>
           <button onClick={onClose} className="close-btn"><Icons.Close/></button>
@@ -455,7 +518,6 @@ function PhotoLightbox({ photos, startIndex, onClose }) {
           )}
         </div>
 
-        {/* photo info + download bar */}
         {(photo.name || photo.note) && (
           <div style={{ marginTop: 16, textAlign: "center", maxWidth: "500px" }}>
             {photo.name && <div style={{ fontWeight: 700, color: "var(--text-primary)" }}>{photo.name}</div>}
@@ -463,7 +525,6 @@ function PhotoLightbox({ photos, startIndex, onClose }) {
           </div>
         )}
 
-        {/* counter + per-photo download link */}
         <div style={{ marginTop: 10, display: "flex", alignItems: "center", justifyContent: "center", gap: 12 }}>
           {photos.length > 1 && (
             <span style={{ fontSize: 11, color: "rgba(200,220,255,0.3)", fontFamily: "var(--mono)" }}>
@@ -476,7 +537,77 @@ function PhotoLightbox({ photos, startIndex, onClose }) {
   );
 }
 
-// ── Photo Cell ────────────────────────────────────────────────────────────────
+// ── Photo Card with Place Name ────────────────────────────────────────────────
+function PhotoCard({ photo, index, totalPhotos, onLightbox, onDownload }) {
+  const [placeName, setPlaceName] = useState(null);
+  const [placeLoading, setPlaceLoading] = useState(false);
+  const photoUrl  = absUrl(photo.url);
+  const photoName = photo.name || `photo_${index + 1}`;
+
+  useEffect(() => {
+    if (photo.lat != null && photo.lng != null) {
+      setPlaceLoading(true);
+      reverseGeocode(photo.lat, photo.lng).then(p => {
+        setPlaceName(p);
+        setPlaceLoading(false);
+      });
+    }
+  }, [photo.lat, photo.lng]);
+
+  return (
+    <div
+      style={{ flexShrink: 0, width: 170, borderRadius: 10, overflow: "hidden", border: "1px solid var(--border)", background: "rgba(255,255,255,0.02)", transition: "all 0.18s" }}
+      onMouseEnter={e => e.currentTarget.style.borderColor = "rgba(255,255,255,0.12)"}
+      onMouseLeave={e => e.currentTarget.style.borderColor = "var(--border)"}
+    >
+      <div onClick={() => onLightbox(index)} style={{ cursor: "pointer" }}>
+        <img src={photoUrl} alt={photo.name} style={{ width: "100%", height: 95, objectFit: "cover", display: "block" }} />
+      </div>
+
+      <div style={{ padding: "8px 10px 10px" }}>
+        <div style={{ fontWeight: 600, fontSize: 11, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {photo.name || `Photo ${index + 1}`}
+        </div>
+        <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 3, fontStyle: "italic", display: "-webkit-box", WebkitLineClamp: 1, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+          {photo.note || "No description"}
+        </div>
+
+        {/* ── Place name (NEW) ── */}
+        {photo.lat != null && (
+          <div style={{ marginTop: 5 }}>
+            {placeLoading ? (
+              <span style={{ fontSize: 9, color: "var(--text-muted)", fontFamily: "var(--mono)" }}>📍 locating…</span>
+            ) : placeName ? (
+              <span className="place-tag">📍 {placeName}</span>
+            ) : (
+              <span style={{ fontSize: 9, color: "var(--text-muted)", fontFamily: "var(--mono)" }}>
+                📍 {Number(photo.lat).toFixed(4)}, {Number(photo.lng).toFixed(4)}
+              </span>
+            )}
+          </div>
+        )}
+
+        <button
+          onClick={() => onDownload(photoUrl, photoName)}
+          style={{
+            display: "inline-flex", alignItems: "center", gap: 4,
+            marginTop: 7, fontSize: 10, fontWeight: 700,
+            color: "var(--cyan)", background: "rgba(6,182,212,0.08)",
+            border: "1px solid rgba(6,182,212,0.2)",
+            borderRadius: 5, padding: "3px 8px", cursor: "pointer",
+            fontFamily: "var(--mono)", transition: "background .15s",
+          }}
+          onMouseEnter={e => e.currentTarget.style.background = "rgba(6,182,212,0.16)"}
+          onMouseLeave={e => e.currentTarget.style.background = "rgba(6,182,212,0.08)"}
+        >
+          <Icons.Download/> Download
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Photo Cell (table) ────────────────────────────────────────────────────────
 function PhotoCell({ track, onOpen }) {
   const photos = getTrackPhotos(track);
   if (photos.length === 0) return <span style={{ color: "var(--text-muted)", fontSize: 11 }}>—</span>;
@@ -864,6 +995,7 @@ function TracksTab({ showToast }) {
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState(null);
   const [loadingTrack, setLoadingTrack] = useState(false);
+  const [exportingPhotos, setExportingPhotos] = useState(false);
   const [mapKey, setMapKey] = useState(0);
   const [lightbox, setLightbox] = useState(null);
   const [search, setSearch] = useState("");
@@ -886,6 +1018,20 @@ function TracksTab({ showToast }) {
       setSelected(t); setMapKey(k => k + 1);
     } catch (e) { console.error(e); }
     finally { setLoadingTrack(false); }
+  };
+
+  const handleExportPhotos = async () => {
+    if (!selected) return;
+    setExportingPhotos(true);
+    showToast("Fetching place names… this may take a few seconds");
+    try {
+      await exportPhotosCSV(selected);
+      showToast("Photos CSV exported!");
+    } catch (e) {
+      showToast("Export failed: " + e.message, "error");
+    } finally {
+      setExportingPhotos(false);
+    }
   };
 
   const filtered = tracks.filter(t =>
@@ -932,13 +1078,27 @@ function TracksTab({ showToast }) {
             </div>
           </div>
           {selected && (
-            <div style={{ display: "flex", gap: 8 }}>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               {selectedPhotos.length > 0 && (
                 <button className="btn btn-ghost" onClick={() => setLightbox({ photos: selectedPhotos, index: 0 })}>
                   📷 Photos ({selectedPhotos.length})
                 </button>
               )}
-              <button className="btn btn-success" onClick={() => downloadCSV(selected)}><Icons.Download/> CSV</button>
+              {/* ── Export Photos CSV button (NEW) ── */}
+              {selectedPhotos.length > 0 && (
+                <button
+                  className="btn btn-purple"
+                  onClick={handleExportPhotos}
+                  disabled={exportingPhotos}
+                  title="Export photo locations as CSV with place names"
+                >
+                  {exportingPhotos
+                    ? <><span className="loading-spinner" style={{ width: 12, height: 12 }}/> Fetching…</>
+                    : <><Icons.Download/> Export Photos CSV</>
+                  }
+                </button>
+              )}
+              <button className="btn btn-success" onClick={() => downloadCSV(selected)}><Icons.Download/> Track CSV</button>
               <button className="btn btn-danger" onClick={() => setSelected(null)}>✕ Close</button>
             </div>
           )}
@@ -988,63 +1148,23 @@ function TracksTab({ showToast }) {
               ))}
             </div>
 
-            {/* Photos strip */}
+            {/* Photos strip — now uses PhotoCard with place name */}
             {selectedPhotos.length > 0 && (
               <div>
                 <div style={{ fontSize: 9, fontWeight: 700, color: "var(--text-muted)", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 10, fontFamily: "var(--mono)" }}>
                   Photos ({selectedPhotos.length})
                 </div>
                 <div style={{ display: "flex", gap: 10, overflowX: "auto", paddingBottom: 4 }}>
-                  {selectedPhotos.map((p, i) => {
-                    const photoUrl  = absUrl(p.url);
-                    const photoName = p.name || `photo_${i + 1}`;
-                    return (
-                      <div
-                        key={i}
-                        style={{ flexShrink: 0, width: 160, borderRadius: 10, overflow: "hidden", border: "1px solid var(--border)", background: "rgba(255,255,255,0.02)", transition: "all 0.18s" }}
-                        onMouseEnter={e => e.currentTarget.style.borderColor = "rgba(255,255,255,0.12)"}
-                        onMouseLeave={e => e.currentTarget.style.borderColor = "var(--border)"}
-                      >
-                        {/* thumbnail — click opens lightbox */}
-                        <div
-                          onClick={() => setLightbox({ photos: selectedPhotos, index: i })}
-                          style={{ cursor: "pointer" }}
-                        >
-                          <img
-                            src={photoUrl}
-                            alt={p.name}
-                            style={{ width: "100%", height: 90, objectFit: "cover", display: "block" }}
-                          />
-                        </div>
-
-                        <div style={{ padding: "8px 10px 10px" }}>
-                          <div style={{ fontWeight: 600, fontSize: 11, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                            {p.name || `Photo ${i + 1}`}
-                          </div>
-                          <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 3, fontStyle: "italic", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
-                            {p.note || "No description"}
-                          </div>
-
-                          {/* Download button */}
-                          <button
-                            onClick={() => downloadPhoto(photoUrl, photoName)}
-                            style={{
-                              display: "inline-flex", alignItems: "center", gap: 4,
-                              marginTop: 7, fontSize: 10, fontWeight: 700,
-                              color: "var(--cyan)", background: "rgba(6,182,212,0.08)",
-                              border: "1px solid rgba(6,182,212,0.2)",
-                              borderRadius: 5, padding: "3px 8px", cursor: "pointer",
-                              fontFamily: "var(--mono)", transition: "background .15s",
-                            }}
-                            onMouseEnter={e => e.currentTarget.style.background = "rgba(6,182,212,0.16)"}
-                            onMouseLeave={e => e.currentTarget.style.background = "rgba(6,182,212,0.08)"}
-                          >
-                            <Icons.Download/> Download
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })}
+                  {selectedPhotos.map((p, i) => (
+                    <PhotoCard
+                      key={i}
+                      photo={p}
+                      index={i}
+                      totalPhotos={selectedPhotos.length}
+                      onLightbox={(idx) => setLightbox({ photos: selectedPhotos, index: idx })}
+                      onDownload={downloadPhoto}
+                    />
+                  ))}
                 </div>
               </div>
             )}
@@ -1156,7 +1276,6 @@ export default function AdminDashboard() {
       <GlobalStyles />
       <Toast toast={toast} />
 
-      {/* Navigation */}
       <nav style={{ background: "rgba(8,12,20,0.95)", borderBottom: "1px solid var(--border)", padding: "0 24px", display: "flex", alignItems: "center", height: 54, position: "sticky", top: 0, zIndex: 300, backdropFilter: "blur(20px)", gap: 2 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginRight: 20, paddingRight: 20, borderRight: "1px solid var(--border)" }}>
           <div style={{ width: 30, height: 30, borderRadius: 9, background: "linear-gradient(135deg,#3b82f6,#1d4ed8)", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 4px 12px rgba(59,130,246,0.35)" }}>
@@ -1181,7 +1300,6 @@ export default function AdminDashboard() {
         </div>
       </nav>
 
-      {/* Main Content */}
       <main style={{ padding: "28px 28px", maxWidth: 1480, margin: "0 auto" }}>
         {tab === "tracks"    && <TracksTab showToast={showToast} />}
         {tab === "analytics" && <AnalyticsTab />}
