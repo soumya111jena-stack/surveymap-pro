@@ -946,17 +946,46 @@ export default function LiveTrackRecorder({
     setShowWptModal(false);
   }, []);
 
-  // ── FIX v5.3.3: reset input.value="" before click so Android fires
+  
   //    the change event for every photo, not just the first one ──────────
   const addPhoto = useCallback(()=>{
-    if (!lastPtRef.current) return;
-    modalOpenRef.current = true;
-    stillSinceRef.current = null;
-    if (photoInputRef.current) {
-      photoInputRef.current.value = "";   // ← KEY FIX: allows re-capture on Android
-      photoInputRef.current.click();
+  if (!lastPtRef.current) return;
+  modalOpenRef.current = true;
+  stillSinceRef.current = null;
+
+  // Get a FRESH GPS fix for the photo location (maximumAge:0 = no cache)
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      // Update lastPtRef with fresh accurate position
+      const { latitude: lat, longitude: lng, altitude: alt } = pos.coords;
+      if (isFinite(lat) && isFinite(lng)) {
+        lastPtRef.current = {
+          ...lastPtRef.current,
+          lat, lng,
+          alt: alt ?? lastPtRef.current.alt ?? 0,
+        };
+      }
+      // Now open camera
+      if (photoInputRef.current) {
+        photoInputRef.current.value = "";
+        photoInputRef.current.click();
+      }
+    },
+    (_err) => {
+      // GPS fresh fix failed — fall back to last known position
+      console.warn("[addPhoto] fresh GPS failed, using last known point");
+      if (photoInputRef.current) {
+        photoInputRef.current.value = "";
+        photoInputRef.current.click();
+      }
+    },
+    {
+      enableHighAccuracy: true,
+      maximumAge: 0,        // ← no cached location, always fresh
+      timeout: 8000,        // wait up to 8s for fresh fix
     }
-  },[]);
+  );
+}, []);
 
   // ── FIX v5.3.3: clear value BEFORE reading file so re-selecting the
   //    same image also fires the change event ────────────────────────────
