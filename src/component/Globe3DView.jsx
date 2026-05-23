@@ -13,7 +13,7 @@ import DroneFlightPath from "./DroneFlightPath";
 import { buildLatLngGrid, removeLatLngGrid } from "./Gridlayer";
 import DataLayersPanel from "./Datalayerspanel";
 import GeoNavRing from "./GeoNavRing";
-
+import CesiumDEMContourPanel from "./Cesiumdemcontour";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function haversine(a,b){const R=6371000,r=x=>x*Math.PI/180;const dLat=r(b.lat-a.lat),dLon=r(b.lng-a.lng);const s=Math.sin(dLat/2)**2+Math.cos(r(a.lat))*Math.cos(r(b.lat))*Math.sin(dLon/2)**2;return R*2*Math.atan2(Math.sqrt(s),Math.sqrt(1-s));}
@@ -130,7 +130,9 @@ export default function Globe3DView({savedDrawings=[],onClose}){
   const [demStyle,setDemStyle]=useState("hypsometric");
   const [demOpacity,setDemOpacity]=useState(0.75);
   const demLayersRef=useRef([]);
-  const [buildingsEnabled,setBuildingsEnabled]=useState(false);
+
+const [kmlPolygonRing, setKmlPolygonRing] = useState(null); // ← ADD THIS
+const [buildingsEnabled,setBuildingsEnabled]=useState(false);
   const [buildingsLoading,setBuildingsLoading]=useState(false);
   const buildingsTilesetRef=useRef(null);
 
@@ -146,10 +148,43 @@ export default function Globe3DView({savedDrawings=[],onClose}){
   const [sliderOpen,setSliderOpen]=useState(false);
   const [droneOpen,setDroneOpen]=useState(false);
   const [dataLayersOpen, setDataLayersOpen] = useState(false);
+  
+
+
+// ── DEM + CONTOUR ─────────────────────────────────────────────────────
+const [demContourOpen, setDemContourOpen] = useState(false);
+const [demContourBbox, setDemContourBbox] = useState(null);
+
+function computeCurrentBbox() {
+  const viewer = viewerRef.current;
+  const Cesium = CesiumRef.current;
+  if (!viewer || !Cesium) return null;
+  try {
+    const rect = viewer.camera.computeViewRectangle(viewer.scene.globe.ellipsoid);
+    if (rect) {
+      const minLat = Cesium.Math.toDegrees(rect.south);
+      const maxLat = Cesium.Math.toDegrees(rect.north);
+      const minLng = Cesium.Math.toDegrees(rect.west);
+      const maxLng = Cesium.Math.toDegrees(rect.east);
+      const cLat = (minLat + maxLat) / 2;
+      const cLng = (minLng + maxLng) / 2;
+      const span = Math.min(2.0, Math.max(maxLat - minLat, maxLng - minLng));
+      return {
+        minLat: cLat - span / 2,
+        maxLat: cLat + span / 2,
+        minLng: cLng - span / 2,
+        maxLng: cLng + span / 2,
+      };
+    }
+  } catch (_) {}
+  return null;
+}
   const drawPtsRef=useRef([]),measurePtsRef=useRef([]),surveyPtsRef=useRef([]);
   const measureEntsRef=useRef([]),surveyEntsRef=useRef([]),boundaryEntsRef=useRef([]);
   const gpsEntRef=useRef(null),clickRef=useRef(null),csvDSRef=useRef(null);
   const orbitRef=useRef(null);
+
+
 
   const [coordConvOpen,setCoordConvOpen]=useState(false);
   const [convInput,setConvInput]=useState("");
@@ -1048,6 +1083,42 @@ function handleKML(e){
       orbitRef.current={center:centerCart,range:rangeM,heading:0,pitch:-62,active:false,animFrame:null};
 
       setKmlStats({featureCount:entities.length,center:{lat:cLat,lng:cLng},spanKm,bbox:{minLat,maxLat,minLng,maxLng}});
+      setDemContourBbox({
+  minLat, maxLat, minLng, maxLng,
+});
+
+// ── Extract KML polygon ring for DEM clipping ──────────────────────
+// Walk every entity and find the first polygon with enough points
+let extractedRing = null;
+for (const ent of entities) {
+  try {
+    if (ent.polygon) {
+      const hier = ent.polygon.hierarchy?.getValue(Cesium.JulianDate.now());
+      if (hier?.positions && hier.positions.length >= 3) {
+        extractedRing = hier.positions.map(p => {
+          const c = Cesium.Cartographic.fromCartesian(p);
+          return {
+            lat: Cesium.Math.toDegrees(c.latitude),
+            lng: Cesium.Math.toDegrees(c.longitude),
+          };
+        });
+        break; // use the first polygon found
+      }
+    }
+  } catch (_) {}
+}
+
+// Fallback: if no polygon entity, build a ring from the bbox
+if (!extractedRing) {
+  extractedRing = [
+    { lat: minLat, lng: minLng },
+    { lat: maxLat, lng: minLng },
+    { lat: maxLat, lng: maxLng },
+    { lat: minLat, lng: maxLng },
+    { lat: minLat, lng: minLng },
+  ];
+}
+setKmlPolygonRing(extractedRing);
       setKmlFlyIn(true);
 
       // ── STEP 1: flyTo uses flyTo (NOT lookAt) — camera stays free here ──
@@ -1336,7 +1407,18 @@ orbitDown(-62, 1.8, () => {
             {icon:<Icons.Drone/>,label:"Drone",active:droneOpen,action:()=>setDroneOpen(p=>!p)},
             {icon:<Icons.Night/>,label:"Night",active:nightAuto,action:()=>setNightAuto(p=>!p)},
             {icon:<Icons.Coords/>,label:"Convert",active:coordConvOpen,action:()=>setCoordConvOpen(p=>!p)},
-          ].map(({icon,label,active,action})=>(
+{
+  icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 20l4-8 3 5 3-9 4 12"/><path d="M20 4v4m2-2h-4"/></svg>,
+  label: "DEM",
+  active: demContourOpen,
+  action: () => {
+    const bbox = computeCurrentBbox();
+    setDemContourBbox(bbox);
+    if (!kmlName) setKmlPolygonRing(null); // no KML loaded = no clip
+    setDemContourOpen(p => !p);
+  },
+}
+   ].map(({icon,label,active,action})=>(
             <button key={label} className={`g3-tbtn${active?" active":""}`} onClick={action}>
               {icon}
               <span className="g3-tb-lbl">{label}</span>
@@ -1724,15 +1806,23 @@ orbitDown(-62, 1.8, () => {
           {elevPoints.length>0&&<span className="g3-bnav-badge" style={{background:"#f59e0b"}}>{elevPoints.length}</span>}
         </button>
 
-        {/* Survey */}
+       {/* Survey */}
         <button className={`g3-bnav-item${surveyMode?" active":""}`}
           onClick={()=>{if(surveyMode){setSurveyMode(false);}else{setSurveyMode(true);setDrawMode(false);setMeasureMode(false);setElevMode(false);}}}>
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="2" width="8" height="8"/><rect x="14" y="2" width="8" height="8"/><rect x="2" y="14" width="8" height="8"/><path d="M14 18h8M18 14v8"/></svg>
           <span className="g3-bnav-label">Survey</span>
           {surveyRoute&&surveyRoute.length>0&&<span className="g3-bnav-badge">{surveyRoute.length}</span>}
         </button>
-      </nav>{/* ← FIX 2: </nav> was missing in the previous version */}
 
+        {/* DEM Contour */}
+        <button className={`g3-bnav-item${demContourOpen?" active-green":""}`}
+          onClick={()=>{const bbox=computeCurrentBbox();setDemContourBbox(bbox);setDemContourOpen(p=>!p);}}>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M3 20l4-8 3 5 3-9 4 12"/>
+          </svg>
+          <span className="g3-bnav-label">DEM</span>
+        </button>
+      </nav>
       {/* ══ ELEVATION MODE BANNER ══ */}
       {elevMode&&(
         <>
@@ -2015,6 +2105,15 @@ orbitDown(-62, 1.8, () => {
       <SatelliteTimeSlider viewer={viewerRef.current} Cesium={CesiumRef.current} visible={sliderOpen} onClose={()=>setSliderOpen(false)}/>
       <DroneFlightPath viewer={viewerRef.current} Cesium={CesiumRef.current} visible={droneOpen} onClose={()=>setDroneOpen(false)}/>
       <DataLayersPanel viewer={viewerRef.current} Cesium={CesiumRef.current} visible={dataLayersOpen} onClose={()=>setDataLayersOpen(false)}/>
-    </>
+    <CesiumDEMContourPanel
+  viewer={viewerRef.current}
+  Cesium={CesiumRef.current}
+  bbox={demContourBbox}
+  kmlPolygon={kmlPolygonRing}
+  visible={demContourOpen}
+  onClose={() => setDemContourOpen(false)}
+  kmlName={kmlName || "geoxis_area"}
+/>
+  </>
   );
 }
