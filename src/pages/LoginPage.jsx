@@ -106,7 +106,6 @@ const GlobalStyles = () => (
     }
     .input::placeholder { color: var(--text-muted); }
 
-    /* Password field with eye toggle */
     .password-field {
       position: relative;
       width: 100%;
@@ -295,23 +294,24 @@ export default function LoginPage() {
   const intent = sessionStorage.getItem("loginIntent") || "";
 
   useEffect(() => {
-    // Get user location
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
         (p) => setCoords(`${p.coords.latitude.toFixed(4)}°N, ${p.coords.longitude.toFixed(4)}°E`),
         () => setCoords("Location unavailable")
       );
     }
-
     const onResize = () => setIsMobile(window.innerWidth <= 768);
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  // Check if already logged in
+  // ── FIXED: redirect already-logged-in users based on role ────────────────
   useEffect(() => {
     const token = localStorage.getItem("accessToken");
-    if (token) navigate("/", { replace: true });
+    if (token) {
+      const role = localStorage.getItem("role");
+      navigate(role === "ADMIN" ? "/admin" : "/", { replace: true });
+    }
   }, [navigate]);
 
   const handleLogin = async (e) => {
@@ -325,10 +325,16 @@ export default function LoginPage() {
     try {
       const data = await login(email.trim().toLowerCase(), password);
       localStorage.setItem("accessToken", data.accessToken);
-      localStorage.setItem("role", data.role);
-      localStorage.setItem("username", data.username || "");
-      localStorage.setItem("email", data.email || email);
-      navigate("/", { replace: true });
+      localStorage.setItem("role",        data.role);
+      localStorage.setItem("username",    data.username || "");
+      localStorage.setItem("email",       data.email || email);
+
+      // ── FIXED: redirect based on role ─────────────────────────────────
+      if (data.role === "ADMIN") {
+        navigate("/admin", { replace: true });
+      } else {
+        navigate("/", { replace: true });
+      }
     } catch (err) {
       setError(err.message || "Invalid credentials. Please try again.");
     } finally {
@@ -418,13 +424,13 @@ export default function LoginPage() {
                 <label style={{ display: "block", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", color: "var(--text-muted)", marginBottom: 8, textTransform: "uppercase" }}>
                   <Icons.Mail/> Email
                 </label>
-                <input 
-                  className="input" 
-                  type="email" 
-                  placeholder="your@email.com" 
-                  value={email} 
-                  onChange={(e) => setEmail(e.target.value)} 
-                  required 
+                <input
+                  className="input"
+                  type="email"
+                  placeholder="your@email.com"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  required
                   autoFocus
                 />
               </div>
@@ -433,18 +439,14 @@ export default function LoginPage() {
                   <Icons.Lock/> Password
                 </label>
                 <div className="password-field">
-                  <input 
-                    type={showPassword ? "text" : "password"} 
-                    placeholder="••••••••" 
-                    value={password} 
-                    onChange={(e) => setPassword(e.target.value)} 
+                  <input
+                    type={showPassword ? "text" : "password"}
+                    placeholder="••••••••"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
                     required
                   />
-                  <button
-                    type="button"
-                    className="eye-toggle"
-                    onClick={togglePassword}
-                  >
+                  <button type="button" className="eye-toggle" onClick={togglePassword}>
                     {showPassword ? <Icons.EyeClosed/> : <Icons.EyeOpen/>}
                   </button>
                 </div>
@@ -607,13 +609,13 @@ export default function LoginPage() {
               <label style={{ display: "block", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", color: "var(--text-muted)", marginBottom: 8, textTransform: "uppercase" }}>
                 <Icons.Mail/> Email Address
               </label>
-              <input 
-                className="input" 
-                type="email" 
-                placeholder="admin@geoxis.com" 
-                value={email} 
-                onChange={(e) => setEmail(e.target.value)} 
-                required 
+              <input
+                className="input"
+                type="email"
+                placeholder="admin@geoxis.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
                 autoFocus
               />
             </div>
@@ -622,18 +624,14 @@ export default function LoginPage() {
                 <Icons.Lock/> Password
               </label>
               <div className="password-field">
-                <input 
-                  type={showPassword ? "text" : "password"} 
-                  placeholder="••••••••" 
-                  value={password} 
-                  onChange={(e) => setPassword(e.target.value)} 
+                <input
+                  type={showPassword ? "text" : "password"}
+                  placeholder="••••••••"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
                   required
                 />
-                <button
-                  type="button"
-                  className="eye-toggle"
-                  onClick={togglePassword}
-                >
+                <button type="button" className="eye-toggle" onClick={togglePassword}>
                   {showPassword ? <Icons.EyeClosed/> : <Icons.EyeOpen/>}
                 </button>
               </div>
