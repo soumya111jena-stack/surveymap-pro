@@ -1,13 +1,12 @@
 /**
- * CesiumDEMContourPanel.jsx — Geoxis 3D Globe DEM + Contour Panel  v9
+ * CesiumDEMContourPanel.jsx — Geoxis 3D Globe DEM + Contour Panel  v10
  *
- * KEY CHANGES vs v7:
- *  ✅ FIX-CORS:   Removed open-elevation.com + USGS EPQS (both fail CORS in browsers).
- *               Now uses ONLY AWS Terrain Tiles (Mapzen Terrarium) as the elevation source.
- *               These load via <img> tags — no CORS preflight, no 429, works everywhere.
- *  ✅ FIX-BATCH:  Parallel tile fetching with concurrency limit (8 at a time) for speed.
- *  ✅ COMPACT:    ~40% fewer lines — removed dead rate-limit UI, tier badges, 3-tier logic.
- *  ✅ All v7 rendering fixes retained (hillshade, contours, exports, KML clip).
+ * KEY CHANGES vs v9:
+ *  ✅ FIX-COLOR:   Richer, higher-contrast color ramps with darker shadow tones.
+ *  ✅ FIX-GAMMA:   S-curve contrast + gamma applied to elevation 't' before ramp lookup.
+ *  ✅ FIX-HS:      Hillshade sv range widened (0.40→1.90) for bold light/shadow.
+ *  ✅ FIX-ANGLE:   Sun altitude lowered to 35° for more pronounced terrain shading.
+ *  ✅ FIX-BLEND:   Hillshade ambient reduced so shadows are visibly darker.
  */
 
 import { useState, useRef, useEffect, useCallback } from "react";
@@ -15,37 +14,89 @@ import { useState, useRef, useEffect, useCallback } from "react";
 /* ── Color ramps ─────────────────────────────────────────────────────── */
 export const COLOR_RAMPS = {
   "GeoXIS Terrain": [
-    [0,[70,130,180]],[.06,[34,139,34]],[.18,[107,168,95]],[.32,[189,188,131]],
-    [.46,[202,164,116]],[.60,[169,127,78]],[.72,[131,90,48]],[.84,[148,130,115]],
-    [.92,[200,195,185]],[1,[255,255,255]],
+    [0,   [15, 55, 120]],   // deep blue-ocean base
+    [0.04,[30, 110, 60]],   // dark forest
+    [0.12,[42, 148, 58]],   // rich mid-green
+    [0.22,[80, 168, 72]],   // lighter green
+    [0.34,[148, 182, 100]], // olive-yellow
+    [0.46,[192, 168, 110]], // warm tan
+    [0.58,[172, 130, 72]],  // golden brown
+    [0.70,[138, 90, 42]],   // dark brown
+    [0.82,[110, 78, 55]],   // deep shadow brown
+    [0.91,[168, 152, 135]], // grey rock
+    [0.97,[210, 205, 198]], // near-white rock
+    [1,   [248, 248, 252]], // peak white
   ],
   "GeoXIS Pro": [
-    [0,[0,97,64]],[.08,[0,150,0]],[.16,[102,195,0]],[.28,[255,240,128]],
-    [.40,[230,185,80]],[.52,[195,140,60]],[.64,[155,100,35]],[.75,[128,72,18]],
-    [.84,[160,130,100]],[.92,[210,200,195]],[1,[255,255,255]],
+    [0,   [0,  60, 40]],
+    [0.06,[0,  120, 20]],
+    [0.14,[60, 178, 0]],
+    [0.26,[200, 215, 80]],
+    [0.38,[218, 168, 60]],
+    [0.50,[185, 120, 40]],
+    [0.62,[145, 82, 22]],
+    [0.73,[110, 58, 12]],
+    [0.83,[148, 118, 88]],
+    [0.91,[200, 192, 188]],
+    [1,   [248, 248, 252]],
   ],
   "Hypsometric Pro": [
-    [0,[41,10,2]],[.08,[68,1,84]],[.16,[0,97,171]],[.25,[13,143,201]],
-    [.38,[161,212,143]],[.50,[106,179,79]],[.62,[183,183,76]],[.72,[212,163,71]],
-    [.82,[148,90,40]],[.91,[196,174,152]],[1,[255,255,255]],
+    [0,   [28, 6, 1]],
+    [0.07,[55, 0, 72]],
+    [0.15,[0,  75, 155]],
+    [0.24,[8,  120, 185]],
+    [0.37,[130, 195, 128]],
+    [0.49,[85, 158, 65]],
+    [0.61,[168, 168, 55]],
+    [0.71,[200, 145, 52]],
+    [0.81,[135, 75, 28]],
+    [0.90,[188, 162, 140]],
+    [1,   [248, 245, 240]],
   ],
   "Earth SRTM": [
-    [0,[2,56,88]],[.10,[4,122,90]],[.22,[89,168,84]],[.38,[175,202,137]],
-    [.50,[222,214,163]],[.65,[189,158,110]],[.78,[154,114,70]],[.88,[130,94,62]],
-    [.95,[198,176,153]],[1,[240,238,235]],
+    [0,   [1,  40, 72]],
+    [0.08,[2,  100, 75]],
+    [0.20,[72, 148, 68]],
+    [0.36,[155, 188, 120]],
+    [0.50,[210, 198, 148]],
+    [0.63,[178, 142, 92]],
+    [0.76,[140, 98, 52]],
+    [0.87,[115, 78, 45]],
+    [0.94,[185, 162, 140]],
+    [1,   [235, 232, 228]],
   ],
   "Mine / Open Pit": [
-    [0,[10,10,40]],[.10,[30,60,110]],[.20,[60,110,160]],[.32,[100,160,190]],
-    [.44,[160,195,160]],[.56,[200,185,130]],[.66,[180,130,70]],[.76,[150,90,40]],
-    [.86,[120,70,30]],[.93,[170,140,100]],[1,[220,200,170]],
+    [0,   [5,  5,  30]],
+    [0.09,[20, 48, 98]],
+    [0.18,[48, 95, 148]],
+    [0.30,[85, 145, 178]],
+    [0.42,[138, 182, 148]],
+    [0.54,[188, 170, 112]],
+    [0.64,[168, 112, 55]],
+    [0.74,[138, 72, 22]],
+    [0.85,[108, 55, 15]],
+    [0.93,[158, 128, 88]],
+    [1,   [210, 192, 162]],
   ],
   "Viridis": [
-    [0,[68,1,84]],[.143,[72,40,120]],[.286,[62,84,139]],[.429,[49,124,137]],
-    [.571,[38,162,116]],[.714,[88,196,87]],[.857,[155,217,60]],[1,[253,231,37]],
+    [0,    [68,  1,   84]],
+    [0.143,[72,  40,  120]],
+    [0.286,[62,  84,  139]],
+    [0.429,[49,  124, 137]],
+    [0.571,[38,  162, 116]],
+    [0.714,[88,  196, 87]],
+    [0.857,[155, 217, 60]],
+    [1,    [253, 231, 37]],
   ],
   "Magma": [
-    [0,[0,0,4]],[.143,[28,16,68]],[.286,[79,18,123]],[.429,[129,37,129]],
-    [.571,[181,54,122]],[.714,[229,80,99]],[.857,[251,135,97]],[1,[252,253,191]],
+    [0,    [0,   0,   4]],
+    [0.143,[28,  16,  68]],
+    [0.286,[79,  18,  123]],
+    [0.429,[129, 37,  129]],
+    [0.571,[181, 54,  122]],
+    [0.714,[229, 80,  99]],
+    [0.857,[251, 135, 97]],
+    [1,    [252, 253, 191]],
   ],
   "Grayscale":     [[0,[0,0,0]],[1,[255,255,255]]],
   "Grayscale Inv": [[0,[255,255,255]],[1,[0,0,0]]],
@@ -64,9 +115,24 @@ function pointInPolygon(lat, lng, poly) {
 }
 
 /* ── Math helpers ───────────────────────────────────────────────────── */
+
+/**
+ * Apply S-curve contrast + slight gamma to elevation fraction t (0..1)
+ * This gives richer shadow/midtone/highlight separation.
+ */
+function applyElevContrast(t) {
+  // Smooth-step S-curve for contrast
+  const s = t * t * (3 - 2 * t);
+  // Blend 55% S-curve with 45% linear to keep full range visible
+  const blended = 0.55 * s + 0.45 * t;
+  // Slight gamma lift in shadows (gamma = 0.82)
+  return Math.max(0, Math.min(1, Math.pow(blended, 0.82)));
+}
+
 function elevToRGB(t, ramp) {
   const s = COLOR_RAMPS[ramp] || COLOR_RAMPS[DEFAULT_RAMP];
-  t = Math.max(0, Math.min(1, t));
+  // Apply contrast curve before color lookup
+  t = applyElevContrast(Math.max(0, Math.min(1, t)));
   let lo = 0;
   for (let i = 0; i < s.length - 1; i++) { lo = i; if (t <= s[i+1][0]) break; }
   const a = s[lo], b = s[Math.min(lo+1, s.length-1)];
@@ -80,14 +146,15 @@ function elevToRGB(t, ramp) {
 
 function bilinear(grid, rows, cols, rF, cF) {
   rF = Math.max(0, Math.min(rows-1, rF)); cF = Math.max(0, Math.min(cols-1, cF));
-  const r0 = Math.min(rows-2, Math.floor(rF)), c0 = Math.min(cols-2, Math.floor(cF));
+  const r0 = Math.max(0, Math.min(rows - 2, Math.floor(rF)));
+  const c0 = Math.max(0, Math.min(cols - 2, Math.floor(cF)));
   const r1 = r0+1, c1 = c0+1, dr = rF-r0, dc = cF-c0;
   const v = [grid[r0][c0], grid[r0][c1], grid[r1][c0], grid[r1][c1]];
   if (v.some(isNaN)) return NaN;
   return (v[0]*(1-dc)+v[1]*dc)*(1-dr) + (v[2]*(1-dc)+v[3]*dc)*dr;
 }
 
-function computeHS(grid, rows, cols, r, c, cellM, az=315, alt=45) {
+function computeHS(grid, rows, cols, r, c, cellM, az=315, alt=35) {
   const get = (rr,cc) => { const v=grid[Math.max(0,Math.min(rows-1,rr))][Math.max(0,Math.min(cols-1,cc))]; return isNaN(v)?0:v; };
   const [a,b,c2,d,e2,f2,g,h] = [get(r-1,c-1),get(r-1,c),get(r-1,c+1),get(r,c-1),get(r,c+1),get(r+1,c-1),get(r+1,c),get(r+1,c+1)];
   const cm = Math.max(cellM,1);
@@ -100,9 +167,16 @@ function computeHS(grid, rows, cols, r, c, cellM, az=315, alt=45) {
 }
 
 function computeMultiHS(grid, rows, cols, r, c, cellM) {
-  const dirs=[{az:225,w:.167},{az:270,w:.239},{az:315,w:.294},{az:360,w:.2},{az:45,w:.1}];
+  // Lower sun altitude (35°) + stronger NW weighting = bolder terrain shading
+  const dirs = [
+    { az: 225, w: 0.12, alt: 35 },
+    { az: 270, w: 0.18, alt: 35 },
+    { az: 315, w: 0.42, alt: 35 }, // dominant NW sun
+    { az: 360, w: 0.20, alt: 45 },
+    { az: 45,  w: 0.08, alt: 55 },
+  ];
   let hs=0, wt=0;
-  for (const {az,w} of dirs) { hs+=w*computeHS(grid,rows,cols,r,c,cellM,az,45); wt+=w; }
+  for (const {az,w,alt} of dirs) { hs+=w*computeHS(grid,rows,cols,r,c,cellM,az,alt); wt+=w; }
   return Math.min(1, hs/wt);
 }
 
@@ -134,8 +208,6 @@ const cacheKey = (bbox,res) =>
   `${bbox.minLat.toFixed(4)},${bbox.maxLat.toFixed(4)},${bbox.minLng.toFixed(4)},${bbox.maxLng.toFixed(4)},${res}`;
 
 /* ── AWS Terrarium tile decoder ─────────────────────────────────────── */
-// Zoom 14 = ~2.4m/px at equator (~3m in Kashmir). Dramatically better for mountains.
-// Tile cache stores full 256×256 RGBA arrays; bilinear sub-pixel sampling within tile.
 const TILE_Z = 14;
 const TILE_N = Math.pow(2, TILE_Z);
 
@@ -145,7 +217,6 @@ function latLngToTileExact(lat, lng) {
   const xExact = (lng + 180) / 360 * TILE_N;
   const yExact = mercY * TILE_N;
   const x = Math.floor(xExact), y = Math.floor(yExact);
-  // Sub-pixel fractional position within tile (0–255.999)
   const px = (xExact - x) * 256;
   const py = (yExact - y) * 256;
   return { x, y, px, py };
@@ -174,7 +245,6 @@ function loadTilePixels(x, y) {
   return p;
 }
 
-// Read one pixel from tile data (clamped)
 function tilePixelElev(data, px, py) {
   const x = Math.max(0, Math.min(255, Math.round(px)));
   const y = Math.max(0, Math.min(255, Math.round(py)));
@@ -187,7 +257,6 @@ async function fetchElevTile(lat, lng) {
   const { x, y, px, py } = latLngToTileExact(lat, lng);
   const data = await loadTilePixels(x, y);
   if (!data) return null;
-  // Bilinear sub-pixel interpolation within tile for smoother values
   const x0=Math.floor(px), y0=Math.floor(py);
   const x1=Math.min(255,x0+1), y1=Math.min(255,y0+1);
   const dx=px-x0, dy=py-y0;
@@ -359,7 +428,7 @@ function buildContourGeoJSON({grid,rows,cols,bbox,min:minE,max:maxE}, interval, 
   return {type:"FeatureCollection",features};
 }
 
-/* ── Shapefile builder (compact) ─────────────────────────────────────── */
+/* ── Shapefile builder ─────────────────────────────────────────────── */
 const CRC32T=(()=>{const t=new Uint32Array(256);for(let i=0;i<256;i++){let c=i;for(let k=0;k<8;k++)c=(c&1)?(0xEDB88320^(c>>>1)):(c>>>1);t[i]=c;}return t;})();
 function crc32(u8){let c=0xFFFFFFFF;for(let i=0;i<u8.length;i++)c=CRC32T[(c^u8[i])&0xFF]^(c>>>8);return(c^0xFFFFFFFF)>>>0;}
 function concat(...a){const t=new Uint8Array(a.reduce((n,x)=>n+x.length,0));let p=0;for(const x of a){t.set(x,p);p+=x.length;}return t;}
@@ -433,7 +502,10 @@ async function renderDEM(Cesium, viewer, elevGrid, opts, poly=null, layerRef=nul
 
   const {grid,rows,cols,bbox,min:minE,max:maxE} = elevGrid;
   const range=maxE-minE;
-  const OS=6, W=Math.min((cols-1)*OS+1,2048)|0, H=Math.min((rows-1)*OS+1,2048)|0;
+  const OS = 12;
+
+  const W = Math.min((cols - 1) * OS + 1, 4096) | 0;
+  const H = Math.min((rows - 1) * OS + 1, 4096) | 0;
   const cv=document.createElement("canvas"); cv.width=W; cv.height=H;
   const ctx=cv.getContext("2d"), img=ctx.createImageData(W,H), px=img.data;
 
@@ -448,15 +520,12 @@ async function renderDEM(Cesium, viewer, elevGrid, opts, poly=null, layerRef=nul
 
   const hasClip=poly&&poly.length>=3;
 
-  // Anti-aliased polygon clip: feather zone = 2 canvas pixels wide
-  // Instead of hard binary inside/outside, we sample neighbours and blend alpha.
   const featherLat = H>1 ? (bbox.maxLat-bbox.minLat)/(H-1)*2 : 0;
   const featherLng = W>1 ? (bbox.maxLng-bbox.minLng)/(W-1)*2 : 0;
 
   function edgeAlpha(lat, lng) {
     if (!hasClip) return 1;
     const inside = pointInPolygon(lat, lng, poly);
-    // Quick interior check — if all 4 cardinal neighbours also inside, full opacity
     if (inside) {
       if (
         pointInPolygon(lat+featherLat, lng, poly) &&
@@ -464,7 +533,6 @@ async function renderDEM(Cesium, viewer, elevGrid, opts, poly=null, layerRef=nul
         pointInPolygon(lat, lng+featherLng, poly) &&
         pointInPolygon(lat, lng-featherLng, poly)
       ) return 1;
-      // On the inner edge — sample 8 neighbours
       const nb = [
         [lat+featherLat,lng],[lat-featherLat,lng],
         [lat,lng+featherLng],[lat,lng-featherLng],
@@ -474,7 +542,6 @@ async function renderDEM(Cesium, viewer, elevGrid, opts, poly=null, layerRef=nul
       const cnt = nb.filter(([la,ln])=>pointInPolygon(la,ln,poly)).length;
       return 0.5 + 0.5*(cnt/8);
     }
-    // Outside — check cardinal neighbours for feather bleed
     const nb4 = [
       [lat+featherLat,lng],[lat-featherLat,lng],
       [lat,lng+featherLng],[lat,lng-featherLng],
@@ -490,22 +557,29 @@ async function renderDEM(Cesium, viewer, elevGrid, opts, poly=null, layerRef=nul
     const [lat,lng]=gridToLatLng(rF,cF,bbox,rows,cols);
     const ea = edgeAlpha(lat,lng);
     if(ea<=0){px[i4+3]=0;continue;}
-   // Sample slightly inset into padded grid
-const elev = bilinear(
-  grid,
-  rows,
-  cols,
-  rF + 1,
-  cF + 1
-);
- if(isNaN(elev)){px[i4+3]=0;continue;}
+
+    const elev = bilinear(grid, rows, cols, rF + 1, cF + 1);
+    if(isNaN(elev)){px[i4+3]=0;continue;}
+
     const t=range>0.5?Math.max(0,Math.min(1,(elev-minE)/range)):0.5;
     let [r,g,b]=elevToRGB(t,colorRamp);
+
     if(hsGrid){
       const ri=Math.max(0,Math.min(rows-1,Math.round(rF))), ci=Math.max(0,Math.min(cols-1,Math.round(cF)));
-      const hs=hsGrid[ri][ci], str=Math.min(hillshadeStrength,0.85), amb=1-str*0.25;
-      const sv=Math.max(0.05,Math.min(1.3,amb+str*hs));
-      r=Math.max(0,Math.min(255,Math.round(r*sv)));g=Math.max(0,Math.min(255,Math.round(g*sv)));b=Math.max(0,Math.min(255,Math.round(b*sv)));
+      const hs=hsGrid[ri][ci];
+
+      // ── FIXED HILLSHADE BLEND ──────────────────────────────────────
+      // str capped at 0.92 to avoid fully blacking out flat terrain
+      const str = Math.min(hillshadeStrength, 0.92);
+      // ambient: reduced so shadows go visibly dark
+      const amb = 1 - str * 0.55;
+      // diffuse multiplier: wider range → deeper shadows, brighter faces
+      // sv range: ~0.40 (shadow) to ~1.85 (lit face) at str=0.92
+      const sv = Math.max(0.38, Math.min(1.90, amb + str * hs * 1.85));
+
+      r=Math.max(0,Math.min(255,Math.round(r*sv)));
+      g=Math.max(0,Math.min(255,Math.round(g*sv)));
+      b=Math.max(0,Math.min(255,Math.round(b*sv)));
     }
     px[i4]=r; px[i4+1]=g; px[i4+2]=b; px[i4+3]=Math.round(opacity*ea*255);
   }
@@ -598,9 +672,9 @@ export default function CesiumDEMContourPanel({viewer,Cesium,bbox,kmlPolygon=nul
 
   const [colorRamp, setColorRamp] = useState(DEFAULT_RAMP);
   const [demOpacity, setDemOpacity] = useState(0.85);
-  const [hillshadeStrength, setHillshadeStrength] = useState(0.55);
+  const [hillshadeStrength, setHillshadeStrength] = useState(0.9);
   const [hillshadeMode, setHillshadeMode] = useState("multi");
-  const [gridRes, setGridRes] = useState(20);
+  const [gridRes, setGridRes] = useState(120);
   const [hasDEM, setHasDEM] = useState(false);
   const [demVisible, setDemVisible] = useState(true);
 
@@ -628,7 +702,6 @@ export default function CesiumDEMContourPanel({viewer,Cesium,bbox,kmlPolygon=nul
     clearDEMLayer(); clearContourLayers();
   },[]);
 
-  // Auto re-render DEM when visual opts change
   useEffect(()=>{
     if(!hasDEM||!elevGridRef.current||!viewer||!Cesium) return;
     clearTimeout(debounceRef.current);
@@ -647,7 +720,6 @@ export default function CesiumDEMContourPanel({viewer,Cesium,bbox,kmlPolygon=nul
   function clearContourLayers(){contourRef.current.primitives.forEach(p=>{try{viewer?.scene?.primitives?.remove(p);}catch(_){}});contourRef.current.entities.forEach(e=>{try{viewer?.entities?.remove(e);}catch(_){}});contourRef.current={primitives:[],entities:[]};}
   const msg=(m,t="info")=>{setStatus(m);setStatusType(t);};
 
-  /* ── Fetch elevation ── */
   const fetchElev = useCallback(async()=>{
     if(!bbox){msg("No bounding area defined.","warn");return;}
     const key=cacheKey(bbox,gridRes);
@@ -668,64 +740,28 @@ export default function CesiumDEMContourPanel({viewer,Cesium,bbox,kmlPolygon=nul
 
       if(abortRef.current.signal.aborted){msg("Cancelled.","warn");setIsProcessing(false);setProgress(0);return;}
 
-      // KML clip
-      // IMPORTANT FIX:
-// NEVER clip DEM data before interpolation.
-// Keep the grid fully populated so interpolation reaches
-// all boundary cells correctly.
+      msg("Interpolating full DEM grid…","info");
+      setProgress(90);
+      fillNaN(grid, rows, cols, null);
 
-msg("Interpolating full DEM grid…","info");
-setProgress(90);
+      const padded = Array.from({length:rows+2},()=>new Float32Array(cols+2));
+      for(let r=0;r<rows+2;r++) for(let c=0;c<cols+2;c++){
+        const rr=Math.max(0,Math.min(rows-1,r-1)), cc=Math.max(0,Math.min(cols-1,c-1));
+        padded[r][c]=grid[rr][cc];
+      }
+      grid.length=0;
+      for(let r=0;r<rows+2;r++) grid.push(padded[r]);
+      const paddedRows=rows+2, paddedCols=cols+2;
 
-// Fill ALL NaNs without frozen boundaries
-fillNaN(grid, rows, cols, null);
-
-// Edge padding fix to prevent Cesium/canvas bilinear shrink
-const padded = Array.from(
-  { length: rows + 2 },
-  () => new Float32Array(cols + 2)
-);
-
-for (let r = 0; r < rows + 2; r++) {
-  for (let c = 0; c < cols + 2; c++) {
-
-    const rr = Math.max(0, Math.min(rows - 1, r - 1));
-    const cc = Math.max(0, Math.min(cols - 1, c - 1));
-
-    padded[r][c] = grid[rr][cc];
-  }
-}
-
-// Replace original grid with padded grid
-grid.length = 0;
-for (let r = 0; r < rows + 2; r++) {
-  grid.push(padded[r]);
-}
-
-// Update dimensions
-const paddedRows = rows + 2;
-const paddedCols = cols + 2;
       let minE=Infinity, maxE=-Infinity;
       for(let r=0;r<rows;r++) for(let c=0;c<cols;c++){const v=grid[r][c];if(!isNaN(v)){if(v<minE)minE=v;if(v>maxE)maxE=v;}}
       if(!isFinite(minE)){msg("No valid elevation data received.","err");setIsProcessing(false);setProgress(0);return;}
 
-    const eg={
-  grid,
-  rows: paddedRows,
-  cols: paddedCols,
-  bbox,
-  min: minE,
-  max: maxE
-};
+      const eg={grid,rows:paddedRows,cols:paddedCols,bbox,min:minE,max:maxE};
       _elvCache[key]=eg; setElevGrid(eg); elevGridRef.current=eg; autoInterval(maxE-minE);
       setProgress(100);
-     const hasPoly = polyRef.current && polyRef.current.length >= 3;
-
-msg(
-  `Done · ${rows*cols} pts · ${Math.round(minE)}m → ${Math.round(maxE)}m · Δ${Math.round(maxE-minE)}m` +
-  (hasPoly ? " · KML clipped" : ""),
-  "ok"
-);
+      const hasPoly=polyRef.current&&polyRef.current.length>=3;
+      msg(`Done · ${rows*cols} pts · ${Math.round(minE)}m → ${Math.round(maxE)}m · Δ${Math.round(maxE-minE)}m`+(hasPoly?" · KML clipped":""),"ok");
     }catch(e){
       if(e.name!=="AbortError"){msg("Error: "+e.message,"err");console.error(e);}
     }finally{setIsProcessing(false);setTimeout(()=>setProgress(0),1200);}
@@ -761,7 +797,6 @@ msg(
   function toggleDEM(){if(!demLayerRef.current)return;demLayerRef.current.show=!demLayerRef.current.show;setDemVisible(demLayerRef.current.show);}
   function toggleContours(){const show=!contourVisible;contourRef.current.primitives.forEach(p=>{try{p.show=show;}catch(_){}});contourRef.current.entities.forEach(e=>{if(e.polyline)e.polyline.show=show;if(e.label)e.show=show;});setContourVisible(show);}
 
-  /* ── Exports ── */
   function exportTIFF(){const eg=elevGridRef.current||elevGrid;if(!eg){msg("No data.","warn");return;}try{dlBlob(buildGeoTIFF(eg),kmlName.replace(/\.[^.]+$/,"")+"_dem.tif","image/tiff");msg("GeoTIFF exported.","ok");}catch(e){msg("Export error: "+e.message,"err");}}
   function exportCSV(){const eg=elevGridRef.current||elevGrid;if(!eg){msg("No data.","warn");return;}const{grid,rows,cols,bbox}=eg;const lines=["lat,lng,elevation_m,elevation_ft"];for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){const[lat,lng]=gridToLatLng(r,c,bbox,rows,cols);const e=grid[r][c];lines.push(`${lat.toFixed(7)},${lng.toFixed(7)},${isNaN(e)?"":e.toFixed(2)},${isNaN(e)?"":(e*3.28084).toFixed(2)}`);}dlBlob(new TextEncoder().encode(lines.join("\n")),kmlName.replace(/\.[^.]+$/,"")+"_dem.csv","text/csv");msg("CSV exported.","ok");}
   function exportGeoJSON(){const eg=elevGridRef.current||elevGrid;if(!eg){msg("No data.","warn");return;}const gj=buildContourGeoJSON(eg,contourInterval,majorEvery,polyRef.current);dlBlob(new TextEncoder().encode(JSON.stringify(gj,null,2)),kmlName.replace(/\.[^.]+$/,"")+"_contours.geojson","application/json");msg("GeoJSON exported.","ok");}
@@ -769,7 +804,6 @@ msg(
 
   if (!visible) return null;
 
-  /* ── Styles ── */
   const F={ui:"'DM Sans',system-ui,sans-serif",mono:"'JetBrains Mono','Courier New',monospace"};
   const C={bg:"rgba(6,10,22,0.97)",sur:"rgba(255,255,255,0.04)",bor:"rgba(255,255,255,0.08)",
     tx:"#c8dff8",dim:"rgba(165,200,240,0.55)",
@@ -811,12 +845,11 @@ msg(
       {/* Body */}
       <div style={{flex:1,overflowY:"auto",padding:"12px 13px 24px",display:"flex",flexDirection:"column",gap:10,scrollbarWidth:"thin",scrollbarColor:"rgba(59,130,246,.2) transparent"}}>
 
-        {/* ── DEM TAB ── */}
         {tab==="dem"&&<>
           <div style={{background:C.sur,border:`1px solid ${C.bor}`,borderRadius:10,padding:"10px 12px"}}>
             <div style={{color:C.dim,fontSize:9,fontWeight:700,letterSpacing:".1em",marginBottom:6}}>GRID RESOLUTION · {gridRes}×{gridRes} = {gridRes*gridRes} pts</div>
             <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
-              <input type="range" min={10} max={60} step={5} value={gridRes} onChange={e=>setGridRes(+e.target.value)} disabled={isProcessing} style={{flex:1,accentColor:C.pink,cursor:isProcessing?"not-allowed":"pointer"}}/>
+              <input type="range" min={40} max={180} step={10} value={gridRes} onChange={e=>setGridRes(+e.target.value)} disabled={isProcessing} style={{flex:1,accentColor:C.pink,cursor:isProcessing?"not-allowed":"pointer"}}/>
               <span style={{color:C.pink,fontSize:10,fontFamily:F.mono,minWidth:40}}>{gridRes}×{gridRes}</span>
             </div>
             <div style={{color:gridRes>50?C.amber:C.dim,fontSize:9}}>{gridRes>50?`⚠ ${gridRes*gridRes} pts — may be slow`:`~${Math.ceil(gridRes*gridRes/TILE_Z*0.15).toFixed(0)}s est · Terrarium tiles`}</div>
@@ -831,7 +864,7 @@ msg(
             </div>
             {hillshadeMode!=="off"&&<>
               <div style={{color:C.dim,fontSize:9,marginBottom:4}}>Strength · {Math.round(hillshadeStrength*100)}%</div>
-              <input type="range" min={0} max={0.85} step={0.05} value={hillshadeStrength} onChange={e=>setHillshadeStrength(+e.target.value)} style={{width:"100%",accentColor:C.amber}}/>
+              <input type="range" min={0} max={0.92} step={0.04} value={hillshadeStrength} onChange={e=>setHillshadeStrength(+e.target.value)} style={{width:"100%",accentColor:C.amber}}/>
             </>}
           </div>
 
@@ -872,7 +905,6 @@ msg(
             </div>
           </>}
 
-          {/* Progress */}
           {isProcessing&&<div style={{background:"rgba(59,130,246,.06)",border:"1px solid rgba(59,130,246,.18)",borderRadius:9,padding:"9px 11px"}}>
             <div style={{height:3,borderRadius:2,background:"rgba(255,255,255,.06)",overflow:"hidden",marginBottom:6}}>
               <div style={{height:"100%",width:`${progress}%`,borderRadius:2,transition:"width .25s",background:"linear-gradient(90deg,#3b82f6,#22d3c8)"}}/>
@@ -889,24 +921,20 @@ msg(
           {hasDEM&&<Btn color={demVisible?C.red:C.green} onClick={toggleDEM}>{demVisible?"🙈 Hide DEM":"👁 Show DEM"}</Btn>}
         </>}
 
-        {/* ── CONTOUR TAB ── */}
         {tab==="contour"&&<>
           {!elevGrid&&<div style={{padding:"10px",borderRadius:8,background:"rgba(245,166,35,.07)",border:"1px solid rgba(245,166,35,.2)",color:C.amber,fontSize:10.5,textAlign:"center"}}>⚠️ Fetch elevation in DEM tab first</div>}
-
           <div style={{background:C.sur,border:`1px solid ${C.bor}`,borderRadius:10,padding:"10px 12px"}}>
             <div style={{color:C.dim,fontSize:9,fontWeight:700,letterSpacing:".1em",marginBottom:7}}>CONTOUR INTERVAL</div>
             <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
               {INTERVALS.map(v=><button key={v} onClick={()=>setContourInterval(v)} style={{flex:"1 0 auto",minWidth:32,padding:"6px 3px",borderRadius:7,border:contourInterval===v?`1px solid ${C.cyan}44`:`1px solid ${C.bor}`,background:contourInterval===v?"rgba(34,211,200,.12)":C.sur,color:contourInterval===v?C.cyan:C.dim,fontSize:10,fontWeight:700,cursor:"pointer",fontFamily:F.mono,textAlign:"center"}}>{v}m</button>)}
             </div>
           </div>
-
           <div style={{background:C.sur,border:`1px solid ${C.bor}`,borderRadius:10,padding:"10px 12px"}}>
             <div style={{color:C.dim,fontSize:9,fontWeight:700,letterSpacing:".1em",marginBottom:7}}>MAJOR INDEX EVERY</div>
             <div style={{display:"flex",gap:4}}>
               {MAJORS.map(v=><button key={v} onClick={()=>setMajorEvery(v)} style={{flex:1,padding:"6px 3px",borderRadius:7,border:majorEvery===v?`1px solid ${C.amber}44`:`1px solid ${C.bor}`,background:majorEvery===v?"rgba(245,166,35,.12)":C.sur,color:majorEvery===v?C.amber:C.dim,fontSize:10,fontWeight:700,cursor:"pointer",fontFamily:F.mono}}>{v}m</button>)}
             </div>
           </div>
-
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
             {[["Minor",minorColor,setMinorColor],["Major",majorColor,setMajorColor]].map(([lb,val,set])=>(
               <div key={lb} style={{background:C.sur,border:`1px solid ${C.bor}`,borderRadius:8,padding:"8px 10px"}}>
@@ -918,7 +946,6 @@ msg(
               </div>
             ))}
           </div>
-
           <svg width="100%" height="52" style={{display:"block"}}>
             <line x1="8" y1="16" x2="95%" y2="16" stroke={minorColor} strokeWidth="0.75" opacity="0.65"/>
             <text x="8" y="11" fill={C.dim} fontSize="8" fontFamily="monospace">minor ({contourInterval}m)</text>
@@ -927,7 +954,6 @@ msg(
             <rect x="48" y="28" width="26" height="12" rx="2" fill="rgba(255,255,255,0.92)" stroke={majorColor} strokeWidth="0.5"/>
             <text x="61" y="37" fill={majorColor} fontSize="8" fontFamily="monospace" textAnchor="middle" fontWeight="bold">{majorEvery}</text>
           </svg>
-
           <Btn color={C.cyan} onClick={doRenderContours} disabled={!elevGrid}>📐 Generate Contours on Globe</Btn>
           {hasContour&&<>
             <Btn color={contourVisible?C.red:C.green} onClick={toggleContours}>{contourVisible?"🙈 Hide Contours":"👁 Show Contours"}</Btn>
@@ -935,13 +961,11 @@ msg(
           </>}
         </>}
 
-        {/* ── EXPORT TAB ── */}
         {tab==="export"&&<>
           <div style={{padding:"10px 12px",borderRadius:10,background:"rgba(184,156,248,.05)",border:"1px solid rgba(184,156,248,.17)"}}>
             <div style={{color:C.violet,fontWeight:700,fontSize:12.5,marginBottom:4}}>💾 Export GIS Data</div>
             <div style={{color:C.dim,fontSize:10.5,lineHeight:1.7}}>GeoTIFF · CSV · GeoJSON · Shapefile ZIP — QGIS/ArcGIS ready</div>
           </div>
-
           <div style={{background:C.sur,border:`1px solid ${C.bor}`,borderRadius:10,padding:"10px 12px"}}>
             <div style={{color:C.pink,fontWeight:700,fontSize:11,marginBottom:7}}>🏔 DEM / Elevation</div>
             <div style={{display:"flex",flexDirection:"column",gap:5}}>
@@ -949,7 +973,6 @@ msg(
               <Btn color={C.amber} onClick={exportCSV} disabled={!elevGrid}>📥 Export → CSV</Btn>
             </div>
           </div>
-
           <div style={{background:C.sur,border:`1px solid ${C.bor}`,borderRadius:10,padding:"10px 12px"}}>
             <div style={{color:C.cyan,fontWeight:700,fontSize:11,marginBottom:7}}>📐 Contour Lines</div>
             <div style={{display:"flex",flexDirection:"column",gap:5}}>
@@ -957,7 +980,6 @@ msg(
               <Btn color={C.blue} onClick={exportSHP} disabled={!elevGrid}>📥 Contours → Shapefile ZIP</Btn>
             </div>
           </div>
-
           {elevGrid&&<div style={{background:"rgba(74,222,128,.04)",border:"1px solid rgba(74,222,128,.15)",borderRadius:10,padding:"10px 12px"}}>
             <div style={{color:C.green,fontWeight:700,fontSize:11,marginBottom:6}}>✅ Summary</div>
             {[["Grid",`${elevGrid.rows}×${elevGrid.cols} pts`],["Min",`${elevGrid.min.toFixed(1)} m`],["Max",`${elevGrid.max.toFixed(1)} m`],["Range",`${(elevGrid.max-elevGrid.min).toFixed(1)} m`],["Source","AWS Terrarium z14 ~3m"],["Interval",`${contourInterval}m / major ${majorEvery}m`],...(contourCount>0?[["Contours",`${contourCount} lines`]]:[]),...(kmlPolygon?.length>=3?[["Clip",`KML · ${kmlPolygon.length} pts`]]:[])].map(([k,v])=>(
@@ -968,10 +990,8 @@ msg(
             ))}
           </div>}
         </>}
-
       </div>
 
-      {/* Status bar */}
       {status&&<div style={{padding:"6px 12px",flexShrink:0,borderTop:`1px solid ${C.bor}`,background:`${sm.color}0a`,display:"flex",alignItems:"center",gap:6}}>
         <span style={{color:sm.color,fontSize:11,fontWeight:700,flexShrink:0,width:16,textAlign:"center",fontFamily:F.mono}}>{sm.icon}</span>
         <span style={{color:sm.color,fontSize:9.5,fontFamily:F.mono,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",flex:1}}>{status}</span>
