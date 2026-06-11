@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">SurveyMap Pro</string>
-    <string name="title_activity_main">SurveyMap Pro</string>
-    <string name="package_name">com.surveymap.pro</string>
-    <string name="custom_url_scheme">com.surveymap.pro</string>
+    <string name="app_name">Geoxis</string>
+    <string name="title_activity_main">Geoxis</string>
+    <string name="package_name">com.geoxis.surveymap</string>
+    <string name="custom_url_scheme">com.geoxis.surveymap</string>
 </resources>

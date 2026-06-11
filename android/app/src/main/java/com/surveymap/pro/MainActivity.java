@@ -1,4 +1,4 @@
-package com.surveymap.pro;
+package com.geoxis.surveymap;
 
 import com.getcapacitor.BridgeActivity;
 

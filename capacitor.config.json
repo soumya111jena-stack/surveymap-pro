@@ -1,6 +1,6 @@
 {
-  "appId": "com.surveymap.pro",
-  "appName": "SurveyMap Pro",
+  "appId": "com.geoxis.surveymap",
+  "appName": "Geoxis",
   "webDir": "dist",
   "bundledWebRuntime": false,
 
