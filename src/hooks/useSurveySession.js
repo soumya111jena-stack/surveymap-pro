@@ -103,9 +103,11 @@ export function useSurveySession({ enqueue, isOnline }) {
   }, [activeSessionId]);
 
   // ── syncTrack ─────────────────────────────────────────────────────────
+  // NOTE: accepts optional second argument `overrideSessionClientId`
+  // so SyncQueueManager can pass the stored sessionClientId from the queued item.
   const syncTrack = useCallback(
-    async (trackOrPoints) => {
-      console.log("[syncTrack] called");
+    async (trackOrPoints, overrideSessionClientId = null) => {
+      console.log("[syncTrack] called, overrideSid:", overrideSessionClientId);
 
       if (!isLoggedIn()) {
         console.warn("[syncTrack] not logged in — aborting");
@@ -135,18 +137,21 @@ export function useSurveySession({ enqueue, isOnline }) {
         return;
       }
 
-      let sessionClientId = activeSessionClientId;
+      // Priority: override passed by SyncQueueManager → active session → auto-create
+      let sessionClientId = overrideSessionClientId || activeSessionClientId;
 
       if (!sessionClientId) {
-        console.log("[syncTrack] no active session — auto-creating…");
+        console.log("[syncTrack] no sessionClientId — auto-creating session…");
         try {
-          const session = await createSession({ name: "Auto Session" });
+          const session = await createSession({ name: `Auto Session — ${name}` });
           setActiveSessionId(session.id);
           setActiveSessionClientId(session.clientId);
           setSessionStatus("active");
           sessionClientId = session.clientId;
+          console.log("[syncTrack] auto-created session:", sessionClientId);
         } catch (err) {
           console.error("[syncTrack] session auto-create FAILED:", err.message);
+          setSyncStatus("error");
           return;
         }
       }
@@ -179,6 +184,8 @@ export function useSurveySession({ enqueue, isOnline }) {
           console.error("[syncTrack] enqueue failed:", qErr.message);
           setSyncStatus("error");
         }
+        // Re-throw so SyncQueueManager knows this item failed and keeps it in the queue
+        throw err;
       }
     },
     [activeSessionClientId, enqueue]

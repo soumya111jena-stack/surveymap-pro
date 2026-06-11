@@ -1,35 +1,29 @@
 /**
- * LiveTrackRecorder.jsx -- SurveyMap Pro v5.3.3
+ * LiveTrackRecorder.jsx -- SurveyMap Pro v5.4.0
  * ─────────────────────────────────────────────────────────────────────────────
- * BUG FIXES in v5.3.3:
- *
- *  ✅ FIX 1 — Multiple photos now all reach the backend.
- *     - photoInputRef.current.value is reset to "" before every .click() so
- *       Android WebView fires the change event on 2nd, 3rd, ... photos.
- *     - e.target.value is cleared BEFORE FileReader runs (not after) so
- *       re-selecting the same file also works.
- *     - pendingPhotoRef / photoNameRef / photoNoteRef keep refs in sync with
- *       state so stopRecording can auto-save an unconfirmed photo (user taps
- *       Stop while the name/note modal is still open).
- *
- *  ✅ FIX 2 — stopRecording auto-saves any unconfirmed pending photo before
- *     uploading, so photos taken right before Stop are never lost.
- *
- *  ✅ All v5.3.2 fixes preserved (auto-pause UI-only, modalOpenRef, all-photos
- *     array sent to backend, stale-closure fix via syncTrackRef).
+ * NEW in v5.4.0:
+ *  ✅ OFFLINE SYNC QUEUE — if stopRecording() runs while offline (or upload
+ *     fails), the track + photos are queued in IndexedDB (STORE_PENDING).
+ *     A separate <SyncQueueManager/> component retries them once online.
+ *  ✅ isReallyOnline() — pings the backend before attempting upload, falling
+ *     back to navigator.onLine if the ping itself can't reach the host.
+ *  ✅ DB bumped to v3 with new "pendingSync" object store.
+ *  ✅ All v5.3.3 fixes preserved.
  */
 
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import L from "leaflet";
+import { BASE_URL } from "../../services/apiConfig";
 
 /* --- Constants ------------------------------------------------------------ */
 const MIN_DISTANCE_M   = 3;
 const AUTO_PAUSE_SPEED = 0.3;
 const AUTO_PAUSE_SECS  = 8;
 const DB_NAME          = "SurveyMapPro";
-const DB_VERSION       = 2;
+const DB_VERSION       = 3;
 const STORE_TRACKS     = "tracks";
 const STORE_PHOTOS     = "photos";
+export const STORE_PENDING = "pendingSync";
 
 const TRACK_COLORS = [
   { name:"Crimson", hex:"#e63946" },
@@ -102,6 +96,35 @@ async function getBattery() {
     }
   } catch (_) {}
   return null;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Online detection
+   ─────────────────────────────────────────────────────────────────────────────
+   navigator.onLine can be unreliable on Android WebView (sometimes reports
+   true with no real connectivity, especially behind captive portals or on
+   Capacitor). We do a lightweight HEAD ping to the backend with a timeout.
+   If the ping itself throws for a reason unrelated to connectivity (e.g.
+   CORS misconfig), we fall back to navigator.onLine rather than permanently
+   blocking sync.
+───────────────────────────────────────────────────────────────────────────── */
+export async function isReallyOnline() {
+  if (!navigator.onLine) return false;
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 3500);
+    const res = await fetch(`${BASE_URL}/api/health`, {
+      method: "GET",
+      cache: "no-store",
+      signal: ctrl.signal,
+    });
+    clearTimeout(timer);
+    return res.ok || res.status < 500; // any real HTTP response = network is up
+  } catch (_) {
+    // Couldn't reach backend at all — could be offline, could be a bad
+    // health endpoint. Trust navigator.onLine as last resort.
+    return navigator.onLine;
+  }
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -230,15 +253,16 @@ function openDB() {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = e => {
       const db = e.target.result;
-      if (!db.objectStoreNames.contains(STORE_TRACKS)) db.createObjectStore(STORE_TRACKS, { keyPath:"id" });
-      if (!db.objectStoreNames.contains(STORE_PHOTOS)) db.createObjectStore(STORE_PHOTOS, { keyPath:"id" });
+      if (!db.objectStoreNames.contains(STORE_TRACKS))  db.createObjectStore(STORE_TRACKS,  { keyPath:"id" });
+      if (!db.objectStoreNames.contains(STORE_PHOTOS))  db.createObjectStore(STORE_PHOTOS,  { keyPath:"id" });
+      if (!db.objectStoreNames.contains(STORE_PENDING)) db.createObjectStore(STORE_PENDING, { keyPath:"id" });
     };
     req.onsuccess = e => res(e.target.result);
     req.onerror   = e => rej(e.target.error);
   });
 }
 
-async function dbPut(store, value) {
+export async function dbPut(store, value) {
   const db = await openDB();
   return new Promise((res, rej) => {
     const tx  = db.transaction(store, "readwrite");
@@ -246,6 +270,55 @@ async function dbPut(store, value) {
     req.onsuccess = () => res(req.result);
     req.onerror   = () => rej(req.error);
   });
+}
+
+export async function dbGetAll(store) {
+  const db = await openDB();
+  return new Promise((res, rej) => {
+    const tx  = db.transaction(store, "readonly");
+    const req = tx.objectStore(store).getAll();
+    req.onsuccess = () => res(req.result || []);
+    req.onerror   = () => rej(req.error);
+  });
+}
+
+export async function dbGet(store, id) {
+  const db = await openDB();
+  return new Promise((res, rej) => {
+    const tx  = db.transaction(store, "readonly");
+    const req = tx.objectStore(store).get(id);
+    req.onsuccess = () => res(req.result || null);
+    req.onerror   = () => rej(req.error);
+  });
+}
+
+export async function dbDelete(store, id) {
+  const db = await openDB();
+  return new Promise((res, rej) => {
+    const tx  = db.transaction(store, "readwrite");
+    const req = tx.objectStore(store).delete(id);
+    req.onsuccess = () => res();
+    req.onerror   = () => rej(req.error);
+  });
+}
+
+/* ── Queue a finished track for later sync (offline / failed upload) ────── */
+export async function queuePendingSync(trackId, payload, meta = {}) {
+  try {
+    await dbPut(STORE_PENDING, {
+      id: trackId,
+      payload,
+      sessionClientId: meta.sessionClientId || null,
+      queuedAt: nowISO(),
+      attempts: 0,
+      lastError: null,
+    });
+    console.log(`[LiveTrackRecorder] queued ${trackId} for sync (${payload.photos?.length || 0} photos)`);
+    return true;
+  } catch (e) {
+    console.error("[LiveTrackRecorder] failed to queue pending sync:", e);
+    return false;
+  }
 }
 
 function esc(s) {
@@ -538,6 +611,9 @@ export default function LiveTrackRecorder({
   const syncTrackRef = useRef(syncTrack);
   useEffect(() => { syncTrackRef.current = syncTrack; }, [syncTrack]);
 
+  const sessionClientIdRef = useRef(sessionClientId);
+  useEffect(() => { sessionClientIdRef.current = sessionClientId; }, [sessionClientId]);
+
   // ── Modal-open suppresses auto-pause ──────────────────────────────────
   const modalOpenRef = useRef(false);
 
@@ -553,6 +629,7 @@ export default function LiveTrackRecorder({
   const [showExport,   setShowExport]   = useState(false);
   const [exporting,    setExporting]    = useState(null);
   const [uploading,    setUploading]    = useState(false);
+  const [queuedOffline,setQueuedOffline]= useState(false);
 
   const [stats, setStats] = useState({
     distance:0, totalDuration:0, movingDuration:0, stoppedDuration:0,
@@ -751,6 +828,7 @@ export default function LiveTrackRecorder({
     setConfirmStop(false);
     setShowExport(false);
     setUploading(false);
+    setQueuedOffline(false);
     setPendingPhoto(null);
     setStats({ distance:0,totalDuration:0,movingDuration:0,stoppedDuration:0,
                speed:0,maxSpeed:0,avgSpeed:0,ascent:0,descent:0,points:0,battery:null });
@@ -820,8 +898,6 @@ export default function LiveTrackRecorder({
     navigator.geolocation.clearWatch(watchIdRef.current);
 
     // ── FIX v5.3.3: auto-save any unconfirmed photo before stopping ────
-    // If the user taps Stop while the photo name/note modal is still open,
-    // we flush it with whatever name/note they've typed so far.
     flushPendingPhoto();
 
     modalOpenRef.current = false;
@@ -842,54 +918,61 @@ export default function LiveTrackRecorder({
 
     const syncFn = syncTrackRef.current;
     if (syncFn && pointsRef.current.length >= 2) {
-      setUploading(true);
-      try {
-        const pts = pointsRef.current;
+      const pts = pointsRef.current;
 
-        let distanceMeters = 0;
-        for (let i = 1; i < pts.length; i++) distanceMeters += haversine(pts[i-1], pts[i]);
-        distanceMeters = Math.round(distanceMeters * 100) / 100;
+      let distanceMeters = 0;
+      for (let i = 1; i < pts.length; i++) distanceMeters += haversine(pts[i-1], pts[i]);
+      distanceMeters = Math.round(distanceMeters * 100) / 100;
 
-        const safeName = (trackNameRef.current || "track").replace(/[^a-z0-9]/gi, "_");
+      const safeName = (trackNameRef.current || "track").replace(/[^a-z0-9]/gi, "_");
 
-        const photos = waypointsRef.current
-          .filter(w => w.photo && w.photoId && photosRef.current[w.photoId])
-          .map((w, idx) => ({
-            dataURL:  photosRef.current[w.photoId],
-            filename: `${safeName}_photo_${idx + 1}.jpg`,
-            name:     w.name || `Photo ${idx + 1}`,
-            note:     w.note || null,
-            lat:      w.lat,
-            lng:      w.lng,
-            time:     w.time,
-          }));
+      const photos = waypointsRef.current
+        .filter(w => w.photo && w.photoId && photosRef.current[w.photoId])
+        .map((w, idx) => ({
+          dataURL:  photosRef.current[w.photoId],
+          filename: `${safeName}_photo_${idx + 1}.jpg`,
+          name:     w.name || `Photo ${idx + 1}`,
+          note:     w.note || null,
+          lat:      w.lat,
+          lng:      w.lng,
+          time:     w.time,
+        }));
 
-        const firstPhoto    = photos[0] || null;
-        const photoDataURL  = firstPhoto?.dataURL  || null;
-        const photoFilename = firstPhoto?.filename || null;
-        const photoName     = firstPhoto?.name     || null;
-        const photoNote     = firstPhoto?.note     || null;
+      const syncPayload = {
+        points: pts,
+        name: trackNameRef.current || "Field Track",
+        startedAt,
+        endedAt,
+        distanceMeters,
+        photos,
+      };
 
-        console.log("[LiveTrackRecorder] calling syncTrack, pts:", pts.length,
+      // ── NEW: check real connectivity before attempting upload ─────────
+      const online = await isReallyOnline();
+
+      if (online) {
+        setUploading(true);
+        try {
+          console.log("[LiveTrackRecorder] online — calling syncTrack, pts:", pts.length,
+            "| photos:", photos.length);
+          await syncFn(syncPayload);
+          console.log("[LiveTrackRecorder] ✅ Track uploaded to backend");
+        } catch (err) {
+          console.warn("[LiveTrackRecorder] ❌ Backend upload failed, queuing for retry:", err.message);
+          await queuePendingSync(trackIdRef.current, syncPayload, {
+            sessionClientId: sessionClientIdRef.current,
+          });
+          setQueuedOffline(true);
+        } finally {
+          setUploading(false);
+        }
+      } else {
+        console.log("[LiveTrackRecorder] offline — queuing track for later sync, pts:", pts.length,
           "| photos:", photos.length);
-
-        await syncFn({
-          points:         pts,
-          name:           trackNameRef.current || "Field Track",
-          startedAt,
-          endedAt,
-          distanceMeters,
-          photos,
-          photoDataURL,
-          photoFilename,
-          photoName,
-          photoNote,
+        await queuePendingSync(trackIdRef.current, syncPayload, {
+          sessionClientId: sessionClientIdRef.current,
         });
-        console.log("[LiveTrackRecorder] ✅ Track uploaded to backend");
-      } catch (err) {
-        console.warn("[LiveTrackRecorder] ❌ Backend upload failed (saved locally):", err.message);
-      } finally {
-        setUploading(false);
+        setQueuedOffline(true);
       }
     }
 
@@ -910,7 +993,7 @@ export default function LiveTrackRecorder({
     modalOpenRef.current = false;
     setStatus("idle"); setMinimised(false); setShowExport(false);
     setConfirmStop(false); setWaypoints([]); setAutoPaused(false);
-    setUploading(false); setPendingPhoto(null);
+    setUploading(false); setQueuedOffline(false); setPendingPhoto(null);
     onRecordingChange?.(false);
     setStats({ distance:0,totalDuration:0,movingDuration:0,stoppedDuration:0,
                speed:0,maxSpeed:0,avgSpeed:0,ascent:0,descent:0,points:0,battery:null });
@@ -946,53 +1029,46 @@ export default function LiveTrackRecorder({
     setShowWptModal(false);
   }, []);
 
-  
-  //    the change event for every photo, not just the first one ──────────
   const addPhoto = useCallback(()=>{
-  if (!lastPtRef.current) return;
-  modalOpenRef.current = true;
-  stillSinceRef.current = null;
+    if (!lastPtRef.current) return;
+    modalOpenRef.current = true;
+    stillSinceRef.current = null;
 
-  // Get a FRESH GPS fix for the photo location (maximumAge:0 = no cache)
-  navigator.geolocation.getCurrentPosition(
-    (pos) => {
-      // Update lastPtRef with fresh accurate position
-      const { latitude: lat, longitude: lng, altitude: alt } = pos.coords;
-      if (isFinite(lat) && isFinite(lng)) {
-        lastPtRef.current = {
-          ...lastPtRef.current,
-          lat, lng,
-          alt: alt ?? lastPtRef.current.alt ?? 0,
-        };
+    // Get a FRESH GPS fix for the photo location (maximumAge:0 = no cache)
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const { latitude: lat, longitude: lng, altitude: alt } = pos.coords;
+        if (isFinite(lat) && isFinite(lng)) {
+          lastPtRef.current = {
+            ...lastPtRef.current,
+            lat, lng,
+            alt: alt ?? lastPtRef.current.alt ?? 0,
+          };
+        }
+        if (photoInputRef.current) {
+          photoInputRef.current.value = "";
+          photoInputRef.current.click();
+        }
+      },
+      (_err) => {
+        console.warn("[addPhoto] fresh GPS failed, using last known point");
+        if (photoInputRef.current) {
+          photoInputRef.current.value = "";
+          photoInputRef.current.click();
+        }
+      },
+      {
+        enableHighAccuracy: true,
+        maximumAge: 0,
+        timeout: 8000,
       }
-      // Now open camera
-      if (photoInputRef.current) {
-        photoInputRef.current.value = "";
-        photoInputRef.current.click();
-      }
-    },
-    (_err) => {
-      // GPS fresh fix failed — fall back to last known position
-      console.warn("[addPhoto] fresh GPS failed, using last known point");
-      if (photoInputRef.current) {
-        photoInputRef.current.value = "";
-        photoInputRef.current.click();
-      }
-    },
-    {
-      enableHighAccuracy: true,
-      maximumAge: 0,        // ← no cached location, always fresh
-      timeout: 8000,        // wait up to 8s for fresh fix
-    }
-  );
-}, []);
+    );
+  }, []);
 
   // ── FIX v5.3.3: clear value BEFORE reading file so re-selecting the
   //    same image also fires the change event ────────────────────────────
   const handlePhotoCapture = useCallback(e=>{
     const file = e.target.files?.[0];
-    // Reset immediately — before the async FileReader — so Android can
-    // fire change again for the next photo without needing a new click.
     e.target.value = "";
     if (!file || !lastPtRef.current) {
       modalOpenRef.current = false;
@@ -1004,7 +1080,6 @@ export default function LiveTrackRecorder({
       setPendingPhoto({ dataURL:ev.target.result, lat, lng, alt });
       setPhotoName(`Photo ${photoCounterRef.current + 1}`);
       setPhotoNote("");
-      // modalOpenRef stays true — photo name/note modal is now showing
     };
     reader.readAsDataURL(file);
   },[]);
@@ -1285,7 +1360,7 @@ export default function LiveTrackRecorder({
                     ? `⏸  Standing still · ${stats.points} pts · still recording`
                     : `● REC · ${stats.points} pts · ±${Math.round(lastPtRef.current?.accuracy??0)}m`
                   : isPaused  ? `⏸  Paused · ${stats.points} pts`
-                  : isStopped ? `✓  Saved · ${stats.points} pts`
+                  : isStopped ? (queuedOffline ? `📴  Saved offline · will sync later` : `✓  Saved & synced`)
                   : "GPS track recorder · waypoints · export"}
             </div>
           </div>
@@ -1501,9 +1576,14 @@ export default function LiveTrackRecorder({
               {isStopped && showExport && (
                 <div style={{ marginTop:6 }}>
                   <div style={{ padding:"8px 10px",borderRadius:8,marginBottom:8,
-                    background:"rgba(45,198,83,0.05)",border:"1px solid rgba(45,198,83,0.12)" }}>
-                    <div style={{ color:T.textFaint,fontSize:9,textAlign:"center",marginBottom:6,letterSpacing:".05em" }}>
-                      {uploading ? "⏳ UPLOADING…" : "TRACK SAVED ✓"}
+                    background: queuedOffline ? "rgba(244,162,97,0.05)" : "rgba(45,198,83,0.05)",
+                    border: queuedOffline ? "1px solid rgba(244,162,97,0.18)" : "1px solid rgba(45,198,83,0.12)" }}>
+                    <div style={{ color: queuedOffline ? T.amber : T.textFaint, fontSize:9,textAlign:"center",marginBottom:6,letterSpacing:".05em",fontWeight:600 }}>
+                      {uploading
+                        ? "⏳ UPLOADING…"
+                        : queuedOffline
+                          ? "📴 SAVED OFFLINE — WILL SYNC TO SERVER WHEN ONLINE"
+                          : "TRACK SAVED & SYNCED ✓"}
                     </div>
                     <div style={{ display:"flex",justifyContent:"space-around" }}>
                       {[

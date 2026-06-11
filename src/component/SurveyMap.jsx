@@ -48,6 +48,7 @@ import { exportShapefile } from "../utils/exportShapefile";
 import GeoJSONLoader      from "./loaders/GeoJSONLoader";
 import Globe3DView        from "./Globe3DView";
 import LiveTrackRecorder  from "./tools/LiveTrackRecorder";
+import SyncQueueManager from "./tools/SyncQueueManager.jsx";
 import { useOfflineMap }          from "./map/useOfflineMap";
 import OfflineMapManager          from "./map/OfflineMapManager";
 import OfflineStatusBadge         from "./map/OfflineStatusBadge";
@@ -2066,15 +2067,21 @@ setTimeout(() => setTrackerOpen(true), 300);
           )}
         </div>
 
-        {/* ══ FLOATING OVERLAYS ══════════════════════════════════════════ */}
-        <LiveTrackRecorder
-          map={mapRefForTracker}
-          visible={trackerOpen}
-          onClose={() => setTrackerOpen(false)}
-          onRecordingChange={setIsTracking}
-          syncTrack={syncTrack}
-          sessionClientId={activeSessionClientId}
-        />
+  {/* ══ FLOATING OVERLAYS ══════════════════════════════════════════ */}
+<LiveTrackRecorder
+  map={mapRefForTracker}
+  visible={trackerOpen}
+  onClose={() => setTrackerOpen(false)}
+  onRecordingChange={setIsTracking}
+  syncTrack={syncTrack}
+  sessionClientId={activeSessionClientId}
+/>
+
+{/* ── Offline Sync Queue Manager ── */}
+<SyncQueueManager
+  syncTrack={syncTrack}
+  sessionClientId={activeSessionClientId}
+/>
         {!isMobile && <ElevationProfile visible={elevOpen} onClose={() => setElevOpen(false)} profileData={elevProfileData} loading={elevLoading} isOnline={isOnline} sourceLabel={elevSourceLabel} leafletMap={mapRefForTracker} activeMode={elevMode} onRequestPoints={handleElevModeRequest} />}
         <OfflineMapManager visible={offlineOpen} onClose={() => setOfflineOpen(false)} leafletMap={mapRefForTracker} activeLayer={activeLayer} isOnline={isOnline} swReady={swReady} swError={swError} cacheStats={cacheStats} precaching={precaching} precacheProgress={precacheProgress} precacheCurrentView={precacheCurrentView} precacheRegion={precacheRegion} clearTileCache={clearTileCache} fetchCacheStats={fetchCacheStats} stopPrecache={stopPrecache} />
         <OfflineStatusBadge isOnline={isOnline} swReady={swReady} swError={swError} precaching={precaching} precacheProgress={precacheProgress} cacheStats={cacheStats} onClick={() => { setOfflineOpen(true); if (isMobile) setActiveSheet(null); }} />
