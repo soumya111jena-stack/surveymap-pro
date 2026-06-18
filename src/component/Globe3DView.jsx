@@ -13,7 +13,7 @@ import DroneFlightPath from "./DroneFlightPath";
 import { buildLatLngGrid, removeLatLngGrid } from "./Gridlayer";
 import DataLayersPanel from "./Datalayerspanel";
 import GeoNavRing from "./GeoNavRing";
-import CesiumDEMContourPanel from "./Cesiumdemcontour";
+import CesiumDEMContourPanel, { parseKMLPolygon, bboxFromPolygon, loadKMLFile } from "./Cesiumdemcontour";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function haversine(a,b){const R=6371000,r=x=>x*Math.PI/180;const dLat=r(b.lat-a.lat),dLon=r(b.lng-a.lng);const s=Math.sin(dLat/2)**2+Math.cos(r(a.lat))*Math.cos(r(b.lat))*Math.sin(dLon/2)**2;return R*2*Math.atan2(Math.sqrt(s),Math.sqrt(1-s));}
@@ -977,6 +977,14 @@ function handleKML(e){
     const blob=new Blob([sanitized],{type:"application/vnd.google-earth.kml+xml"});
     const url=URL.createObjectURL(blob);
 
+    // ── FIX 2: Parse polygon directly from raw KML text ──────────────────
+    const robustPolygon = parseKMLPolygon(kmlText);
+    const robustBbox = robustPolygon ? bboxFromPolygon(robustPolygon) : null;
+    if (robustPolygon) {
+      setKmlPolygonRing(robustPolygon);
+      if (robustBbox) setDemContourBbox(robustBbox);
+    }
+
     Cesium.KmlDataSource.load(url,{
       camera:viewer.scene.camera,
       canvas:viewer.scene.canvas,
@@ -1083,42 +1091,24 @@ function handleKML(e){
       orbitRef.current={center:centerCart,range:rangeM,heading:0,pitch:-62,active:false,animFrame:null};
 
       setKmlStats({featureCount:entities.length,center:{lat:cLat,lng:cLng},spanKm,bbox:{minLat,maxLat,minLng,maxLng}});
-      setDemContourBbox({
-  minLat, maxLat, minLng, maxLng,
-});
 
-// ── Extract KML polygon ring for DEM clipping ──────────────────────
-// Walk every entity and find the first polygon with enough points
-let extractedRing = null;
-for (const ent of entities) {
-  try {
-    if (ent.polygon) {
-      const hier = ent.polygon.hierarchy?.getValue(Cesium.JulianDate.now());
-      if (hier?.positions && hier.positions.length >= 3) {
-        extractedRing = hier.positions.map(p => {
-          const c = Cesium.Cartographic.fromCartesian(p);
-          return {
-            lat: Cesium.Math.toDegrees(c.latitude),
-            lng: Cesium.Math.toDegrees(c.longitude),
-          };
-        });
-        break; // use the first polygon found
+      // ── FIX 2: Use robust polygon from parseKMLPolygon if available ──
+      // If we already set kmlPolygonRing from robustPolygon above, keep it.
+      // If robustPolygon is null, fall back to bbox rectangle.
+      if (!robustPolygon) {
+        const fallbackRing = [
+          { lat: minLat, lng: minLng },
+          { lat: maxLat, lng: minLng },
+          { lat: maxLat, lng: maxLng },
+          { lat: minLat, lng: maxLng },
+          { lat: minLat, lng: minLng },
+        ];
+        setKmlPolygonRing(fallbackRing);
+        setDemContourBbox({ minLat, maxLat, minLng, maxLng });
+      } else if (robustBbox) {
+        setDemContourBbox(robustBbox);
       }
-    }
-  } catch (_) {}
-}
 
-// Fallback: if no polygon entity, build a ring from the bbox
-if (!extractedRing) {
-  extractedRing = [
-    { lat: minLat, lng: minLng },
-    { lat: maxLat, lng: minLng },
-    { lat: maxLat, lng: maxLng },
-    { lat: minLat, lng: maxLng },
-    { lat: minLat, lng: minLng },
-  ];
-}
-setKmlPolygonRing(extractedRing);
       setKmlFlyIn(true);
 
       // ── STEP 1: flyTo uses flyTo (NOT lookAt) — camera stays free here ──
@@ -1246,20 +1236,39 @@ orbitDown(-62, 1.8, () => {
   };
 
   if(isKmz){
-    const url=URL.createObjectURL(file);
-    Cesium.KmlDataSource.load(url,{camera:viewer.scene.camera,canvas:viewer.scene.canvas,clampToGround:true})
-      .then(ds=>{
-        viewer.dataSources.add(ds);
-        URL.revokeObjectURL(url);
-        viewer.flyTo(ds,{duration:2.5}); // flyTo never locks the camera
-        const entities=ds.entities.values;
-        setKmlStats({featureCount:entities.length,center:{lat:0,lng:0},spanKm:"?",bbox:{}});
+    // ── FIX 3: Use loadKMLFile for KMZ to extract polygon/bbox ──────────
+    (async () => {
+      try {
+        const result = await loadKMLFile(file);
+        if (result && result.polygon) {
+          const bbox = bboxFromPolygon(result.polygon);
+          setKmlPolygonRing(result.polygon);
+          if (bbox) setDemContourBbox(bbox);
+        }
+      } catch (err) {
+        console.warn("KMZ polygon extraction failed:", err);
+        // Continue loading visually even if polygon extraction fails
+      }
+
+      const url = URL.createObjectURL(file);
+      Cesium.KmlDataSource.load(url, {
+        camera: viewer.scene.camera,
+        canvas: viewer.scene.canvas,
+        clampToGround: true,
       })
-      .catch(err=>{
-        URL.revokeObjectURL(url);
-        releaseCameraLock();
-        alert("KMZ load failed: "+err.message);
-      });
+        .then(ds => {
+          viewer.dataSources.add(ds);
+          URL.revokeObjectURL(url);
+          viewer.flyTo(ds, { duration: 2.5 });
+          const entities = ds.entities.values;
+          setKmlStats({ featureCount: entities.length, center: { lat: 0, lng: 0 }, spanKm: "?", bbox: {} });
+        })
+        .catch(err => {
+          URL.revokeObjectURL(url);
+          releaseCameraLock();
+          alert("KMZ load failed: " + err.message);
+        });
+    })();
   }else{
     const reader=new FileReader();
     reader.onload=evt=>loadKML(evt.target.result);
@@ -1412,8 +1421,11 @@ orbitDown(-62, 1.8, () => {
   label: "DEM",
   active: demContourOpen,
   action: () => {
-    const bbox = computeCurrentBbox();
-    setDemContourBbox(bbox);
+    // ── FIX 4: Only set bbox if it's not already set ──
+    if (!demContourBbox) {
+      const bbox = computeCurrentBbox();
+      setDemContourBbox(bbox);
+    }
     if (!kmlName) setKmlPolygonRing(null); // no KML loaded = no clip
     setDemContourOpen(p => !p);
   },
@@ -1816,7 +1828,14 @@ orbitDown(-62, 1.8, () => {
 
         {/* DEM Contour */}
         <button className={`g3-bnav-item${demContourOpen?" active-green":""}`}
-          onClick={()=>{const bbox=computeCurrentBbox();setDemContourBbox(bbox);setDemContourOpen(p=>!p);}}>
+          onClick={()=>{
+            // ── FIX 4: Only set bbox if it's not already set ──
+            if (!demContourBbox) {
+              const bbox = computeCurrentBbox();
+              setDemContourBbox(bbox);
+            }
+            setDemContourOpen(p=>!p);
+          }}>
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
             <path d="M3 20l4-8 3 5 3-9 4 12"/>
           </svg>

@@ -104,25 +104,38 @@ const RAMPS = {
 };
 
 // ── Custom Cesium ImageryProvider ─────────────────────────────────────────
+// IMPORTANT: Cesium's UrlTemplateImageryProvider constructor does NOT read an
+// arbitrary `requestImage` key out of its options object — it only consumes
+// the specific options it knows about (url, tileWidth, credit, etc). Passing
+// requestImage inside the constructor call is silently ignored, so Cesium
+// falls back to its real tile fetcher and tries to GET the dummy placeholder
+// URL, which 404s and never calls renderHeatmapTile.
+//
+// The fix: construct the provider first, then assign requestImage as an
+// instance property afterward. That instance property shadows the
+// prototype method, so Cesium calls our canvas renderer instead of fetching.
 function createHeatmapProvider(Cesium, points, radius, ramp) {
   const tileSize = 256;
   const colorStops = RAMPS[ramp] || RAMPS.fire;
 
-  return new Cesium.UrlTemplateImageryProvider({
-    url: "https://placeholder/{z}/{x}/{y}", // dummy — we override requestImage
+  const provider = new Cesium.UrlTemplateImageryProvider({
+    url: "https://placeholder/{z}/{x}/{y}", // never actually fetched
     maximumLevel: 18,
     minimumLevel: 0,
     tileWidth: tileSize,
     tileHeight: tileSize,
     credit: "SurveyMap Pro Heatmap",
-    // Override the actual tile fetcher
-    requestImage: (x, y, level) => {
-      return new Promise((resolve) => {
-        const canvas = renderHeatmapTile(points, x, y, level, tileSize, radius, colorStops);
-        resolve(canvas || document.createElement("canvas"));
-      });
-    },
   });
+
+  // Override AFTER construction — this is the part that makes it work.
+  provider.requestImage = (x, y, level) => {
+    return new Promise((resolve) => {
+      const canvas = renderHeatmapTile(points, x, y, level, tileSize, radius, colorStops);
+      resolve(canvas || document.createElement("canvas"));
+    });
+  };
+
+  return provider;
 }
 
 // ── Main Component ────────────────────────────────────────────────────────
@@ -224,7 +237,6 @@ export default function HeatmapLayer({ viewer, Cesium, visible, onClose }) {
 
   if (!visible) return null;
 
-  const F = "font-family:'Segoe UI',sans-serif";
   const s = (x) => ({ fontFamily: "'Segoe UI',sans-serif", ...x });
 
   return (

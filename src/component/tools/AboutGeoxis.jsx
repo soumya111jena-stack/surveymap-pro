@@ -19,11 +19,11 @@ import React, { useEffect, useRef, useState } from "react";
 
 /* ── Data ──────────────────────────────────────────────────────────────────── */
 const VERSION        = "1.0.0";
-const BUILD_DATE     = "April 2025";
+const BUILD_DATE     = "April 2026";
 const BUILD_NUMBER   = "20250428";
 const PACKAGE        = "com.geoxis.app";
 const AUTHOR         = "Shanvi Resources Private Limited";
-const YEAR           = "2025";
+const YEAR           = "2026";
 
 const TECH_STACK = [
   { name: "Leaflet.js",    color: "#4ade80", desc: "2D interactive mapping" },
