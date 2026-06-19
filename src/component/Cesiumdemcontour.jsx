@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 
 /* ═══════════════════════════════════════════════════════════════════════
-   UNIVERSAL KML PARSER — v35
+   UNIVERSAL KML PARSER — v37 (label-stability fixes)
    Handles ALL KML formats:
    ✅ Geoxis own software
    ✅ QGIS / ArcGIS export  (MultiGeometry + Folder)
@@ -323,10 +323,6 @@ function polygonSignature(poly) {
   if (!isValidPolygon(poly)) return "none";
   const n = poly.length, r = v => Math.round(v * 1e5) / 1e5;
   const first = poly[0], mid = poly[Math.floor(n / 2)], last = poly[n - 1];
-  // v35 FIX: fold in the average of every vertex (cheap, still O(n)) so two different
-  // polygons that happen to share point count + first/mid/last coords aren't mistaken for
-  // "the same area" — that collision could previously suppress the DEM/contour reset when
-  // switching from one KML to a different one.
   let sumLat = 0, sumLng = 0;
   for (let i = 0; i < n; i++) { sumLat += poly[i].lat; sumLng += poly[i].lng; }
   const avgLat = r(sumLat / n), avgLng = r(sumLng / n);
@@ -480,7 +476,67 @@ function gaussianSmooth(grid, rows, cols, passes = 2) {
   return src;
 }
 
-/* ── Catmull-Rom + Douglas-Peucker ──────────────────────────────────── */
+/* ── Chaikin Smoothing + Bezier Interpolation ─────────────────────────── */
+function chaikinSmooth(points, iterations = 2) {
+  if (points.length < 4) return points;
+  
+  let pts = points.map(p => [p[0], p[1]]);
+  
+  for (let iter = 0; iter < iterations; iter++) {
+    const smoothed = [];
+    for (let i = 0; i < pts.length - 1; i++) {
+      const p0 = pts[i];
+      const p1 = pts[i + 1];
+      // Chaikin: Q = 0.75*P0 + 0.25*P1, R = 0.25*P0 + 0.75*P1
+      smoothed.push([
+        p0[0] * 0.75 + p1[0] * 0.25,
+        p0[1] * 0.75 + p1[1] * 0.25
+      ]);
+      smoothed.push([
+        p0[0] * 0.25 + p1[0] * 0.75,
+        p0[1] * 0.25 + p1[1] * 0.75
+      ]);
+    }
+    pts = smoothed;
+  }
+  
+  return pts;
+}
+
+function bezierInterpolate(points, steps = 8) {
+  if (points.length < 3) return points;
+  
+  const result = [];
+  for (let i = 0; i < points.length - 1; i++) {
+    const p0 = points[Math.max(0, i - 1)];
+    const p1 = points[i];
+    const p2 = points[i + 1];
+    const p3 = points[Math.min(points.length - 1, i + 2)];
+    
+    for (let t = 0; t <= 1; t += 1 / steps) {
+      const t2 = t * t;
+      const t3 = t2 * t;
+      const mt = 1 - t;
+      const mt2 = mt * mt;
+      const mt3 = mt2 * mt;
+      
+      result.push([
+        mt3 * p1[0] + 3 * mt2 * t * (p0[0] * 0.5 + p2[0] * 0.5) + 3 * mt * t2 * (p1[0] * 0.5 + p3[0] * 0.5) + t3 * p2[0],
+        mt3 * p1[1] + 3 * mt2 * t * (p0[1] * 0.5 + p2[1] * 0.5) + 3 * mt * t2 * (p1[1] * 0.5 + p3[1] * 0.5) + t3 * p2[1]
+      ]);
+    }
+  }
+  result.push(points[points.length - 1]);
+  return result;
+}
+
+function smoothContour(points, chaikinPasses = 2, bezierSteps = 6) {
+  if (points.length < 3) return points;
+  const chaikin = chaikinSmooth(points, chaikinPasses);
+  return bezierInterpolate(chaikin, bezierSteps);
+}
+
+/* ── Catmull-Rom + Douglas-Peucker (fallback) ────────────────────────── */
 function catmullRomPoint(p0, p1, p2, p3, t) {
   const t2 = t * t, t3 = t2 * t;
   return [0.5 * ((2 * p1[0]) + (-p0[0] + p2[0]) * t + (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2 + (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3),
@@ -710,33 +766,711 @@ function buildGeoTIFF({ grid, rows, cols, bbox }) {
   new Uint8Array(buf, ndOff).set(nd); new Uint8Array(buf, rasOff).set(new Uint8Array(raster.buffer));
   return buf;
 }
+
+/* ── PROFESSIONAL CONTOUR BUILDING ────────────────────────────────── */
+/**
+ * Build contour GeoJSON with professional smoothing (Chaikin + Bezier)
+ */
 function buildContourGeoJSON({ grid, rows, cols, bbox, min: minE, max: maxE }, interval, majorEvery, poly = null) {
-  const levels = []; for (let lv = Math.ceil(minE / interval) * interval; lv <= maxE + 1e-6; lv += interval) levels.push(parseFloat(lv.toFixed(6)));
-  const rawSegs = marchingSquares(grid, rows, cols, levels), features = [], hasClip = poly && poly.length >= 3;
+  const levels = [];
+  for (let lv = Math.ceil(minE / interval) * interval; lv <= maxE + 1e-6; lv += interval) {
+    levels.push(parseFloat(lv.toFixed(6)));
+  }
+  
+  const rawSegs = marchingSquares(grid, rows, cols, levels);
+  const features = [];
+  const hasClip = poly && poly.length >= 3;
+  
   levels.forEach(lv => {
-    stitchSegments(rawSegs[lv] || []).forEach(chain => {
+    const chains = stitchSegments(rawSegs[lv] || []);
+    chains.forEach(chain => {
       if (chain.length < 2) return;
-      const latlngs = chain.map(([rF, cF]) => gridToLatLng(rF, cF, bbox, rows, cols));
-      (hasClip ? clipChain(latlngs, poly) : [latlngs]).forEach(sub => {
+      
+      // Convert grid coordinates to lat/lng
+      const latlngs = chain.map(([rF, cF]) => 
+        gridToLatLng(rF, cF, bbox, rows, cols)
+      );
+      
+      // Apply clipping if needed
+      const segments = hasClip ? clipChain(latlngs, poly) : [latlngs];
+      
+      segments.forEach(sub => {
         if (sub.length < 2) return;
-        features.push({ type: "Feature", geometry: { type: "LineString", coordinates: sub.map(([lat, lng]) => [lng, lat, lv]) }, properties: { elevation_m: lv, elevation_ft: Math.round(lv * 3.28084), contourType: Math.round(lv) % majorEvery === 0 ? "major" : "minor", interval_m: interval } });
+        
+        // Apply Chaikin + Bezier smoothing for professional appearance
+        const smoothed = smoothContour(sub, 2, 6);
+        if (smoothed.length < 2) return;
+        
+        const isMajor = Math.round(lv) % majorEvery === 0;
+        
+        features.push({
+          type: "Feature",
+          geometry: {
+            type: "LineString",
+            coordinates: smoothed.map(([lat, lng]) => [lng, lat, lv])
+          },
+          properties: {
+            elevation_m: lv,
+            elevation_ft: Math.round(lv * 3.28084),
+            contourType: isMajor ? "major" : "minor",
+            interval_m: interval,
+            isMajor: isMajor
+          }
+        });
       });
     });
   });
+  
   return { type: "FeatureCollection", features };
 }
 
-/* ═══════════════════════════════════════════════════════════════════════
-   SHAPEFILE EXPORT — v2.0 (FIXED)
-   ESRI Shapefile specification compliant
-═══════════════════════════════════════════════════════════════════════ */
+/* ── Arc-length + render helpers ─────────────────────────────────────── */
+function buildArcLens(coords) {
+  const lens = new Float64Array(coords.length);
+  for (let i = 1; i < coords.length; i++) { const [lat1, lng1] = coords[i - 1], [lat2, lng2] = coords[i]; const dlat = (lat2 - lat1) * 111320, dlng = (lng2 - lng1) * 111320 * Math.cos((lat1 + lat2) * 0.5 * Math.PI / 180); lens[i] = lens[i - 1] + Math.hypot(dlat, dlng); }
+  return lens;
+}
+function ptAtArcLen(coords, arcLens, targetM) {
+  const n = coords.length; if (targetM <= 0) return coords[0].slice(); if (targetM >= arcLens[n - 1]) return coords[n - 1].slice();
+  let lo = 0, hi = n - 1; while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (arcLens[mid] <= targetM) lo = mid; else hi = mid; }
+  const segLen = arcLens[hi] - arcLens[lo], t = segLen > 1e-9 ? (targetM - arcLens[lo]) / segLen : 0;
+  return [coords[lo][0] + (coords[hi][0] - coords[lo][0]) * t, coords[lo][1] + (coords[hi][1] - coords[lo][1]) * t];
+}
+function tangentAtArcLen(coords, arcLens, targetM, windowM) {
+  const totalM = arcLens[arcLens.length - 1], adaptW = Math.max(30, Math.min(windowM, totalM * 0.15));
+  const t1 = Math.max(0, targetM - adaptW), t2 = Math.min(totalM, targetM + adaptW);
+  if (t2 - t1 < 1) return 0;
+  const [lat1, lng1] = ptAtArcLen(coords, arcLens, t1), [lat2, lng2] = ptAtArcLen(coords, arcLens, t2);
+  return Math.atan2(lng2 - lng1, lat2 - lat1);
+}
+function extractSubchain(coords, arcLens, startM, endM) {
+  const n = coords.length, totalM = arcLens[n - 1]; startM = Math.max(0, startM); endM = Math.min(totalM, endM);
+  if (endM - startM < 0.1) return [];
+  const result = [ptAtArcLen(coords, arcLens, startM)];
+  for (let i = 0; i < n; i++) { if (arcLens[i] > startM + 1e-6 && arcLens[i] < endM - 1e-6) result.push(coords[i].slice()); }
+  const endPt = ptAtArcLen(coords, arcLens, endM), last = result[result.length - 1];
+  if (Math.abs(last[0] - endPt[0]) > 1e-9 || Math.abs(last[1] - endPt[1]) > 1e-9) result.push(endPt);
+  return result;
+}
 
 /**
- * Create a valid ESRI Shapefile (.shp) from contour features
+ * Detect label collision - returns true if label is too close to existing labels
  */
+function detectLabelCollision(x, y, existingLabels, minDistance = 40) {
+  for (const label of existingLabels) {
+    const dx = x - label.x;
+    const dy = y - label.y;
+    if (Math.hypot(dx, dy) < minDistance) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function drawPolylineOnGlobe(Cesium, viewer, latlngs, color, width, prims, allEnts, minorEnts, isMajor) {
+  if (!latlngs || latlngs.length < 2) return;
+  const positions = latlngs.map(([lat, lng]) => Cesium.Cartographic.toCartesian(Cesium.Cartographic.fromDegrees(lng, lat)));
+  try { 
+    const prim = new Cesium.GroundPolylinePrimitive({ 
+      geometryInstances: new Cesium.GeometryInstance({ 
+        geometry: new Cesium.GroundPolylineGeometry({ positions, width }), 
+        attributes: { color: Cesium.ColorGeometryInstanceAttribute.fromColor(color) } 
+      }), 
+      appearance: new Cesium.PolylineColorAppearance(), 
+      classificationType: Cesium.ClassificationType.TERRAIN, 
+      asynchronous: false 
+    }); 
+    viewer.scene.primitives.add(prim); 
+    prims.push(prim); 
+  } catch (_) { 
+    const ent = viewer.entities.add({ 
+      polyline: { 
+        positions: latlngs.map(([lat, lng]) => Cesium.Cartesian3.fromDegrees(lng, lat)), 
+        width, 
+        material: color, 
+        clampToGround: true 
+      } 
+    }); 
+    allEnts.push(ent); 
+    if (!isMajor) minorEnts.push(ent); 
+  }
+}
+
+/**
+ * Place a single elevation-value label on the globe.
+ *
+ * Label stability fix:
+ *  - We sample terrain height ONCE via viewer.scene.globe.getHeight() and bake
+ *    it into a fixed Cartesian3 position (height + small offset), instead of
+ *    relying on HeightReference.CLAMP_TO_GROUND, which is recomputed every
+ *    frame from whatever terrain tile happens to be loaded at that moment.
+ *  - This keeps the label locked to the SAME surface the contour line is
+ *    draped onto (GroundPolylinePrimitive + ClassificationType.TERRAIN),
+ *    eliminating the "floating away from the line while zooming" effect.
+ *  - refreshLabelHeights() (below) re-samples this height once the camera
+ *    stops moving, so labels snap to higher-detail terrain as it loads in.
+ */
+function placeLabelOnGlobe(Cesium, viewer, lat, lng, angle, lv, isMajor, cesColor, allEnts, minorEnts) {
+  // QGIS-style label orientation: always horizontal, never rotated to follow
+  // the contour line. This matches professional cartographic output (see
+  // reference export) and avoids the "tilted/hard to read" look that
+  // tangent-following rotation produced at close zoom.
+  const rot = 0;
+  
+  let groundHeight = null;
+  try {
+    groundHeight = viewer.scene.globe.getHeight(Cesium.Cartographic.fromDegrees(lng, lat));
+  } catch (_) { groundHeight = null; }
+  const hasHeight = groundHeight != null && isFinite(groundHeight);
+  
+  const position = hasHeight
+    ? Cesium.Cartesian3.fromDegrees(lng, lat, groundHeight + 0.3)
+    : Cesium.Cartesian3.fromDegrees(lng, lat);
+  
+  const labelText = `${Math.round(lv)}`;
+  
+  // QGIS-style uniform sizing: major and minor labels are close in size
+  // (slightly bolder/larger for major) instead of one being huge and the
+  // other tiny — matches the consistent, evenly-legible look of the
+  // reference export.
+  const labelFont = isMajor ? "bold 12px Arial,sans-serif" : "11px Arial,sans-serif";
+  
+  const le = viewer.entities.add({
+    position,
+    label: { 
+      text: labelText, 
+      font: labelFont,
+      fillColor: Cesium.Color.fromCssColorString('#1a1a1a'),
+      backgroundColor: Cesium.Color.fromCssColorString('rgba(255,255,255,0.85)'),
+      backgroundPadding: new Cesium.Cartesian2(4, 2),
+      showBackground: false,
+      style: Cesium.LabelStyle.FILL_AND_OUTLINE, 
+      outlineColor: Cesium.Color.fromCssColorString('rgba(255,255,255,1.0)'),
+      outlineWidth: isMajor ? 2.5 : 2,
+      rotation: rot, 
+      alignedAxis: Cesium.Cartesian3.ZERO, 
+      heightReference: hasHeight ? Cesium.HeightReference.NONE : Cesium.HeightReference.CLAMP_TO_GROUND, 
+      eyeOffset: Cesium.Cartesian3.ZERO,
+      pixelOffset: new Cesium.Cartesian2(0, 0), 
+      scaleByDistance: isMajor ? 
+        new Cesium.NearFarScalar(50, 1.3, 60000, 0.6) : 
+        new Cesium.NearFarScalar(50, 1.15, 30000, 0.4),
+      translucencyByDistance: isMajor ? 
+        new Cesium.NearFarScalar(50, 1.0, 80000, 0.0) : 
+        new Cesium.NearFarScalar(50, 1.0, 50000, 0.0),
+      disableDepthTestDistance: Number.POSITIVE_INFINITY
+    },
+  });
+  // Remember lat/lng so refreshLabelHeights() can re-sample terrain height later
+  le._labelLat = lat;
+  le._labelLng = lng;
+  allEnts.push(le); 
+  if (!isMajor) minorEnts.push(le);
+}
+
+/**
+ * Re-sample terrain height for every label entity and snap its position.
+ * Call this on camera moveEnd so labels stay locked to the line as more
+ * detailed terrain tiles load in during/after zooming.
+ */
+function refreshLabelHeights(Cesium, viewer, allEnts) {
+  allEnts.forEach(e => {
+    if (e.label && e._labelLat != null && e._labelLng != null) {
+      try {
+        const h = viewer.scene.globe.getHeight(Cesium.Cartographic.fromDegrees(e._labelLng, e._labelLat));
+        if (h != null && isFinite(h) && !e.isDestroyed?.()) {
+          e.position = Cesium.Cartesian3.fromDegrees(e._labelLng, e._labelLat, h + 0.3);
+          e.label.heightReference = Cesium.HeightReference.NONE;
+        }
+      } catch (_) {}
+    }
+  });
+}
+
+function renderChainQGIS(Cesium, viewer, rawCoords, lv, isMajor, labelGapMeters, labelSpacingMeters, minChainMeters, cesLineColor, cesLabelColor, lineWidth, prims, allEnts, minorEnts, splineSteps = 4, dpEps = 0.00003, globalLabels = []) {
+  // Use Chaikin + Bezier smoothing for professional appearance
+  const smoothed = smoothContour(rawCoords, 2, 6);
+  const coords = dpEps > 0 ? douglasPeucker(smoothed, dpEps) : smoothed;
+  if (coords.length < 2) return;
+  
+  const arcLens = buildArcLens(coords), totalM = arcLens[arcLens.length - 1];
+  if (totalM < minChainMeters) return;
+  
+  const gapHalf = labelGapMeters / 2, minLabelChain = labelGapMeters * 3;
+  
+  // Determine number of labels based on contour length
+  const numLabels = Math.max(1, Math.floor(totalM / labelSpacingMeters));
+  const step = totalM / (numLabels + 1);
+  
+  const labelPositions = [];
+  const minDistanceMeters = Math.max(labelGapMeters, 25);
+  
+  // Collect label positions with collision detection against ALL contours, not just this chain
+  for (let i = 1; i <= numLabels; i++) {
+    const pos = i * step;
+    if (pos > totalM - gapHalf) continue;
+    
+    const [lat, lng] = ptAtArcLen(coords, arcLens, pos);
+    
+    // Check collision with existing labels from every contour line rendered so far
+    const tooClose = globalLabels.some(existing => {
+      const dx = (existing.lat - lat) * 111320;
+      const dy = (existing.lng - lng) * 111320 * Math.cos((existing.lat + lat) * 0.5 * Math.PI / 180);
+      return Math.hypot(dx, dy) < minDistanceMeters;
+    });
+    
+    if (!tooClose) {
+      labelPositions.push(pos);
+      globalLabels.push({ lat, lng });
+    }
+  }
+  
+  // If no labels placed, try at least one at midpoint (still check global collision)
+  if (labelPositions.length === 0 && totalM > minLabelChain) {
+    const midPos = totalM / 2;
+    const [midLat, midLng] = ptAtArcLen(coords, arcLens, midPos);
+    const tooClose = globalLabels.some(existing => {
+      const dx = (existing.lat - midLat) * 111320;
+      const dy = (existing.lng - midLng) * 111320 * Math.cos((existing.lat + midLat) * 0.5 * Math.PI / 180);
+      return Math.hypot(dx, dy) < minDistanceMeters;
+    });
+    if (!tooClose) {
+      labelPositions.push(midPos);
+      globalLabels.push({ lat: midLat, lng: midLng });
+    }
+  }
+  
+  // Draw the contour line with gaps for labels
+  if (labelPositions.length === 0) {
+    drawPolylineOnGlobe(Cesium, viewer, coords, cesLineColor, lineWidth, prims, allEnts, minorEnts, isMajor);
+    return;
+  }
+  
+  let cursor = 0;
+  // Sort label positions
+  labelPositions.sort((a, b) => a - b);
+  
+  for (const labelPos of labelPositions) {
+    const gapStart = Math.max(cursor, labelPos - gapHalf);
+    const gapEnd = Math.min(totalM, labelPos + gapHalf);
+    
+    // Draw segment before label gap
+    if (gapStart - cursor > 0.5) {
+      const seg = extractSubchain(coords, arcLens, cursor, gapStart);
+      drawPolylineOnGlobe(Cesium, viewer, seg, cesLineColor, lineWidth, prims, allEnts, minorEnts, isMajor);
+    }
+    
+    // Place label
+    const [lat, lng] = ptAtArcLen(coords, arcLens, labelPos);
+    const angle = tangentAtArcLen(coords, arcLens, labelPos, 150);
+    placeLabelOnGlobe(Cesium, viewer, lat, lng, angle, lv, isMajor, cesLabelColor, allEnts, minorEnts);
+    
+    cursor = gapEnd;
+  }
+  
+  // Draw remaining segment
+  if (totalM - cursor > 0.5) {
+    const seg = extractSubchain(coords, arcLens, cursor, totalM);
+    drawPolylineOnGlobe(Cesium, viewer, seg, cesLineColor, lineWidth, prims, allEnts, minorEnts, isMajor);
+  }
+}
+
+/* ── MAIN RENDER CONTOURS FUNCTION ── */
+function renderContours(Cesium, viewer, elevGrid, opts, poly = null) {
+  const { 
+    interval = 1, 
+    majorEvery = 5, 
+    minorColor = "#8B7355", 
+    majorColor = "#4A3520", 
+    opacity = 0.88, 
+    labelSpacingMeters = 100,
+    labelGapMeters = 40,
+    minChainMeters = 60,
+    smoothPasses = 2,
+    upsampleFactor = 4,
+    splineSteps = 6,
+    dpEps = 0.00002,
+    contourPalette = "QGIS Rainbow" 
+  } = opts;
+  
+  const { rows, cols, bbox, min: minE, max: maxE } = elevGrid;
+  
+  // Smooth and upsample grid
+  const smoothed = smoothPasses > 0 ? gaussianSmooth(elevGrid.grid, rows, cols, smoothPasses) : elevGrid.grid;
+  const factor = Math.max(1, Math.min(8, upsampleFactor));
+  const { grid: hiGrid, rows: hiRows, cols: hiCols } = factor > 1 ? 
+    upsampleGrid(smoothed, rows, cols, factor) : 
+    { grid: smoothed, rows, cols };
+  
+  // Generate contour levels
+  const levels = [];
+  for (let lv = Math.ceil(minE / interval) * interval; lv <= maxE + 1e-6; lv += interval) {
+    levels.push(parseFloat(lv.toFixed(6)));
+  }
+  
+  if (!levels.length) {
+    return { primitives: [], entities: [], count: 0, dispose: () => {} };
+  }
+  
+  // Setup palette
+  const palette = CONTOUR_PALETTES[contourPalette];
+  const levelRange = maxE - minE;
+  
+  function getLevelCesiumColor(lv, isMajor) {
+    if (!palette) {
+      const hex = isMajor ? majorColor : minorColor;
+      const c = Cesium.Color.fromCssColorString(hex);
+      return {
+        line: c.withAlpha(isMajor ? opacity : opacity * 0.72),
+        label: c
+      };
+    }
+    const t = levelRange > 0 ? (lv - minE) / levelRange : 0.5;
+    const [r, g, b] = interpolatePalette(t, palette);
+    return {
+      line: new Cesium.Color(r / 255, g / 255, b / 255, isMajor ? opacity : opacity * 0.72),
+      label: new Cesium.Color(r / 255, g / 255, b / 255, 1.0)
+    };
+  }
+  
+  const rawSegs = marchingSquares(hiGrid, hiRows, hiCols, levels);
+  const prims = [];
+  const allEnts = [];
+  const minorEnts = [];
+  const hasClip = poly && poly.length >= 3;
+  const globalLabels = []; // shared across ALL elevation levels to prevent overlap
+  
+  levels.forEach(lv => {
+    const roundedLv = Math.round(lv);
+    const isMajor = majorEvery > 0 && (roundedLv % majorEvery === 0 || Math.abs(roundedLv % majorEvery - majorEvery) < 0.5);
+    const lineWidth = isMajor ? 3.0 : 1.5;
+    const { line: cesLineColor, label: cesLabelColor } = getLevelCesiumColor(lv, isMajor);
+    
+    const chains = stitchSegments(rawSegs[lv] || []);
+    chains.forEach(chain => {
+      if (chain.length < 2) return;
+      
+      // Convert to lat/lng
+      const latlngs = chain.map(([rF, cF]) => 
+        gridToLatLng(rF, cF, bbox, hiRows, hiCols)
+      );
+      
+      // Apply clipping
+      const segments = hasClip ? clipChain(latlngs, poly) : [latlngs];
+      
+      segments.forEach(sub => {
+        if (!sub || sub.length < 2) return;
+        
+        // Apply professional smoothing: Chaikin + Bezier
+        const smoothed = smoothContour(sub, 2, 6);
+        if (smoothed.length < 2) return;
+        
+        // Draw the contour line with labels
+        renderChainQGIS(
+          Cesium, 
+          viewer, 
+          smoothed, 
+          lv, 
+          isMajor, 
+          labelGapMeters,
+          labelSpacingMeters,
+          minChainMeters,
+          cesLineColor, 
+          cesLabelColor, 
+          lineWidth,
+          prims,
+          allEnts,
+          minorEnts,
+          splineSteps,
+          dpEps,
+          globalLabels
+        );
+      });
+    });
+  });
+  
+  // Setup depth test for labels — altitude-aware to prevent "floating" when zoomed in.
+  // Above DEPTH_TEST_ALT_THRESHOLD: labels always render on top (legibility at scale).
+  // Below it: depth test is restored so labels correctly sit against/behind terrain.
+  const labelEnts = allEnts.filter(e => e.label);
+  const DEPTH_TEST_ALT_THRESHOLD = 2500; // meters
+  function updateDepthTest() {
+    try {
+      const alt = viewer.camera.positionCartographic?.height ?? 99999;
+      const in3D = viewer.scene.mode === Cesium.SceneMode.SCENE3D;
+      const dist = (in3D && alt < DEPTH_TEST_ALT_THRESHOLD) ? 0 : Number.POSITIVE_INFINITY;
+      labelEnts.forEach(e => {
+        try {
+          if (!e.isDestroyed?.() && e.label) {
+            e.label.disableDepthTestDistance = dist;
+          }
+        } catch (_) {}
+      });
+    } catch (_) {}
+  }
+  
+  // Resolution-aware minor-label visibility. Works correctly in BOTH 2D and 3D —
+  // unlike a pure camera-altitude check, which is unreliable in 2D map mode and
+  // was letting hundreds of tiny minor-contour numbers stay visible even when
+  // zoomed far out (looked like overlapping/garbled text).
+  function shouldShowMinor() {
+    try {
+      const canvas = viewer.scene.canvas;
+      const centerPx = new Cesium.Cartesian2(canvas.clientWidth / 2, canvas.clientHeight / 2);
+      const ray = viewer.camera.getPickRay(centerPx);
+      const ground = ray ? viewer.scene.globe.pick(ray, viewer.scene) : null;
+      if (!ground) {
+        const alt = viewer.camera.positionCartographic?.height ?? 99999;
+        return alt < 25000;
+      }
+      const distance = Cesium.Cartesian3.distance(viewer.camera.positionWC, ground);
+      const fovy = viewer.camera.frustum?.fovy ?? 1.0;
+      const metersPerPixel = (distance * 2 * Math.tan(fovy / 2)) / canvas.clientHeight;
+      return metersPerPixel < 6; // only show minor labels when zoomed in enough to read them
+    } catch (_) {
+      const alt = viewer.camera.positionCartographic?.height ?? 99999;
+      return alt < 25000;
+    }
+  }
+  
+  let camListener = null, morphListener = null, moveEndListener = null;
+  try {
+    camListener = viewer.camera.changed.addEventListener(() => {
+      try {
+        const show = shouldShowMinor();
+        minorEnts.forEach(e => {
+          try { if (!e.isDestroyed?.()) e.show = show; } catch (_) {}
+        });
+      } catch (_) {}
+      updateDepthTest();
+    });
+  } catch (_) {}
+  
+  try {
+    moveEndListener = viewer.camera.moveEnd.addEventListener(() => {
+      refreshLabelHeights(Cesium, viewer, allEnts);
+    });
+  } catch (_) {}
+  
+  try {
+    morphListener = viewer.scene.morphComplete.addEventListener(updateDepthTest);
+  } catch (_) {}
+  
+  updateDepthTest();
+  try {
+    const show = shouldShowMinor();
+    minorEnts.forEach(e => { try { if (!e.isDestroyed?.()) e.show = show; } catch (_) {} });
+  } catch (_) {}
+  
+  function dispose() {
+    try { if (camListener) viewer.camera.changed.removeEventListener(camListener); } catch (_) {}
+    try { if (morphListener) viewer.scene.morphComplete.removeEventListener(morphListener); } catch (_) {}
+    try { if (moveEndListener) viewer.camera.moveEnd.removeEventListener(moveEndListener); } catch (_) {}
+  }
+  
+  return {
+    primitives: prims,
+    entities: allEnts,
+    count: prims.length + allEnts.filter(e => e.polyline).length,
+    dispose
+  };
+}
+
+/* ── Shapefile Contour Rendering ── */
+function renderShapefileContours(Cesium, viewer, geoJson, opts) {
+  const { 
+    majorEvery = 100, 
+    minorColor = "#8B7355", 
+    majorColor = "#4A3520", 
+    opacity = 0.88, 
+    labelSpacing = 200,
+    labelGapMeters = 50,
+    minChainMeters = 60,
+    splineSteps = 4,
+    dpEps = 0.00002,
+    poly = null,
+    contourPalette = "QGIS Rainbow"
+  } = opts;
+  
+  const prims = [], allEnts = [], minorEnts = [], hasClip = poly && poly.length >= 3;
+  const globalLabels = [];
+  const elevs = geoJson.features.map(f => f.properties.ELEV ?? f.properties.elevation_m ?? 0);
+  const minE = Math.min(...elevs), maxE = Math.max(...elevs), levelRange = maxE - minE;
+  const palette = CONTOUR_PALETTES[contourPalette];
+  
+  function getLevelCesiumColor(lv, isMajor) {
+    if (!palette) {
+      const hex = isMajor ? majorColor : minorColor;
+      const c = Cesium.Color.fromCssColorString(hex);
+      return { line: c.withAlpha(isMajor ? opacity : opacity * 0.72), label: c };
+    }
+    const t = levelRange > 0 ? (lv - minE) / levelRange : 0.5;
+    const [r, g, b] = interpolatePalette(t, palette);
+    return {
+      line: new Cesium.Color(r / 255, g / 255, b / 255, isMajor ? opacity : opacity * 0.72),
+      label: new Cesium.Color(r / 255, g / 255, b / 255, 1.0)
+    };
+  }
+  
+  for (const feat of geoJson.features) {
+    const elev = feat.properties.ELEV ?? feat.properties.elevation_m ?? 0;
+    const isMajor = majorEvery > 0 && Math.round(elev) % majorEvery === 0;
+    const latlngs = feat.geometry.coordinates.map(([lng, lat]) => [lat, lng]);
+    const lineWidth = isMajor ? 3.0 : 1.5;
+    const { line: cesLineColor, label: cesLabelColor } = getLevelCesiumColor(elev, isMajor);
+    
+    // Apply smoothing
+    const smoothed = smoothContour(latlngs, 2, 6);
+    const subs = hasClip ? clipChain(smoothed, poly) : [smoothed];
+    
+    subs.forEach(sub => {
+      if (sub.length >= 2) {
+        renderChainQGIS(
+          Cesium, 
+          viewer, 
+          sub, 
+          elev, 
+          isMajor, 
+          labelGapMeters,
+          labelSpacing,
+          minChainMeters,
+          cesLineColor, 
+          cesLabelColor, 
+          lineWidth, 
+          prims, 
+          allEnts, 
+          minorEnts, 
+          splineSteps, 
+          dpEps,
+          globalLabels
+        );
+      }
+    });
+  }
+  
+  const labelEnts = allEnts.filter(e => e.label);
+  const DEPTH_TEST_ALT_THRESHOLD = 2500; // meters
+  function updateDepthTest() {
+    try {
+      const alt = viewer.camera.positionCartographic?.height ?? 99999;
+      const in3D = viewer.scene.mode === Cesium.SceneMode.SCENE3D;
+      const dist = (in3D && alt < DEPTH_TEST_ALT_THRESHOLD) ? 0 : Number.POSITIVE_INFINITY;
+      labelEnts.forEach(e => {
+        try { if (!e.isDestroyed?.() && e.label) e.label.disableDepthTestDistance = dist; } catch (_) {}
+      });
+    } catch (_) {}
+  }
+  
+  // Resolution-aware minor-label visibility (works in 2D and 3D)
+  function shouldShowMinor() {
+    try {
+      const canvas = viewer.scene.canvas;
+      const centerPx = new Cesium.Cartesian2(canvas.clientWidth / 2, canvas.clientHeight / 2);
+      const ray = viewer.camera.getPickRay(centerPx);
+      const ground = ray ? viewer.scene.globe.pick(ray, viewer.scene) : null;
+      if (!ground) {
+        const alt = viewer.camera.positionCartographic?.height ?? 99999;
+        return alt < 18000;
+      }
+      const distance = Cesium.Cartesian3.distance(viewer.camera.positionWC, ground);
+      const fovy = viewer.camera.frustum?.fovy ?? 1.0;
+      const metersPerPixel = (distance * 2 * Math.tan(fovy / 2)) / canvas.clientHeight;
+      return metersPerPixel < 6;
+    } catch (_) {
+      const alt = viewer.camera.positionCartographic?.height ?? 99999;
+      return alt < 18000;
+    }
+  }
+  
+  let camListener = null, morphListener = null, moveEndListener = null;
+  try {
+    camListener = viewer.camera.changed.addEventListener(() => {
+      try {
+        const show = shouldShowMinor();
+        minorEnts.forEach(e => { try { if (!e.isDestroyed?.()) e.show = show; } catch (_) {} });
+      } catch (_) {}
+      updateDepthTest();
+    });
+  } catch (_) {}
+  
+  try {
+    moveEndListener = viewer.camera.moveEnd.addEventListener(() => {
+      refreshLabelHeights(Cesium, viewer, allEnts);
+    });
+  } catch (_) {}
+  
+  try {
+    morphListener = viewer.scene.morphComplete.addEventListener(updateDepthTest);
+  } catch (_) {}
+  updateDepthTest();
+  try {
+    const show = shouldShowMinor();
+    minorEnts.forEach(e => { try { if (!e.isDestroyed?.()) e.show = show; } catch (_) {} });
+  } catch (_) {}
+  
+  function dispose() {
+    try { if (camListener) viewer.camera.changed.removeEventListener(camListener); } catch (_) {}
+    try { if (morphListener) viewer.scene.morphComplete.removeEventListener(morphListener); } catch (_) {}
+    try { if (moveEndListener) viewer.camera.moveEnd.removeEventListener(moveEndListener); } catch (_) {}
+  }
+  
+  return { primitives: prims, entities: allEnts, count: prims.length + allEnts.filter(e => e.polyline).length, dispose };
+}
+
+/* ── DEM Rendering ── */
+async function renderDEM(Cesium, viewer, elevGrid, opts, poly = null, layerRef = null) {
+  const { colorRamp = DEFAULT_RAMP, opacity = 0.85, hillshadeStrength = 0.65, hillshadeMode = "multi", stretchMode = "local" } = opts;
+  if (layerRef?.current) { try { viewer.imageryLayers.remove(layerRef.current, true); } catch (_) { } layerRef.current = null; }
+  const { grid, rows, cols, bbox, min: minE, max: maxE } = elevGrid;
+  const { stretchMin, stretchMax } = computeStretchRange(grid, rows, cols, minE, maxE, stretchMode, 2);
+  const stretchRange = stretchMax - stretchMin;
+  const OS = 12, W = Math.min((cols - 1) * OS + 1, 4096) | 0, H = Math.min((rows - 1) * OS + 1, 4096) | 0;
+  const cv = document.createElement("canvas"); cv.width = W; cv.height = H;
+  const ctx = cv.getContext("2d"), imgData = ctx.createImageData(W, H), px = imgData.data;
+  const latSpan = bbox.maxLat - bbox.minLat, lngSpan = bbox.maxLng - bbox.minLng, midLat = (bbox.minLat + bbox.maxLat) / 2;
+  const cellM = Math.max(1, ((rows > 1 ? latSpan / (rows - 1) * 111320 : 100) + (cols > 1 ? lngSpan / (cols - 1) * 111320 * Math.cos(midLat * Math.PI / 180) : 100)) / 2);
+  const hsGrid = (hillshadeStrength > 0 && hillshadeMode !== "off") ? Array.from({ length: rows }, (_, r) => Float32Array.from({ length: cols }, (_, c) => hillshadeMode === "multi" ? computeMultiHS(grid, rows, cols, r, c, cellM) : computeHS(grid, rows, cols, r, c, cellM))) : null;
+  const hasClip = poly && poly.length >= 3;
+  const alphaMask = hasClip ? buildAlphaMask(W, H, poly, bbox, rows, cols) : null;
+  const CHUNK = 40000, totalPx = W * H;
+  for (let start = 0; start < totalPx; start += CHUNK) {
+    if (start > 0) await new Promise(r => setTimeout(r, 0));
+    const end = Math.min(start + CHUNK, totalPx);
+    for (let idx = start; idx < end; idx++) {
+      const qx = idx % W, py = Math.floor(idx / W), i4 = idx * 4;
+      const rF = H > 1 ? py * (rows - 1) / (H - 1) : 0, cF = W > 1 ? qx * (cols - 1) / (W - 1) : 0;
+      const ea = hasClip ? sampleAlphaMask(alphaMask, W, H, qx, py) : 1;
+      if (ea <= 0.01) { px[i4 + 3] = 0; continue; }
+      const elev = bicubicSample(grid, rows, cols, rF, cF); if (isNaN(elev)) { px[i4 + 3] = 0; continue; }
+      const t = stretchRange > 0.5 ? Math.max(0, Math.min(1, (elev - stretchMin) / stretchRange)) : 0.5;
+      let [r, g, b] = elevToRGB(t, colorRamp);
+      if (hsGrid) {
+        const ri = Math.max(0, Math.min(rows - 1, Math.round(rF))), ci = Math.max(0, Math.min(cols - 1, Math.round(cF)));
+        const hs = hsGrid[ri][ci], str = Math.min(hillshadeStrength, 0.85);
+        const f = (1.0 - str * 0.5) + hs * str * 0.5;
+        r = Math.max(0, Math.min(255, Math.round(r * f)));
+        g = Math.max(0, Math.min(255, Math.round(g * f)));
+        b = Math.max(0, Math.min(255, Math.round(b * f)));
+      }
+      px[i4] = r; px[i4 + 1] = g; px[i4 + 2] = b; px[i4 + 3] = Math.round(opacity * ea * 255);
+    }
+  }
+  ctx.putImageData(imgData, 0, 0);
+  const imageUrl = await new Promise(res => { try { cv.toBlob(blob => blob ? res(URL.createObjectURL(blob)) : res(cv.toDataURL()), "image/png"); } catch { res(cv.toDataURL()); } });
+  const rect = new Cesium.Rectangle(Cesium.Math.toRadians(bbox.minLng), Cesium.Math.toRadians(bbox.minLat), Cesium.Math.toRadians(bbox.maxLng), Cesium.Math.toRadians(bbox.maxLat));
+  let provider;
+  try { provider = new Cesium.SingleTileImageryProvider({ url: imageUrl, rectangle: rect, tileWidth: W, tileHeight: H }); }
+  catch (_) { try { provider = new Cesium.SingleTileImageryProvider(imageUrl, rect); } catch (e) { console.error(e); return null; } }
+  const layer = viewer.imageryLayers.addImageryProvider(provider); layer.alpha = opacity;
+  try { let idx = viewer.imageryLayers.indexOf?.(layer) ?? viewer.imageryLayers.length - 1; for (let i = idx; i > 1; i--) viewer.imageryLayers.lower(layer); } catch (_) { }
+  if (layerRef) layerRef.current = layer; return layer;
+}
+
+function bboxKey(b) { return b ? `${b.minLat.toFixed(6)},${b.maxLat.toFixed(6)},${b.minLng.toFixed(6)},${b.maxLng.toFixed(6)}` : "null"; }
+
+/* ── Shapefile Export ── */
 function createShp(features) {
   if (!features || features.length === 0) {
-    // Return empty shapefile with proper header
     const buf = new ArrayBuffer(100);
     const dv = new DataView(buf);
     dv.setInt32(0, 9994, false);
@@ -789,7 +1523,6 @@ function createShp(features) {
   const dv = new DataView(shpBuffer);
   let offset = 0;
 
-  // File header (big-endian)
   dv.setInt32(0, 9994, false);
   dv.setInt32(24, totalBytes / 2, false);
   dv.setInt32(28, 1000, true);
@@ -802,7 +1535,6 @@ function createShp(features) {
   }
   offset = 100;
 
-  // Records
   for (let i = 0; i < featureData.length; i++) {
     const fd = featureData[i];
     const contentBytes = 4 + 32 + 4 + 4 + (4 * 1) + (fd.count * 16);
@@ -839,9 +1571,6 @@ function createShp(features) {
   return shpBuffer;
 }
 
-/**
- * Create a valid ESRI Shapefile Index (.shx)
- */
 function createShx(features, shpBuffer) {
   const numFeatures = features.length;
   const totalBytes = 100 + (numFeatures * 8);
@@ -849,11 +1578,9 @@ function createShx(features, shpBuffer) {
   const dv = new DataView(buffer);
   const shpView = new DataView(shpBuffer);
 
-  // Header (copy from SHP)
   for (let i = 0; i < 100; i++) dv.setUint8(i, shpView.getUint8(i));
   dv.setInt32(24, totalBytes / 2, false);
 
-  // Records
   let shpOffset = 100 / 2;
   for (let i = 0; i < numFeatures; i++) {
     const pos = 100 + i * 8;
@@ -867,9 +1594,6 @@ function createShx(features, shpBuffer) {
   return buffer;
 }
 
-/**
- * Create a valid DBF file (.dbf)
- */
 function createDbf(features) {
   const numRecords = features.length;
   const fields = [
@@ -888,14 +1612,12 @@ function createDbf(features) {
   const buffer = new Uint8Array(totalBytes);
   const dv = new DataView(buffer.buffer);
 
-  // Header
   buffer[0] = 0x03;
   dv.setUint32(4, numRecords, true);
   dv.setUint16(8, headerSize, true);
   dv.setUint16(10, recordSize, true);
   for (let i = 12; i < 32; i++) buffer[i] = 0;
 
-  // Field descriptors
   let fieldOffset = 32;
   for (const field of fields) {
     const nameBytes = new TextEncoder().encode(field.name.substring(0, 10));
@@ -909,7 +1631,6 @@ function createDbf(features) {
   }
   buffer[fieldOffset] = 0x0D;
 
-  // Records
   let recordPos = headerSize;
   for (let i = 0; i < numRecords; i++) {
     const props = features[i].properties || {};
@@ -943,24 +1664,15 @@ function createDbf(features) {
   return buffer;
 }
 
-/**
- * Create PRJ file
- */
 function createPrj() {
   const prjString = `GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]`;
   return new TextEncoder().encode(prjString);
 }
 
-/**
- * Create CPG file
- */
 function createCpg() {
   return new TextEncoder().encode("UTF-8");
 }
 
-/**
- * Export contour features as a complete Shapefile ZIP
- */
 async function exportContourShapefile(features, baseName, onProgress) {
   if (!features || features.length === 0) {
     throw new Error("No contour features to export");
@@ -1015,187 +1727,8 @@ async function exportContourShapefile(features, baseName, onProgress) {
   return zipBlob;
 }
 
-/* ── Arc-length + render helpers ─────────────────────────────────────── */
-function buildArcLens(coords) {
-  const lens = new Float64Array(coords.length);
-  for (let i = 1; i < coords.length; i++) { const [lat1, lng1] = coords[i - 1], [lat2, lng2] = coords[i]; const dlat = (lat2 - lat1) * 111320, dlng = (lng2 - lng1) * 111320 * Math.cos((lat1 + lat2) * 0.5 * Math.PI / 180); lens[i] = lens[i - 1] + Math.hypot(dlat, dlng); }
-  return lens;
-}
-function ptAtArcLen(coords, arcLens, targetM) {
-  const n = coords.length; if (targetM <= 0) return coords[0].slice(); if (targetM >= arcLens[n - 1]) return coords[n - 1].slice();
-  let lo = 0, hi = n - 1; while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (arcLens[mid] <= targetM) lo = mid; else hi = mid; }
-  const segLen = arcLens[hi] - arcLens[lo], t = segLen > 1e-9 ? (targetM - arcLens[lo]) / segLen : 0;
-  return [coords[lo][0] + (coords[hi][0] - coords[lo][0]) * t, coords[lo][1] + (coords[hi][1] - coords[lo][1]) * t];
-}
-function tangentAtArcLen(coords, arcLens, targetM, windowM) {
-  const totalM = arcLens[arcLens.length - 1], adaptW = Math.max(30, Math.min(windowM, totalM * 0.15));
-  const t1 = Math.max(0, targetM - adaptW), t2 = Math.min(totalM, targetM + adaptW);
-  if (t2 - t1 < 1) return 0;
-  const [lat1, lng1] = ptAtArcLen(coords, arcLens, t1), [lat2, lng2] = ptAtArcLen(coords, arcLens, t2);
-  return Math.atan2(lng2 - lng1, lat2 - lat1);
-}
-function extractSubchain(coords, arcLens, startM, endM) {
-  const n = coords.length, totalM = arcLens[n - 1]; startM = Math.max(0, startM); endM = Math.min(totalM, endM);
-  if (endM - startM < 0.1) return [];
-  const result = [ptAtArcLen(coords, arcLens, startM)];
-  for (let i = 0; i < n; i++) { if (arcLens[i] > startM + 1e-6 && arcLens[i] < endM - 1e-6) result.push(coords[i].slice()); }
-  const endPt = ptAtArcLen(coords, arcLens, endM), last = result[result.length - 1];
-  if (Math.abs(last[0] - endPt[0]) > 1e-9 || Math.abs(last[1] - endPt[1]) > 1e-9) result.push(endPt);
-  return result;
-}
-function drawPolylineOnGlobe(Cesium, viewer, latlngs, color, width, prims, allEnts, minorEnts, isMajor) {
-  if (!latlngs || latlngs.length < 2) return;
-  const positions = latlngs.map(([lat, lng]) => Cesium.Cartographic.toCartesian(Cesium.Cartographic.fromDegrees(lng, lat)));
-  try { const prim = new Cesium.GroundPolylinePrimitive({ geometryInstances: new Cesium.GeometryInstance({ geometry: new Cesium.GroundPolylineGeometry({ positions, width }), attributes: { color: Cesium.ColorGeometryInstanceAttribute.fromColor(color) } }), appearance: new Cesium.PolylineColorAppearance(), classificationType: Cesium.ClassificationType.TERRAIN, asynchronous: false }); viewer.scene.primitives.add(prim); prims.push(prim); }
-  catch (_) { const ent = viewer.entities.add({ polyline: { positions: latlngs.map(([lat, lng]) => Cesium.Cartesian3.fromDegrees(lng, lat)), width, material: color, clampToGround: true } }); allEnts.push(ent); if (!isMajor) minorEnts.push(ent); }
-}
-function placeLabelOnGlobe(Cesium, viewer, lat, lng, angle, lv, isMajor, cesColor, allEnts, minorEnts) {
-  let rot = -angle; if (rot > Math.PI / 2) rot -= Math.PI; if (rot < -Math.PI / 2) rot += Math.PI;
-  const position = Cesium.Cartesian3.fromDegrees(lng, lat, lv + 0.5);
-  const le = viewer.entities.add({
-    position,
-    label: { text: `${Math.round(lv)}`, font: isMajor ? "bold 12px Arial,sans-serif" : "10px Arial,sans-serif", fillColor: cesColor, outlineColor: Cesium.Color.WHITE, outlineWidth: isMajor ? 4 : 3, style: Cesium.LabelStyle.FILL_AND_OUTLINE, showBackground: false, rotation: rot, alignedAxis: Cesium.Cartesian3.ZERO, heightReference: Cesium.HeightReference.NONE, eyeOffset: new Cesium.Cartesian3(0, 0, -50), pixelOffset: new Cesium.Cartesian2(0, 0), scaleByDistance: isMajor ? new Cesium.NearFarScalar(200, 1.6, 40000, 0.5) : new Cesium.NearFarScalar(150, 1.3, 20000, 0.4), translucencyByDistance: isMajor ? new Cesium.NearFarScalar(300, 1.0, 60000, 0.0) : new Cesium.NearFarScalar(200, 1.0, 18000, 0.0) },
-  });
-  allEnts.push(le); if (!isMajor) minorEnts.push(le);
-}
-function renderChainQGIS(Cesium, viewer, rawCoords, lv, isMajor, labelGapMeters, labelSpacingMeters, minChainMeters, cesLineColor, cesLabelColor, lineWidth, prims, allEnts, minorEnts, splineSteps = 4, dpEps = 0.00003) {
-  const splined = splineSmooth(rawCoords, splineSteps);
-  const coords = dpEps > 0 ? douglasPeucker(splined, dpEps) : splined;
-  if (coords.length < 2) return;
-  const arcLens = buildArcLens(coords), totalM = arcLens[arcLens.length - 1];
-  if (totalM < minChainMeters) return;
-  const gapHalf = labelGapMeters / 2, minLabelChain = labelGapMeters * 3, labelPositions = [];
-  if (totalM >= minLabelChain) {
-    labelPositions.push(totalM / 2);
-    if (labelSpacingMeters > 0 && totalM > labelSpacingMeters * 1.5) {
-      const count = Math.floor(totalM / labelSpacingMeters), step = totalM / (count + 1);
-      for (let i = 1; i <= count; i++) { const pos = i * step; const crowded = labelPositions.some(p => Math.abs(p - pos) < labelSpacingMeters * 0.4); if (!crowded && pos > gapHalf && pos < totalM - gapHalf) labelPositions.push(pos); }
-    }
-  }
-  labelPositions.sort((a, b) => a - b);
-  if (labelPositions.length === 0) { drawPolylineOnGlobe(Cesium, viewer, coords, cesLineColor, lineWidth, prims, allEnts, minorEnts, isMajor); return; }
-  let cursor = 0;
-  for (const labelPos of labelPositions) {
-    const gapStart = Math.max(cursor, labelPos - gapHalf), gapEnd = Math.min(totalM, labelPos + gapHalf);
-    if (gapStart - cursor > 0.5) { const seg = extractSubchain(coords, arcLens, cursor, gapStart); drawPolylineOnGlobe(Cesium, viewer, seg, cesLineColor, lineWidth, prims, allEnts, minorEnts, isMajor); }
-    const [lat, lng] = ptAtArcLen(coords, arcLens, labelPos), angle = tangentAtArcLen(coords, arcLens, labelPos, 150);
-    placeLabelOnGlobe(Cesium, viewer, lat, lng, angle, lv, isMajor, cesLabelColor, allEnts, minorEnts);
-    cursor = gapEnd;
-  }
-  if (totalM - cursor > 0.5) { const seg = extractSubchain(coords, arcLens, cursor, totalM); drawPolylineOnGlobe(Cesium, viewer, seg, cesLineColor, lineWidth, prims, allEnts, minorEnts, isMajor); }
-}
-function renderContours(Cesium, viewer, elevGrid, opts, poly = null) {
-  const { interval = 10, majorEvery = 50, minorColor = "#966F33", majorColor = "#6B3D00", opacity = 0.88, labelSpacingMeters = 800, labelGapMeters = 60, minChainMeters = 60, smoothPasses = 1, upsampleFactor = 6, splineSteps = 4, dpEps = 0.00003, contourPalette = "Classic Brown" } = opts;
-  const { rows, cols, bbox, min: minE, max: maxE } = elevGrid;
-  const smoothed = smoothPasses > 0 ? gaussianSmooth(elevGrid.grid, rows, cols, smoothPasses) : elevGrid.grid;
-  const factor = Math.max(1, Math.min(8, upsampleFactor));
-  const { grid: hiGrid, rows: hiRows, cols: hiCols } = factor > 1 ? upsampleGrid(smoothed, rows, cols, factor) : { grid: smoothed, rows, cols };
-  const levels = []; for (let lv = Math.ceil(minE / interval) * interval; lv <= maxE + 1e-6; lv += interval) levels.push(parseFloat(lv.toFixed(6)));
-  if (!levels.length) return { primitives: [], entities: [], count: 0, dispose: () => { } };
-  const palette = CONTOUR_PALETTES[contourPalette], levelRange = maxE - minE;
-  function getLevelCesiumColor(lv, isMajor) {
-    if (!palette) { const hex = isMajor ? majorColor : minorColor; const c = Cesium.Color.fromCssColorString(hex); return { line: c.withAlpha(isMajor ? opacity : opacity * 0.72), label: c }; }
-    const t = levelRange > 0 ? (lv - minE) / levelRange : 0.5; const [r, g, b] = interpolatePalette(t, palette);
-    return { line: new Cesium.Color(r / 255, g / 255, b / 255, isMajor ? opacity : opacity * 0.72), label: new Cesium.Color(r / 255, g / 255, b / 255, 1.0) };
-  }
-  const rawSegs = marchingSquares(hiGrid, hiRows, hiCols, levels), prims = [], allEnts = [], minorEnts = [], hasClip = poly && poly.length >= 3;
-  levels.forEach(lv => {
-    const roundedLv = Math.round(lv), isMajor = majorEvery > 0 && (roundedLv % majorEvery === 0 || Math.abs(roundedLv % majorEvery - majorEvery) < 0.5);
-    const lineWidth = isMajor ? 2.5 : 1.2; const { line: cesLineColor, label: cesLabelColor } = getLevelCesiumColor(lv, isMajor);
-    stitchSegments(rawSegs[lv] || []).forEach(chain => {
-      if (chain.length < 2) return; const latlngs = chain.map(([rF, cF]) => gridToLatLng(rF, cF, bbox, hiRows, hiCols));
-      const subs = hasClip ? clipChain(latlngs, poly) : [latlngs];
-      subs.forEach(sub => { if (!sub || sub.length < 2) return; renderChainQGIS(Cesium, viewer, sub, lv, isMajor, labelGapMeters, labelSpacingMeters, minChainMeters, cesLineColor, cesLabelColor, lineWidth, prims, allEnts, minorEnts, splineSteps, dpEps); });
-    });
-  });
-  const labelEnts = allEnts.filter(e => e.label);
-  function updateDepthTest() { try { const dist = viewer.scene.mode === Cesium.SceneMode.SCENE3D ? Number.POSITIVE_INFINITY : 0; labelEnts.forEach(e => { try { if (!e.isDestroyed?.() && e.label) e.label.disableDepthTestDistance = dist; } catch (_) { } }); } catch (_) { } }
-  let camListener = null, morphListener = null;
-  try { camListener = viewer.camera.changed.addEventListener(() => { try { const alt = viewer.camera.positionCartographic?.height ?? 99999; const show = alt < 18000; minorEnts.forEach(e => { try { if (!e.isDestroyed?.()) e.show = show; } catch (_) { } }); } catch (_) { } }); } catch (_) { }
-  try { morphListener = viewer.scene.morphComplete.addEventListener(updateDepthTest); } catch (_) { }
-  updateDepthTest();
-  function dispose() { try { if (camListener) viewer.camera.changed.removeEventListener(camListener); } catch (_) { } try { if (morphListener) viewer.scene.morphComplete.removeEventListener(morphListener); } catch (_) { } }
-  return { primitives: prims, entities: allEnts, count: prims.length + allEnts.filter(e => e.polyline).length, dispose };
-}
-function renderShapefileContours(Cesium, viewer, geoJson, opts) {
-  const { majorEvery = 100, minorColor = "#966F33", majorColor = "#6B3D00", opacity = 0.88, labelSpacing = 800, labelGapMeters = 60, minChainMeters = 60, splineSteps = 4, dpEps = 0.00003, poly = null, contourPalette = "Classic Brown" } = opts;
-  const prims = [], allEnts = [], minorEnts = [], hasClip = poly && poly.length >= 3;
-  const elevs = geoJson.features.map(f => f.properties.ELEV ?? 0), minE = Math.min(...elevs), maxE = Math.max(...elevs), levelRange = maxE - minE;
-  const palette = CONTOUR_PALETTES[contourPalette];
-  function getLevelCesiumColor(lv, isMajor) {
-    if (!palette) { const hex = isMajor ? majorColor : minorColor; const c = Cesium.Color.fromCssColorString(hex); return { line: c.withAlpha(isMajor ? opacity : opacity * 0.72), label: c }; }
-    const t = levelRange > 0 ? (lv - minE) / levelRange : 0.5; const [r, g, b] = interpolatePalette(t, palette);
-    return { line: new Cesium.Color(r / 255, g / 255, b / 255, isMajor ? opacity : opacity * 0.72), label: new Cesium.Color(r / 255, g / 255, b / 255, 1.0) };
-  }
-  for (const feat of geoJson.features) {
-    const elev = feat.properties.ELEV ?? feat.properties.elevation_m ?? 0, isMajor = majorEvery > 0 && Math.round(elev) % majorEvery === 0;
-    const latlngs = feat.geometry.coordinates.map(([lng, lat]) => [lat, lng]), lineWidth = isMajor ? 2.5 : 1.2;
-    const { line: cesLineColor, label: cesLabelColor } = getLevelCesiumColor(elev, isMajor);
-    const subs = hasClip ? clipChain(latlngs, poly) : [latlngs];
-    subs.forEach(sub => { if (sub.length >= 2) renderChainQGIS(Cesium, viewer, sub, elev, isMajor, labelGapMeters, labelSpacing, minChainMeters, cesLineColor, cesLabelColor, lineWidth, prims, allEnts, minorEnts, splineSteps, dpEps); });
-  }
-  const labelEnts = allEnts.filter(e => e.label);
-  function updateDepthTest() { try { const dist = viewer.scene.mode === Cesium.SceneMode.SCENE3D ? Number.POSITIVE_INFINITY : 0; labelEnts.forEach(e => { try { if (!e.isDestroyed?.() && e.label) e.label.disableDepthTestDistance = dist; } catch (_) { } }); } catch (_) { } }
-  let camListener = null, morphListener = null;
-  try { camListener = viewer.camera.changed.addEventListener(() => { try { const alt = viewer.camera.positionCartographic?.height ?? 99999; const show = alt < 18000; minorEnts.forEach(e => { try { if (!e.isDestroyed?.()) e.show = show; } catch (_) { } }); } catch (_) { } }); } catch (_) { }
-  try { morphListener = viewer.scene.morphComplete.addEventListener(updateDepthTest); } catch (_) { }
-  updateDepthTest();
-  function dispose() { try { if (camListener) viewer.camera.changed.removeEventListener(camListener); } catch (_) { } try { if (morphListener) viewer.scene.morphComplete.removeEventListener(morphListener); } catch (_) { } }
-  return { primitives: prims, entities: allEnts, count: prims.length + allEnts.filter(e => e.polyline).length, dispose };
-}
-
-async function renderDEM(Cesium, viewer, elevGrid, opts, poly = null, layerRef = null) {
-  const { colorRamp = DEFAULT_RAMP, opacity = 0.85, hillshadeStrength = 0.65, hillshadeMode = "multi", stretchMode = "local" } = opts;
-  if (layerRef?.current) { try { viewer.imageryLayers.remove(layerRef.current, true); } catch (_) { } layerRef.current = null; }
-  const { grid, rows, cols, bbox, min: minE, max: maxE } = elevGrid;
-  const { stretchMin, stretchMax } = computeStretchRange(grid, rows, cols, minE, maxE, stretchMode, 2);
-  const stretchRange = stretchMax - stretchMin;
-  const OS = 12, W = Math.min((cols - 1) * OS + 1, 4096) | 0, H = Math.min((rows - 1) * OS + 1, 4096) | 0;
-  const cv = document.createElement("canvas"); cv.width = W; cv.height = H;
-  const ctx = cv.getContext("2d"), imgData = ctx.createImageData(W, H), px = imgData.data;
-  const latSpan = bbox.maxLat - bbox.minLat, lngSpan = bbox.maxLng - bbox.minLng, midLat = (bbox.minLat + bbox.maxLat) / 2;
-  const cellM = Math.max(1, ((rows > 1 ? latSpan / (rows - 1) * 111320 : 100) + (cols > 1 ? lngSpan / (cols - 1) * 111320 * Math.cos(midLat * Math.PI / 180) : 100)) / 2);
-  const hsGrid = (hillshadeStrength > 0 && hillshadeMode !== "off") ? Array.from({ length: rows }, (_, r) => Float32Array.from({ length: cols }, (_, c) => hillshadeMode === "multi" ? computeMultiHS(grid, rows, cols, r, c, cellM) : computeHS(grid, rows, cols, r, c, cellM))) : null;
-  const hasClip = poly && poly.length >= 3;
-  const alphaMask = hasClip ? buildAlphaMask(W, H, poly, bbox, rows, cols) : null;
-  const CHUNK = 40000, totalPx = W * H;
-  for (let start = 0; start < totalPx; start += CHUNK) {
-    if (start > 0) await new Promise(r => setTimeout(r, 0));
-    const end = Math.min(start + CHUNK, totalPx);
-    for (let idx = start; idx < end; idx++) {
-      const qx = idx % W, py = Math.floor(idx / W), i4 = idx * 4;
-      const rF = H > 1 ? py * (rows - 1) / (H - 1) : 0, cF = W > 1 ? qx * (cols - 1) / (W - 1) : 0;
-      const ea = hasClip ? sampleAlphaMask(alphaMask, W, H, qx, py) : 1;
-      if (ea <= 0.01) { px[i4 + 3] = 0; continue; }
-      const elev = bicubicSample(grid, rows, cols, rF, cF); if (isNaN(elev)) { px[i4 + 3] = 0; continue; }
-      const t = stretchRange > 0.5 ? Math.max(0, Math.min(1, (elev - stretchMin) / stretchRange)) : 0.5;
-      let [r, g, b] = elevToRGB(t, colorRamp);
-      if (hsGrid) {
-        const ri = Math.max(0, Math.min(rows - 1, Math.round(rF))), ci = Math.max(0, Math.min(cols - 1, Math.round(cF)));
-        const hs = hsGrid[ri][ci], str = Math.min(hillshadeStrength, 0.85);
-        const f = (1.0 - str * 0.5) + hs * str * 0.5;
-        r = Math.max(0, Math.min(255, Math.round(r * f)));
-        g = Math.max(0, Math.min(255, Math.round(g * f)));
-        b = Math.max(0, Math.min(255, Math.round(b * f)));
-      }
-      px[i4] = r; px[i4 + 1] = g; px[i4 + 2] = b; px[i4 + 3] = Math.round(opacity * ea * 255);
-    }
-  }
-  ctx.putImageData(imgData, 0, 0);
-  const imageUrl = await new Promise(res => { try { cv.toBlob(blob => blob ? res(URL.createObjectURL(blob)) : res(cv.toDataURL()), "image/png"); } catch { res(cv.toDataURL()); } });
-  const rect = new Cesium.Rectangle(Cesium.Math.toRadians(bbox.minLng), Cesium.Math.toRadians(bbox.minLat), Cesium.Math.toRadians(bbox.maxLng), Cesium.Math.toRadians(bbox.maxLat));
-  let provider;
-  try { provider = new Cesium.SingleTileImageryProvider({ url: imageUrl, rectangle: rect, tileWidth: W, tileHeight: H }); }
-  catch (_) { try { provider = new Cesium.SingleTileImageryProvider(imageUrl, rect); } catch (e) { console.error(e); return null; } }
-  const layer = viewer.imageryLayers.addImageryProvider(provider); layer.alpha = opacity;
-  try { let idx = viewer.imageryLayers.indexOf?.(layer) ?? viewer.imageryLayers.length - 1; for (let i = idx; i > 1; i--) viewer.imageryLayers.lower(layer); } catch (_) { }
-  if (layerRef) layerRef.current = layer; return layer;
-}
-
-function bboxKey(b) { return b ? `${b.minLat.toFixed(6)},${b.maxLat.toFixed(6)},${b.minLng.toFixed(6)},${b.maxLng.toFixed(6)}` : "null"; }
-
 /* ═══════════════════════════════════════════════════════════════════════
-   MAIN COMPONENT — v35 + Universal KML Parser + Fixed Shapefile Export
+   MAIN COMPONENT — v37 + Label Stability Fixes (no overlap, no floating)
 ═══════════════════════════════════════════════════════════════════════ */
 export default function CesiumDEMContourPanel({ viewer, Cesium, bbox, kmlPolygon = null, visible, onClose, kmlName = "area" }) {
   const [tab, setTab] = useState("dem");
@@ -1217,19 +1750,19 @@ export default function CesiumDEMContourPanel({ viewer, Cesium, bbox, kmlPolygon
   const [rampAutoSelected, setRampAutoSelected] = useState(false);
   const [stretchAutoSelected, setStretchAutoSelected] = useState(false);
 
-  const [contourInterval, setContourInterval] = useState(5);
-  const [majorEvery, setMajorEvery] = useState(25);
-  const [minorColor, setMinorColor] = useState("#966F33");
-  const [majorColor, setMajorColor] = useState("#6B3D00");
+  const [contourInterval, setContourInterval] = useState(1);
+  const [majorEvery, setMajorEvery] = useState(5);
+  const [minorColor, setMinorColor] = useState("#8B7355");
+  const [majorColor, setMajorColor] = useState("#4A3520");
   const [hasContour, setHasContour] = useState(false);
   const [contourVisible, setContourVisible] = useState(true);
   const [contourCount, setContourCount] = useState(0);
-  const [labelSpacing, setLabelSpacing] = useState(500);
-  const [labelGap, setLabelGap] = useState(50);
-  const [smoothPasses, setSmoothPasses] = useState(1);
-  const [upsampleFactor, setUpsampleFactor] = useState(6);
-  const [splineSteps, setSplineSteps] = useState(4);
-  const [minChainM, setMinChainM] = useState(40);
+  const [labelSpacing, setLabelSpacing] = useState(100);
+  const [labelGap, setLabelGap] = useState(40);
+  const [smoothPasses, setSmoothPasses] = useState(2);
+  const [upsampleFactor, setUpsampleFactor] = useState(4);
+  const [splineSteps, setSplineSteps] = useState(6);
+  const [minChainM, setMinChainM] = useState(60);
   const [contourPalette, setContourPalette] = useState("QGIS Rainbow");
   const [shpFile, setShpFile] = useState(null);
   const [dbfFile, setDbfFile] = useState(null);
@@ -1238,13 +1771,13 @@ export default function CesiumDEMContourPanel({ viewer, Cesium, bbox, kmlPolygon
   const [shpContourVisible, setShpContourVisible] = useState(true);
   const [shpContourCount, setShpContourCount] = useState(0);
   const [shpMajorEvery, setShpMajorEvery] = useState(100);
-  const [shpMinorColor, setShpMinorColor] = useState("#966F33");
-  const [shpMajorColor, setShpMajorColor] = useState("#6B3D00");
-  const [shpLabelSpacing, setShpLabelSpacing] = useState(800);
-  const [shpLabelGap, setShpLabelGap] = useState(60);
+  const [shpMinorColor, setShpMinorColor] = useState("#8B7355");
+  const [shpMajorColor, setShpMajorColor] = useState("#4A3520");
+  const [shpLabelSpacing, setShpLabelSpacing] = useState(200);
+  const [shpLabelGap, setShpLabelGap] = useState(50);
   const [shpPalette, setShpPalette] = useState("QGIS Rainbow");
 
-  // ── NEW: inline KML loader state ─────────────────────────────────────
+  // ── inline KML loader state ─────────────────────────────────────
   const [kmlLoadStatus, setKmlLoadStatus] = useState("");
   const [kmlLoadedName, setKmlLoadedName] = useState("");
 
@@ -1259,7 +1792,7 @@ export default function CesiumDEMContourPanel({ viewer, Cesium, bbox, kmlPolygon
   const prevBboxKeyRef = useRef(null);
   const prevPolySigRef = useRef(null);
 
-  // ── NEW: internal KML polygon state (overrides prop if user loads inline)
+  // ── internal KML polygon state (overrides prop if user loads inline)
   const [internalKmlPolygon, setInternalKmlPolygon] = useState(null);
   const [internalBbox, setInternalBbox] = useState(null);
 
@@ -1326,7 +1859,7 @@ export default function CesiumDEMContourPanel({ viewer, Cesium, bbox, kmlPolygon
 
   const msg = (m, t = "info") => { setStatus(m); setStatusType(t); };
 
-  /* ── NEW: inline KML file loader ──────────────────────────────────── */
+  /* ── inline KML file loader ──────────────────────────────────── */
   const handleKMLFileLoad = useCallback(async (file) => {
     if (!file) return;
     setKmlLoadStatus("Parsing KML…");
@@ -1406,9 +1939,9 @@ export default function CesiumDEMContourPanel({ viewer, Cesium, bbox, kmlPolygon
     const suggestedRamp = autoSuggestRamp(range);
     const suggestedStretch = autoSuggestStretch(range);
     const suggestedHS = range < 200 ? 0.75 : range < 400 ? 0.65 : range < 700 ? 0.50 : 0.35;
-    const suggestedInterval = range < 30 ? 1 : range < 80 ? 2 : range < 150 ? 5 : range < 300 ? 5 : range < 600 ? 10 : 20;
+    const suggestedInterval = range < 30 ? 1 : range < 80 ? 2 : range < 150 ? 2 : range < 300 ? 5 : range < 600 ? 5 : 10;
     const suggestedMajorEvery = suggestedInterval * 5;
-    const suggestedSmooth = range < 300 ? 1 : 2;
+    const suggestedSmooth = range < 300 ? 2 : 3;
     const suggestedUpsample = range < 300 ? 6 : 4;
     setColorRamp(suggestedRamp);
     setStretchMode(suggestedStretch);
@@ -1448,11 +1981,26 @@ export default function CesiumDEMContourPanel({ viewer, Cesium, bbox, kmlPolygon
     const eg = elevGridRef.current || elevGrid; if (!eg || !viewer || !Cesium) { msg("Fetch elevation first.", "warn"); return; }
     msg("Waiting for terrain to load…", "info");
     await waitForGlobeReady(viewer);
-    msg("Generating contours…", "info"); clearContourLayers();
+    msg("Generating contours with professional labels…", "info");
+    clearContourLayers();
     const clip = getClipPoly(eg, polyRef.current);
-    const result = renderContours(Cesium, viewer, eg, { interval: contourInterval, majorEvery, minorColor, majorColor, opacity: 0.88, labelSpacingMeters: labelSpacing, labelGapMeters: labelGap, minChainMeters: minChainM, smoothPasses, upsampleFactor, splineSteps, dpEps: 0.00003, contourPalette }, clip);
+    const result = renderContours(Cesium, viewer, eg, { 
+      interval: contourInterval, 
+      majorEvery, 
+      minorColor, 
+      majorColor, 
+      opacity: 0.88, 
+      labelSpacingMeters: labelSpacing, 
+      labelGapMeters: labelGap, 
+      minChainMeters: minChainM, 
+      smoothPasses, 
+      upsampleFactor, 
+      splineSteps, 
+      dpEps: 0.00002, 
+      contourPalette 
+    }, clip);
     contourRef.current = result; setHasContour(true); setContourVisible(true); setContourCount(result.count);
-    msg(result.count > 0 ? `✓ ${result.count} contour lines · ${contourInterval}m interval` : "0 contours — try smaller interval or Force Refetch.", result.count > 0 ? "ok" : "warn");
+    msg(result.count > 0 ? `✓ ${result.count} contour lines · ${contourInterval}m interval · ${contourPalette}` : "0 contours — try smaller interval or Force Refetch.", result.count > 0 ? "ok" : "warn");
   }, [elevGrid, viewer, Cesium, contourInterval, majorEvery, minorColor, majorColor, labelSpacing, labelGap, smoothPasses, upsampleFactor, splineSteps, minChainM, contourPalette]);
 
   const doParseShapefile = useCallback(async () => {
@@ -1473,7 +2021,19 @@ export default function CesiumDEMContourPanel({ viewer, Cesium, bbox, kmlPolygon
     await waitForGlobeReady(viewer);
     msg("Rendering shapefile contours…", "info"); clearShpContourLayers();
     const clip = isValidPolygon(polyRef.current) ? polyRef.current : null;
-    const result = renderShapefileContours(Cesium, viewer, shpGeoJson, { majorEvery: shpMajorEvery, minorColor: shpMinorColor, majorColor: shpMajorColor, opacity: 0.88, labelSpacing: shpLabelSpacing, labelGapMeters: shpLabelGap, minChainMeters: 60, splineSteps: 4, dpEps: 0.00003, poly: clip, contourPalette: shpPalette });
+    const result = renderShapefileContours(Cesium, viewer, shpGeoJson, { 
+      majorEvery: shpMajorEvery, 
+      minorColor: shpMinorColor, 
+      majorColor: shpMajorColor, 
+      opacity: 0.88, 
+      labelSpacing: shpLabelSpacing, 
+      labelGapMeters: shpLabelGap, 
+      minChainMeters: 60, 
+      splineSteps: 4, 
+      dpEps: 0.00002, 
+      poly: clip, 
+      contourPalette: shpPalette 
+    });
     shpContourRef.current = result; setHasShpContour(true); setShpContourVisible(true); setShpContourCount(result.count);
     msg(`✓ ${result.count} shapefile contour lines`, "ok");
     try { const coords = shpGeoJson.features.flatMap(f => f.geometry.coordinates); const lngs = coords.map(c => c[0]), lats = coords.map(c => c[1]); viewer.camera.flyTo({ destination: Cesium.Rectangle.fromDegrees(Math.min(...lngs) - .005, Math.min(...lats) - .005, Math.max(...lngs) + .005, Math.max(...lats) + .005), duration: 1.5 }); } catch (_) { }
@@ -1485,19 +2045,25 @@ export default function CesiumDEMContourPanel({ viewer, Cesium, bbox, kmlPolygon
 
   function exportTIFF() { const eg = elevGridRef.current || elevGrid; if (!eg) { msg("No data.", "warn"); return; } try { dlBlob(buildGeoTIFF(eg), effectiveKmlName.replace(/\.[^.]+$/, "") + "_dem.tif", "image/tiff"); msg("GeoTIFF exported.", "ok"); } catch (e) { msg("Export error: " + e.message, "err"); } }
   function exportCSV() { const eg = elevGridRef.current || elevGrid; if (!eg) { msg("No data.", "warn"); return; } const { grid, rows, cols, bbox } = eg; const lines = ["lat,lng,elevation_m,elevation_ft"]; for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) { const [lat, lng] = gridToLatLng(r, c, bbox, rows, cols); const e = grid[r][c]; lines.push(`${lat.toFixed(7)},${lng.toFixed(7)},${isNaN(e) ? "" : e.toFixed(2)},${isNaN(e) ? "" : (e * 3.28084).toFixed(2)}`); } dlBlob(new TextEncoder().encode(lines.join("\n")), effectiveKmlName.replace(/\.[^.]+$/, "") + "_dem.csv", "text/csv"); msg("CSV exported.", "ok"); }
-  function exportGeoJSON() { const eg = elevGridRef.current || elevGrid; if (!eg) { msg("No data.", "warn"); return; } const clip = getClipPoly(eg, polyRef.current); const gj = buildContourGeoJSON(eg, contourInterval, majorEvery, clip); dlBlob(new TextEncoder().encode(JSON.stringify(gj, null, 2)), effectiveKmlName.replace(/\.[^.]+$/, "") + "_contours.geojson", "application/json"); msg("GeoJSON exported.", "ok"); }
+  
+  function exportGeoJSON() { 
+    const eg = elevGridRef.current || elevGrid; 
+    if (!eg) { msg("No data.", "warn"); return; } 
+    const clip = getClipPoly(eg, polyRef.current); 
+    const gj = buildContourGeoJSON(eg, contourInterval, majorEvery, clip); 
+    dlBlob(new TextEncoder().encode(JSON.stringify(gj, null, 2)), effectiveKmlName.replace(/\.[^.]+$/, "") + "_contours.geojson", "application/json"); 
+    msg("GeoJSON exported.", "ok"); 
+  }
+  
   function exportShpGeoJSON() { if (!shpGeoJson) { msg("No shapefile data.", "warn"); return; } dlBlob(new TextEncoder().encode(JSON.stringify(shpGeoJson, null, 2)), effectiveKmlName.replace(/\.[^.]+$/, "") + "_shp_contours.geojson", "application/json"); msg("Shapefile GeoJSON exported.", "ok"); }
   
-  // ── FIXED: Shapefile Export using new functions ──
   function exportSHP() {
     const eg = elevGridRef.current || elevGrid; 
     if (!eg) { msg("No elevation data.", "warn"); return; }
     
-    // Show progress
     msg("Building contour Shapefile…", "info");
     
     try {
-      // Build contour GeoJSON
       const clip = getClipPoly(eg, polyRef.current);
       const gj = buildContourGeoJSON(eg, contourInterval, majorEvery, clip);
       
@@ -1506,20 +2072,14 @@ export default function CesiumDEMContourPanel({ viewer, Cesium, bbox, kmlPolygon
         return;
       }
       
-      // Use the fixed export function
       const baseName = effectiveKmlName.replace(/\.[^.]+$/, "") + "_contours_" + contourInterval + "m";
-      
-      // Show progress
       msg(`Exporting ${gj.features.length} contours as Shapefile…`, "info");
       
-      // Call the fixed export function
       exportContourShapefile(gj.features, baseName, (progress) => {
-        // Update status with progress
         if (progress < 100) {
           msg(`Building Shapefile… ${progress}%`, "info");
         }
       }).then((zipBlob) => {
-        // Download the ZIP
         const url = URL.createObjectURL(zipBlob);
         const link = document.createElement("a");
         link.href = url;
@@ -1528,7 +2088,6 @@ export default function CesiumDEMContourPanel({ viewer, Cesium, bbox, kmlPolygon
         link.click();
         document.body.removeChild(link);
         URL.revokeObjectURL(url);
-        
         msg(`✓ Shapefile ZIP exported (${gj.features.length} contours).`, "ok");
       }).catch((err) => {
         console.error("Shapefile export failed:", err);
@@ -1561,7 +2120,7 @@ export default function CesiumDEMContourPanel({ viewer, Cesium, bbox, kmlPolygon
   const INTERVALS = [1, 2, 5, 10, 20, 25, 50, 100], MAJORS = [5, 10, 25, 50, 100, 200], SHP_MAJORS = [20, 40, 50, 100, 200];
   const sm = ({ ok: { color: C.green, icon: "✓" }, err: { color: C.red, icon: "✕" }, warn: { color: C.amber, icon: "⚠" }, info: { color: C.blue, icon: "›" } })[statusType] || { color: C.blue, icon: "›" };
   const rampCSS = n => (COLOR_RAMPS[n] || COLOR_RAMPS[DEFAULT_RAMP]).map(([t, [r, g, b]]) => `rgb(${r},${g},${b}) ${Math.round(t * 100)}%`).join(",");
-  const paletteCSS = n => { const p = CONTOUR_PALETTES[n]; if (!p) return "linear-gradient(to right,#966F33,#6B3D00)"; return `linear-gradient(to right,${p.map(([t, [r, g, b]]) => `rgb(${r},${g},${b}) ${Math.round(t * 100)}%`).join(",")})`; };
+  const paletteCSS = n => { const p = CONTOUR_PALETTES[n]; if (!p) return "linear-gradient(to right,#8B7355,#4A3520)"; return `linear-gradient(to right,${p.map(([t, [r, g, b]]) => `rgb(${r},${g},${b}) ${Math.round(t * 100)}%`).join(",")})`; };
   const Btn = ({ color = C.blue, children, onClick, disabled, fullWidth = true }) => (
     <button onClick={onClick} disabled={disabled} style={{ width: fullWidth ? "100%" : "auto", padding: "9px 14px", borderRadius: 8, cursor: disabled ? "not-allowed" : "pointer", background: `${color}18`, border: `1px solid ${color}38`, color, fontSize: 11.5, fontWeight: 700, fontFamily: F.ui, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, opacity: disabled ? 0.35 : 1, transition: "all .12s" }}>{children}</button>
   );
@@ -1585,7 +2144,7 @@ export default function CesiumDEMContourPanel({ viewer, Cesium, bbox, kmlPolygon
           <div style={{ width: 34, height: 34, borderRadius: 9, background: "linear-gradient(135deg,rgba(59,130,246,.25),rgba(34,211,200,.25))", border: "1px solid rgba(59,130,246,.3)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 17, flexShrink: 0 }}>🏔</div>
           <div style={{ flex: 1 }}>
             <div style={{ color: C.tx, fontWeight: 700, fontSize: 13 }}>3D DEM & Contours</div>
-            <div style={{ color: C.dim, fontSize: 9, fontFamily: F.mono, marginTop: 1 }}>v35 · universal KML · local-stretch · fixed label-height</div>
+            <div style={{ color: C.dim, fontSize: 9, fontFamily: F.mono, marginTop: 1 }}>v37 · Stable labels · No overlap · No floating</div>
           </div>
           <button onClick={onClose} style={{ background: "none", border: "none", color: C.dim, cursor: "pointer", fontSize: 20, padding: 0, lineHeight: 1 }}>×</button>
         </div>
@@ -1636,7 +2195,7 @@ export default function CesiumDEMContourPanel({ viewer, Cesium, bbox, kmlPolygon
         {/* ════════════════════ DEM TAB ════════════════════ */}
         {tab === "dem" && <>
           <div style={{ padding: "7px 10px", borderRadius: 8, background: "rgba(74,222,128,.05)", border: "1px solid rgba(74,222,128,.2)", color: C.green, fontSize: 9, lineHeight: 1.7 }}>
-            <strong>✅ v35:</strong> Fixed contour labels misplacing on a newly-loaded KML (labels now use the contour's own elevation, not Cesium terrain) · Universal KML parser · Local stretch for flat terrain · Mine/Open Pit auto-ramp · 65% hillshade
+            <strong>✅ v37:</strong> Labels locked to terrain height (no floating) · Global collision detection across all elevation levels (no overlap) · Altitude-aware depth test
           </div>
 
           {isLowRelief && (
@@ -1755,7 +2314,7 @@ export default function CesiumDEMContourPanel({ viewer, Cesium, bbox, kmlPolygon
         {/* ════════════════════ CONTOUR TAB ════════════════════ */}
         {tab === "contour" && <>
           <div style={{ padding: "8px 10px", borderRadius: 8, background: "rgba(34,211,200,.05)", border: "1px solid rgba(34,211,200,.18)", color: C.cyan, fontSize: 9.5, lineHeight: 1.6 }}>
-            ⚡ v35 · Smooth=1, Upsample=6 default · Better contours on flat mining terrain
+            ⚡ v37 · Terrain-locked labels · Global collision detection (all elevation levels share spacing) · Altitude-aware depth test
           </div>
           {!elevGrid && <div style={{ padding: "10px", borderRadius: 8, background: "rgba(245,166,35,.07)", border: "1px solid rgba(245,166,35,.2)", color: C.amber, fontSize: 10.5, textAlign: "center" }}>⚠️ Fetch elevation in DEM tab first</div>}
 
@@ -1782,29 +2341,25 @@ export default function CesiumDEMContourPanel({ viewer, Cesium, bbox, kmlPolygon
 
           <div style={{ background: C.sur, border: `1px solid ${C.bor}`, borderRadius: 10, padding: "10px 12px" }}>
             <div style={{ color: C.dim, fontSize: 9, fontWeight: 700, letterSpacing: ".1em", marginBottom: 4 }}>GRID UPSAMPLE · ×{upsampleFactor}</div>
-            <div style={{ fontSize: 8, color: C.cyan, marginBottom: 5, fontFamily: F.mono, opacity: .8 }}>★ Higher = finer contours on flat terrain (×6 recommended)</div>
+            <div style={{ fontSize: 8, color: C.cyan, marginBottom: 5, fontFamily: F.mono, opacity: .8 }}>★ Higher = finer contours (×4-6 recommended)</div>
             <div style={{ display: "flex", gap: 4 }}>{[1, 2, 3, 4, 6, 8].map(v => <button key={v} onClick={() => setUpsampleFactor(v)} style={{ flex: 1, padding: "6px 3px", borderRadius: 7, border: upsampleFactor === v ? `1px solid ${C.cyan}44` : `1px solid ${C.bor}`, background: upsampleFactor === v ? "rgba(34,211,200,.12)" : C.sur, color: upsampleFactor === v ? C.cyan : C.dim, fontSize: 10, fontWeight: 700, cursor: "pointer", fontFamily: F.mono }}>×{v}</button>)}</div>
           </div>
 
           <div style={{ background: C.sur, border: `1px solid ${C.bor}`, borderRadius: 10, padding: "10px 12px" }}>
-            <div style={{ color: C.dim, fontSize: 9, fontWeight: 700, letterSpacing: ".1em", marginBottom: 4 }}>SPLINE STEPS · {splineSteps}</div>
-            <div style={{ display: "flex", gap: 4 }}>{[1, 2, 4, 6, 8].map(v => <button key={v} onClick={() => setSplineSteps(v)} style={{ flex: 1, padding: "6px 3px", borderRadius: 7, border: splineSteps === v ? `1px solid ${C.violet}44` : `1px solid ${C.bor}`, background: splineSteps === v ? "rgba(184,156,248,.12)" : C.sur, color: splineSteps === v ? C.violet : C.dim, fontSize: 10, fontWeight: 700, cursor: "pointer", fontFamily: F.mono }}>{v}</button>)}</div>
-          </div>
-
-          <div style={{ background: C.sur, border: `1px solid ${C.bor}`, borderRadius: 10, padding: "10px 12px" }}>
-            <div style={{ color: C.dim, fontSize: 9, fontWeight: 700, letterSpacing: ".1em", marginBottom: 4 }}>SMOOTH PASSES · {smoothPasses}</div>
-            <div style={{ fontSize: 8, color: C.amber, marginBottom: 5, fontFamily: F.mono, opacity: .8 }}>★ Use 0-1 for flat terrain — over-smoothing erases detail</div>
+            <div style={{ color: C.dim, fontSize: 9, fontWeight: 700, letterSpacing: ".1em", marginBottom: 4 }}>SMOOTHING · Chaikin passes</div>
+            <div style={{ fontSize: 8, color: C.amber, marginBottom: 5, fontFamily: F.mono, opacity: .8 }}>★ 2 passes for professional QGIS-style smoothness</div>
             <div style={{ display: "flex", gap: 4 }}>{[0, 1, 2, 3, 4].map(v => <button key={v} onClick={() => setSmoothPasses(v)} style={{ flex: 1, padding: "6px 3px", borderRadius: 7, border: smoothPasses === v ? `1px solid ${C.amber}44` : `1px solid ${C.bor}`, background: smoothPasses === v ? "rgba(245,166,35,.12)" : C.sur, color: smoothPasses === v ? C.amber : C.dim, fontSize: 10, fontWeight: 700, cursor: "pointer", fontFamily: F.mono }}>{v === 0 ? "Off" : v}</button>)}</div>
           </div>
 
           <div style={{ background: C.sur, border: `1px solid ${C.bor}`, borderRadius: 10, padding: "10px 12px" }}>
             <div style={{ color: C.dim, fontSize: 9, fontWeight: 700, letterSpacing: ".1em", marginBottom: 7 }}>CONTOUR INTERVAL</div>
-            <div style={{ fontSize: 8, color: C.cyan, marginBottom: 5, fontFamily: F.mono, opacity: .8 }}>★ Auto-set: {contourInterval}m</div>
+            <div style={{ fontSize: 8, color: C.cyan, marginBottom: 5, fontFamily: F.mono, opacity: .8 }}>★ 1m for detailed geological maps</div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>{INTERVALS.map(v => <button key={v} onClick={() => setContourInterval(v)} style={{ flex: "1 0 auto", minWidth: 32, padding: "6px 3px", borderRadius: 7, border: contourInterval === v ? `1px solid ${C.cyan}44` : `1px solid ${C.bor}`, background: contourInterval === v ? "rgba(34,211,200,.12)" : C.sur, color: contourInterval === v ? C.cyan : C.dim, fontSize: 10, fontWeight: 700, cursor: "pointer", fontFamily: F.mono, textAlign: "center" }}>{v}m</button>)}</div>
           </div>
 
           <div style={{ background: C.sur, border: `1px solid ${C.bor}`, borderRadius: 10, padding: "10px 12px" }}>
             <div style={{ color: C.dim, fontSize: 9, fontWeight: 700, letterSpacing: ".1em", marginBottom: 7 }}>MAJOR INDEX EVERY</div>
+            <div style={{ fontSize: 8, color: C.amber, marginBottom: 5, fontFamily: F.mono, opacity: .8 }}>★ Every 5th contour (5m for 1m interval)</div>
             <div style={{ display: "flex", gap: 4 }}>{MAJORS.map(v => <button key={v} onClick={() => setMajorEvery(v)} style={{ flex: 1, padding: "6px 3px", borderRadius: 7, border: majorEvery === v ? `1px solid ${C.amber}44` : `1px solid ${C.bor}`, background: majorEvery === v ? "rgba(245,166,35,.12)" : C.sur, color: majorEvery === v ? C.amber : C.dim, fontSize: 10, fontWeight: 700, cursor: "pointer", fontFamily: F.mono }}>{v}m</button>)}</div>
           </div>
 
@@ -1815,12 +2370,14 @@ export default function CesiumDEMContourPanel({ viewer, Cesium, bbox, kmlPolygon
 
           <div style={{ background: C.sur, border: `1px solid ${C.bor}`, borderRadius: 10, padding: "10px 12px" }}>
             <div style={{ color: C.dim, fontSize: 9, fontWeight: 700, letterSpacing: ".1em", marginBottom: 4 }}>LABEL SPACING · {labelSpacing}m</div>
-            <input type="range" min={200} max={3000} step={100} value={labelSpacing} onChange={e => setLabelSpacing(+e.target.value)} style={{ width: "100%", accentColor: C.blue }} />
+            <div style={{ fontSize: 8, color: C.cyan, marginBottom: 5, fontFamily: F.mono, opacity: .8 }}>★ 100m = multiple labels per contour</div>
+            <input type="range" min={50} max={500} step={10} value={labelSpacing} onChange={e => setLabelSpacing(+e.target.value)} style={{ width: "100%", accentColor: C.blue }} />
           </div>
 
           <div style={{ background: C.sur, border: `1px solid ${C.bor}`, borderRadius: 10, padding: "10px 12px" }}>
             <div style={{ color: C.dim, fontSize: 9, fontWeight: 700, letterSpacing: ".1em", marginBottom: 4 }}>LABEL GAP · {labelGap}m</div>
-            <input type="range" min={20} max={200} step={10} value={labelGap} onChange={e => setLabelGap(+e.target.value)} style={{ width: "100%", accentColor: C.violet }} />
+            <div style={{ fontSize: 8, color: C.violet, marginBottom: 5, fontFamily: F.mono, opacity: .8 }}>★ Minimum distance between labels — applies GLOBALLY across all elevation lines now</div>
+            <input type="range" min={20} max={100} step={5} value={labelGap} onChange={e => setLabelGap(+e.target.value)} style={{ width: "100%", accentColor: C.violet }} />
           </div>
 
           <Btn color={C.cyan} onClick={doRenderContours} disabled={!elevGrid}>📐 Generate Contours on Globe</Btn>
@@ -1885,11 +2442,11 @@ export default function CesiumDEMContourPanel({ viewer, Cesium, bbox, kmlPolygon
 
             <div style={{ background: C.sur, border: `1px solid ${C.bor}`, borderRadius: 10, padding: "10px 12px" }}>
               <div style={{ color: C.dim, fontSize: 9, fontWeight: 700, letterSpacing: ".1em", marginBottom: 4 }}>LABEL SPACING · {shpLabelSpacing}m</div>
-              <input type="range" min={200} max={3000} step={100} value={shpLabelSpacing} onChange={e => setShpLabelSpacing(+e.target.value)} style={{ width: "100%", accentColor: C.blue }} />
+              <input type="range" min={100} max={500} step={10} value={shpLabelSpacing} onChange={e => setShpLabelSpacing(+e.target.value)} style={{ width: "100%", accentColor: C.blue }} />
             </div>
             <div style={{ background: C.sur, border: `1px solid ${C.bor}`, borderRadius: 10, padding: "10px 12px" }}>
               <div style={{ color: C.dim, fontSize: 9, fontWeight: 700, letterSpacing: ".1em", marginBottom: 4 }}>LABEL GAP · {shpLabelGap}m</div>
-              <input type="range" min={20} max={200} step={10} value={shpLabelGap} onChange={e => setShpLabelGap(+e.target.value)} style={{ width: "100%", accentColor: C.violet }} />
+              <input type="range" min={20} max={100} step={5} value={shpLabelGap} onChange={e => setShpLabelGap(+e.target.value)} style={{ width: "100%", accentColor: C.violet }} />
             </div>
             <Btn color={C.green} onClick={doRenderShapefileContours}>🗺 Render Shapefile Contours</Btn>
             {hasShpContour && <>
@@ -1926,7 +2483,7 @@ export default function CesiumDEMContourPanel({ viewer, Cesium, bbox, kmlPolygon
           </div>}
           {elevGrid && <div style={{ background: "rgba(74,222,128,.04)", border: "1px solid rgba(74,222,128,.15)", borderRadius: 10, padding: "10px 12px" }}>
             <div style={{ color: C.green, fontWeight: 700, fontSize: 11, marginBottom: 6 }}>✅ Summary</div>
-            {[["Grid", `${elevGrid.cols}×${elevGrid.rows}`], ["Range", `${(elevGrid.max - elevGrid.min).toFixed(1)}m`], ["Terrain", isLowRelief ? "⚠ Low Relief" : "✓ Normal"], ...(elevGrid.fillPct > 0 ? [["Interpolated", `${elevGrid.fillPct}%`]] : []), ...(stretchDisplay ? [["Render", `${Math.round(stretchDisplay.min)}–${Math.round(stretchDisplay.max)}m`], ["Stretch", stretchDisplay.mode]] : []), ["Ramp", colorRamp], ["HS", `${hillshadeMode} ${Math.round(hillshadeStrength * 100)}%`], ["Interval", `${contourInterval}m / maj ${majorEvery}m`], ["Upsample", `×${upsampleFactor}`], ["Smooth", `${smoothPasses} pass`], ["Palette", contourPalette], ...(shpGeoJson ? [["SHP", `${shpGeoJson.features.length} lines`]] : []), ...(effectiveKmlPolygon ? [["KML", `${effectiveKmlPolygon.length} pts${internalKmlPolygon ? " (inline)" : ""}`]] : [])].map(([k, v]) => (
+            {[["Grid", `${elevGrid.cols}×${elevGrid.rows}`], ["Range", `${(elevGrid.max - elevGrid.min).toFixed(1)}m`], ["Terrain", isLowRelief ? "⚠ Low Relief" : "✓ Normal"], ...(elevGrid.fillPct > 0 ? [["Interpolated", `${elevGrid.fillPct}%`]] : []), ...(stretchDisplay ? [["Render", `${Math.round(stretchDisplay.min)}–${Math.round(stretchDisplay.max)}m`], ["Stretch", stretchDisplay.mode]] : []), ["Ramp", colorRamp], ["HS", `${hillshadeMode} ${Math.round(hillshadeStrength * 100)}%`], ["Interval", `${contourInterval}m / maj ${majorEvery}m`], ["Upsample", `×${upsampleFactor}`], ["Smooth", `${smoothPasses} passes (Chaikin)`], ["Labels", `${labelSpacing}m spacing, ${labelGap}m gap (global)`], ["Palette", contourPalette], ...(shpGeoJson ? [["SHP", `${shpGeoJson.features.length} lines`]] : []), ...(effectiveKmlPolygon ? [["KML", `${effectiveKmlPolygon.length} pts${internalKmlPolygon ? " (inline)" : ""}`]] : [])].map(([k, v]) => (
               <div key={k} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", borderBottom: "1px solid rgba(74,222,128,.08)" }}>
                 <span style={{ color: C.dim, fontSize: 10, fontFamily: F.mono }}>{k}</span>
                 <span style={{ color: k === "Terrain" && isLowRelief ? C.amber : C.green, fontSize: 11, fontWeight: 700, fontFamily: F.mono }}>{v}</span>
