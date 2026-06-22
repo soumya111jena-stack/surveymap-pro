@@ -771,13 +771,19 @@ function buildGeoTIFF({ grid, rows, cols, bbox }) {
 /**
  * Build contour GeoJSON with professional smoothing (Chaikin + Bezier)
  */
-function buildContourGeoJSON({ grid, rows, cols, bbox, min: minE, max: maxE }, interval, majorEvery, poly = null) {
+function buildContourGeoJSON({ grid, rows, cols, bbox, min: minE, max: maxE }, interval, majorEvery, poly = null, smoothPasses = 2, upsampleFactor = 4) {
   const levels = [];
   for (let lv = Math.ceil(minE / interval) * interval; lv <= maxE + 1e-6; lv += interval) {
     levels.push(parseFloat(lv.toFixed(6)));
   }
-  
-  const rawSegs = marchingSquares(grid, rows, cols, levels);
+
+  const smoothedGrid = smoothPasses > 0 ? gaussianSmooth(grid, rows, cols, smoothPasses) : grid;
+  const factor = Math.max(1, Math.min(8, upsampleFactor));
+  const { grid: hiGrid, rows: hiRows, cols: hiCols } = factor > 1
+    ? upsampleGrid(smoothedGrid, rows, cols, factor)
+    : { grid: smoothedGrid, rows, cols };
+
+  const rawSegs = marchingSquares(hiGrid, hiRows, hiCols, levels);
   const features = [];
   const hasClip = poly && poly.length >= 3;
   
@@ -788,7 +794,7 @@ function buildContourGeoJSON({ grid, rows, cols, bbox, min: minE, max: maxE }, i
       
       // Convert grid coordinates to lat/lng
       const latlngs = chain.map(([rF, cF]) => 
-        gridToLatLng(rF, cF, bbox, rows, cols)
+        gridToLatLng(rF, cF, bbox, hiRows, hiCols)
       );
       
       // Apply clipping if needed
@@ -909,6 +915,12 @@ function drawPolylineOnGlobe(Cesium, viewer, latlngs, color, width, prims, allEn
  *    eliminating the "floating away from the line while zooming" effect.
  *  - refreshLabelHeights() (below) re-samples this height once the camera
  *    stops moving, so labels snap to higher-detail terrain as it loads in.
+ *
+ * Line-continuity fix (v38):
+ *  - Labels no longer carve a gap out of the contour line. The line is drawn
+ *    as one continuous polyline; the label sits ON TOP of it with a white
+ *    halo (background plate + thick white outline) so the number stays
+ *    legible without ever breaking the line underneath it.
  */
 function placeLabelOnGlobe(Cesium, viewer, lat, lng, angle, lv, isMajor, cesColor, allEnts, minorEnts) {
   // QGIS-style label orientation: always horizontal, never rotated to follow
@@ -923,8 +935,11 @@ function placeLabelOnGlobe(Cesium, viewer, lat, lng, angle, lv, isMajor, cesColo
   } catch (_) { groundHeight = null; }
   const hasHeight = groundHeight != null && isFinite(groundHeight);
   
+  // Lift the label slightly higher than the line itself so it renders
+  // cleanly above the (now continuous, unbroken) contour line passing
+  // underneath it.
   const position = hasHeight
-    ? Cesium.Cartesian3.fromDegrees(lng, lat, groundHeight + 0.3)
+    ? Cesium.Cartesian3.fromDegrees(lng, lat, groundHeight + 0.6)
     : Cesium.Cartesian3.fromDegrees(lng, lat);
   
   const labelText = `${Math.round(lv)}`;
@@ -941,12 +956,14 @@ function placeLabelOnGlobe(Cesium, viewer, lat, lng, angle, lv, isMajor, cesColo
       text: labelText, 
       font: labelFont,
       fillColor: Cesium.Color.fromCssColorString('#1a1a1a'),
-      backgroundColor: Cesium.Color.fromCssColorString('rgba(255,255,255,0.85)'),
+      // White halo plate behind the text so it reads clearly over the
+      // contour line without needing to cut a gap in the line.
+      backgroundColor: Cesium.Color.fromCssColorString('rgba(255,255,255,0.92)'),
       backgroundPadding: new Cesium.Cartesian2(4, 2),
-      showBackground: false,
+      showBackground: true,
       style: Cesium.LabelStyle.FILL_AND_OUTLINE, 
       outlineColor: Cesium.Color.fromCssColorString('rgba(255,255,255,1.0)'),
-      outlineWidth: isMajor ? 2.5 : 2,
+      outlineWidth: isMajor ? 4 : 3.2,
       rotation: rot, 
       alignedAxis: Cesium.Cartesian3.ZERO, 
       heightReference: hasHeight ? Cesium.HeightReference.NONE : Cesium.HeightReference.CLAMP_TO_GROUND, 
@@ -979,7 +996,7 @@ function refreshLabelHeights(Cesium, viewer, allEnts) {
       try {
         const h = viewer.scene.globe.getHeight(Cesium.Cartographic.fromDegrees(e._labelLng, e._labelLat));
         if (h != null && isFinite(h) && !e.isDestroyed?.()) {
-          e.position = Cesium.Cartesian3.fromDegrees(e._labelLng, e._labelLat, h + 0.3);
+          e.position = Cesium.Cartesian3.fromDegrees(e._labelLng, e._labelLat, h + 0.6);
           e.label.heightReference = Cesium.HeightReference.NONE;
         }
       } catch (_) {}
@@ -987,6 +1004,13 @@ function refreshLabelHeights(Cesium, viewer, allEnts) {
   });
 }
 
+/**
+ * Render one stitched contour chain as a SINGLE continuous polyline
+ * (v38: no more gap-cutting for labels), with elevation-value labels
+ * placed on top of the line at evenly spaced points along it. Labels get
+ * a white halo (see placeLabelOnGlobe) so they stay legible without ever
+ * breaking the line.
+ */
 function renderChainQGIS(Cesium, viewer, rawCoords, lv, isMajor, labelGapMeters, labelSpacingMeters, minChainMeters, cesLineColor, cesLabelColor, lineWidth, prims, allEnts, minorEnts, splineSteps = 4, dpEps = 0.00003, globalLabels = []) {
   // Use Chaikin + Bezier smoothing for professional appearance
   const smoothed = smoothContour(rawCoords, 2, 6);
@@ -996,14 +1020,18 @@ function renderChainQGIS(Cesium, viewer, rawCoords, lv, isMajor, labelGapMeters,
   const arcLens = buildArcLens(coords), totalM = arcLens[arcLens.length - 1];
   if (totalM < minChainMeters) return;
   
-  const gapHalf = labelGapMeters / 2, minLabelChain = labelGapMeters * 3;
+  // Draw the FULL line as one continuous polyline first — it never gets
+  // cut for labels anymore.
+  drawPolylineOnGlobe(Cesium, viewer, coords, cesLineColor, lineWidth, prims, allEnts, minorEnts, isMajor);
+  
+  const gapHalf = labelGapMeters / 2;
   
   // Determine number of labels based on contour length
   const numLabels = Math.max(1, Math.floor(totalM / labelSpacingMeters));
   const step = totalM / (numLabels + 1);
   
-  const labelPositions = [];
   const minDistanceMeters = Math.max(labelGapMeters, 25);
+  const labelPositions = [];
   
   // Collect label positions with collision detection against ALL contours, not just this chain
   for (let i = 1; i <= numLabels; i++) {
@@ -1026,6 +1054,7 @@ function renderChainQGIS(Cesium, viewer, rawCoords, lv, isMajor, labelGapMeters,
   }
   
   // If no labels placed, try at least one at midpoint (still check global collision)
+  const minLabelChain = labelGapMeters * 3;
   if (labelPositions.length === 0 && totalM > minLabelChain) {
     const midPos = totalM / 2;
     const [midLat, midLng] = ptAtArcLen(coords, arcLens, midPos);
@@ -1040,38 +1069,12 @@ function renderChainQGIS(Cesium, viewer, rawCoords, lv, isMajor, labelGapMeters,
     }
   }
   
-  // Draw the contour line with gaps for labels
-  if (labelPositions.length === 0) {
-    drawPolylineOnGlobe(Cesium, viewer, coords, cesLineColor, lineWidth, prims, allEnts, minorEnts, isMajor);
-    return;
-  }
-  
-  let cursor = 0;
-  // Sort label positions
+  // Place labels ON TOP of the already-drawn continuous line.
   labelPositions.sort((a, b) => a - b);
-  
   for (const labelPos of labelPositions) {
-    const gapStart = Math.max(cursor, labelPos - gapHalf);
-    const gapEnd = Math.min(totalM, labelPos + gapHalf);
-    
-    // Draw segment before label gap
-    if (gapStart - cursor > 0.5) {
-      const seg = extractSubchain(coords, arcLens, cursor, gapStart);
-      drawPolylineOnGlobe(Cesium, viewer, seg, cesLineColor, lineWidth, prims, allEnts, minorEnts, isMajor);
-    }
-    
-    // Place label
     const [lat, lng] = ptAtArcLen(coords, arcLens, labelPos);
     const angle = tangentAtArcLen(coords, arcLens, labelPos, 150);
     placeLabelOnGlobe(Cesium, viewer, lat, lng, angle, lv, isMajor, cesLabelColor, allEnts, minorEnts);
-    
-    cursor = gapEnd;
-  }
-  
-  // Draw remaining segment
-  if (totalM - cursor > 0.5) {
-    const seg = extractSubchain(coords, arcLens, cursor, totalM);
-    drawPolylineOnGlobe(Cesium, viewer, seg, cesLineColor, lineWidth, prims, allEnts, minorEnts, isMajor);
   }
 }
 
@@ -1165,7 +1168,7 @@ function renderContours(Cesium, viewer, elevGrid, opts, poly = null) {
         const smoothed = smoothContour(sub, 2, 6);
         if (smoothed.length < 2) return;
         
-        // Draw the contour line with labels
+        // Draw the contour line (continuous) with labels on top
         renderChainQGIS(
           Cesium, 
           viewer, 
@@ -1728,7 +1731,7 @@ async function exportContourShapefile(features, baseName, onProgress) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
-   MAIN COMPONENT — v37 + Label Stability Fixes (no overlap, no floating)
+   MAIN COMPONENT — v38 (continuous contour lines, halo labels)
 ═══════════════════════════════════════════════════════════════════════ */
 export default function CesiumDEMContourPanel({ viewer, Cesium, bbox, kmlPolygon = null, visible, onClose, kmlName = "area" }) {
   const [tab, setTab] = useState("dem");
@@ -2050,7 +2053,7 @@ export default function CesiumDEMContourPanel({ viewer, Cesium, bbox, kmlPolygon
     const eg = elevGridRef.current || elevGrid; 
     if (!eg) { msg("No data.", "warn"); return; } 
     const clip = getClipPoly(eg, polyRef.current); 
-    const gj = buildContourGeoJSON(eg, contourInterval, majorEvery, clip); 
+  const gj = buildContourGeoJSON(eg, contourInterval, majorEvery, clip, smoothPasses, upsampleFactor);
     dlBlob(new TextEncoder().encode(JSON.stringify(gj, null, 2)), effectiveKmlName.replace(/\.[^.]+$/, "") + "_contours.geojson", "application/json"); 
     msg("GeoJSON exported.", "ok"); 
   }
@@ -2065,7 +2068,7 @@ export default function CesiumDEMContourPanel({ viewer, Cesium, bbox, kmlPolygon
     
     try {
       const clip = getClipPoly(eg, polyRef.current);
-      const gj = buildContourGeoJSON(eg, contourInterval, majorEvery, clip);
+     const gj = buildContourGeoJSON(eg, contourInterval, majorEvery, clip, smoothPasses, upsampleFactor);
       
       if (!gj.features.length) {
         msg("No contours found to export.", "warn");
@@ -2144,7 +2147,7 @@ export default function CesiumDEMContourPanel({ viewer, Cesium, bbox, kmlPolygon
           <div style={{ width: 34, height: 34, borderRadius: 9, background: "linear-gradient(135deg,rgba(59,130,246,.25),rgba(34,211,200,.25))", border: "1px solid rgba(59,130,246,.3)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 17, flexShrink: 0 }}>🏔</div>
           <div style={{ flex: 1 }}>
             <div style={{ color: C.tx, fontWeight: 700, fontSize: 13 }}>3D DEM & Contours</div>
-            <div style={{ color: C.dim, fontSize: 9, fontFamily: F.mono, marginTop: 1 }}>v37 · Stable labels · No overlap · No floating</div>
+            <div style={{ color: C.dim, fontSize: 9, fontFamily: F.mono, marginTop: 1 }}>v38 · Continuous lines · Halo labels</div>
           </div>
           <button onClick={onClose} style={{ background: "none", border: "none", color: C.dim, cursor: "pointer", fontSize: 20, padding: 0, lineHeight: 1 }}>×</button>
         </div>
@@ -2195,7 +2198,7 @@ export default function CesiumDEMContourPanel({ viewer, Cesium, bbox, kmlPolygon
         {/* ════════════════════ DEM TAB ════════════════════ */}
         {tab === "dem" && <>
           <div style={{ padding: "7px 10px", borderRadius: 8, background: "rgba(74,222,128,.05)", border: "1px solid rgba(74,222,128,.2)", color: C.green, fontSize: 9, lineHeight: 1.7 }}>
-            <strong>✅ v37:</strong> Labels locked to terrain height (no floating) · Global collision detection across all elevation levels (no overlap) · Altitude-aware depth test
+            <strong>✅ v38:</strong> Contour lines are drawn fully continuous (no gaps) · Labels float on top with a white halo · Global collision detection across all elevation levels · Altitude-aware depth test
           </div>
 
           {isLowRelief && (
@@ -2314,7 +2317,7 @@ export default function CesiumDEMContourPanel({ viewer, Cesium, bbox, kmlPolygon
         {/* ════════════════════ CONTOUR TAB ════════════════════ */}
         {tab === "contour" && <>
           <div style={{ padding: "8px 10px", borderRadius: 8, background: "rgba(34,211,200,.05)", border: "1px solid rgba(34,211,200,.18)", color: C.cyan, fontSize: 9.5, lineHeight: 1.6 }}>
-            ⚡ v37 · Terrain-locked labels · Global collision detection (all elevation levels share spacing) · Altitude-aware depth test
+            ⚡ v38 · Lines are drawn fully continuous, never broken for labels · Labels float on top with a white halo · Global collision detection (all elevation levels share spacing) · Altitude-aware depth test
           </div>
           {!elevGrid && <div style={{ padding: "10px", borderRadius: 8, background: "rgba(245,166,35,.07)", border: "1px solid rgba(245,166,35,.2)", color: C.amber, fontSize: 10.5, textAlign: "center" }}>⚠️ Fetch elevation in DEM tab first</div>}
 
@@ -2375,8 +2378,8 @@ export default function CesiumDEMContourPanel({ viewer, Cesium, bbox, kmlPolygon
           </div>
 
           <div style={{ background: C.sur, border: `1px solid ${C.bor}`, borderRadius: 10, padding: "10px 12px" }}>
-            <div style={{ color: C.dim, fontSize: 9, fontWeight: 700, letterSpacing: ".1em", marginBottom: 4 }}>LABEL GAP · {labelGap}m</div>
-            <div style={{ fontSize: 8, color: C.violet, marginBottom: 5, fontFamily: F.mono, opacity: .8 }}>★ Minimum distance between labels — applies GLOBALLY across all elevation lines now</div>
+            <div style={{ color: C.dim, fontSize: 9, fontWeight: 700, letterSpacing: ".1em", marginBottom: 4 }}>LABEL GAP (collision distance) · {labelGap}m</div>
+            <div style={{ fontSize: 8, color: C.violet, marginBottom: 5, fontFamily: F.mono, opacity: .8 }}>★ Minimum distance between labels — applies GLOBALLY across all elevation lines. Lines no longer break here — this only spaces the floating labels.</div>
             <input type="range" min={20} max={100} step={5} value={labelGap} onChange={e => setLabelGap(+e.target.value)} style={{ width: "100%", accentColor: C.violet }} />
           </div>
 
@@ -2483,7 +2486,7 @@ export default function CesiumDEMContourPanel({ viewer, Cesium, bbox, kmlPolygon
           </div>}
           {elevGrid && <div style={{ background: "rgba(74,222,128,.04)", border: "1px solid rgba(74,222,128,.15)", borderRadius: 10, padding: "10px 12px" }}>
             <div style={{ color: C.green, fontWeight: 700, fontSize: 11, marginBottom: 6 }}>✅ Summary</div>
-            {[["Grid", `${elevGrid.cols}×${elevGrid.rows}`], ["Range", `${(elevGrid.max - elevGrid.min).toFixed(1)}m`], ["Terrain", isLowRelief ? "⚠ Low Relief" : "✓ Normal"], ...(elevGrid.fillPct > 0 ? [["Interpolated", `${elevGrid.fillPct}%`]] : []), ...(stretchDisplay ? [["Render", `${Math.round(stretchDisplay.min)}–${Math.round(stretchDisplay.max)}m`], ["Stretch", stretchDisplay.mode]] : []), ["Ramp", colorRamp], ["HS", `${hillshadeMode} ${Math.round(hillshadeStrength * 100)}%`], ["Interval", `${contourInterval}m / maj ${majorEvery}m`], ["Upsample", `×${upsampleFactor}`], ["Smooth", `${smoothPasses} passes (Chaikin)`], ["Labels", `${labelSpacing}m spacing, ${labelGap}m gap (global)`], ["Palette", contourPalette], ...(shpGeoJson ? [["SHP", `${shpGeoJson.features.length} lines`]] : []), ...(effectiveKmlPolygon ? [["KML", `${effectiveKmlPolygon.length} pts${internalKmlPolygon ? " (inline)" : ""}`]] : [])].map(([k, v]) => (
+            {[["Grid", `${elevGrid.cols}×${elevGrid.rows}`], ["Range", `${(elevGrid.max - elevGrid.min).toFixed(1)}m`], ["Terrain", isLowRelief ? "⚠ Low Relief" : "✓ Normal"], ...(elevGrid.fillPct > 0 ? [["Interpolated", `${elevGrid.fillPct}%`]] : []), ...(stretchDisplay ? [["Render", `${Math.round(stretchDisplay.min)}–${Math.round(stretchDisplay.max)}m`], ["Stretch", stretchDisplay.mode]] : []), ["Ramp", colorRamp], ["HS", `${hillshadeMode} ${Math.round(hillshadeStrength * 100)}%`], ["Interval", `${contourInterval}m / maj ${majorEvery}m`], ["Upsample", `×${upsampleFactor}`], ["Smooth", `${smoothPasses} passes (Chaikin)`], ["Labels", `${labelSpacing}m spacing, ${labelGap}m gap (floating, global)`], ["Palette", contourPalette], ...(shpGeoJson ? [["SHP", `${shpGeoJson.features.length} lines`]] : []), ...(effectiveKmlPolygon ? [["KML", `${effectiveKmlPolygon.length} pts${internalKmlPolygon ? " (inline)" : ""}`]] : [])].map(([k, v]) => (
               <div key={k} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", borderBottom: "1px solid rgba(74,222,128,.08)" }}>
                 <span style={{ color: C.dim, fontSize: 10, fontFamily: F.mono }}>{k}</span>
                 <span style={{ color: k === "Terrain" && isLowRelief ? C.amber : C.green, fontSize: 11, fontWeight: 700, fontFamily: F.mono }}>{v}</span>
