@@ -97,31 +97,34 @@ async function downloadPhoto(url, filename) {
   }
 }
 
-// ── Export Photos CSV with full address ───────────────────────────────────────
+// ── Export Photos + Waypoints CSV with full address ───────────────────────────
 async function exportPhotosCSV(track) {
-  const photos = getTrackPhotos(track);
-  if (!photos.length) { alert("No photos in this track."); return; }
+  const photos    = getTrackPhotos(track).map(p => ({ ...p, kind: "photo" }));
+  const waypoints = getTrackWaypoints(track).map(w => ({ ...w, kind: "waypoint" }));
+  const rows = [...photos, ...waypoints];
+
+  if (!rows.length) { alert("No photos or waypoints in this track."); return; }
 
   const placeNames = await Promise.all(
-    photos.map(p => reverseGeocode(p.lat, p.lng))
+    rows.map(p => reverseGeocode(p.lat, p.lng))
   );
 
-  const header = "photo_no,name,note,latitude,longitude,full_address,time,photo_url\n";
-  const rows = photos.map((p, i) => {
-    const name  = (p.name  || `Photo ${i+1}`).replace(/,/g, " ");
+  const header = "no,type,name,note,latitude,longitude,full_address,time,photo_url\n";
+  const csvRows = rows.map((p, i) => {
+    const name  = (p.name  || `Item ${i+1}`).replace(/,/g, " ");
     const note  = (p.note  || "").replace(/,/g, " ");
     const place = (placeNames[i] || "").replace(/,/g, " ");
     const time  = p.time ? new Date(p.time).toLocaleString("en-IN") : "";
     const lat   = p.lat  != null ? Number(p.lat).toFixed(6) : "";
     const lng   = p.lng  != null ? Number(p.lng).toFixed(6) : "";
     const url   = p.url  || "";
-    return `${i+1},${name},${note},${lat},${lng},${place},${time},${url}`;
+    return `${i+1},${p.kind},${name},${note},${lat},${lng},${place},${time},${url}`;
   }).join("\n");
 
-  const blob = new Blob([header + rows], { type: "text/csv" });
+  const blob = new Blob([header + csvRows], { type: "text/csv" });
   const a    = document.createElement("a");
   a.href     = URL.createObjectURL(blob);
-  a.download = `photos_${track.name || track.id}_${new Date().toISOString().slice(0,10)}.csv`;
+  a.download = `locations_${track.name || track.id}_${new Date().toISOString().slice(0,10)}.csv`;
   a.click();
   URL.revokeObjectURL(a.href);
 }
@@ -300,6 +303,25 @@ function getTrackPhotos(track) {
   return [];
 }
 
+// ── Plain (non-photo) waypoints — pins with just name/note/lat/lng ───────────
+function getTrackWaypoints(track) {
+  const meta = track.waypointsMeta;
+  if (!meta) return [];
+  const m = typeof meta === "string"
+    ? (() => { try { return JSON.parse(meta); } catch { return null; } })()
+    : meta;
+  if (!Array.isArray(m)) return [];
+  return m
+    .filter(w => !w.photo && w.lat != null && w.lng != null)
+    .map(w => ({
+      name: w.name || "Waypoint",
+      note: w.note || null,
+      lat: Number(w.lat),
+      lng: Number(w.lng),
+      time: w.time || null,
+    }));
+}
+
 function downloadCSV(track) {
   const coords = cleanCoords(track.coordinates || []);
   if (!coords.length) { alert("No valid waypoints in this track."); return; }
@@ -450,6 +472,58 @@ function PhotoCard({ photo, index, onLightbox, onDownload }) {
   );
 }
 
+// ── Waypoint Card ──────────────────────────────────────────────────────────────
+function WaypointCard({ wp }) {
+  const [placeName, setPlaceName] = useState(null);
+  const [placeLoading, setPlaceLoading] = useState(false);
+
+  useEffect(() => {
+    if (wp.lat != null && wp.lng != null) {
+      setPlaceLoading(true);
+      reverseGeocode(wp.lat, wp.lng).then(p => {
+        setPlaceName(p);
+        setPlaceLoading(false);
+      });
+    }
+  }, [wp.lat, wp.lng]);
+
+  return (
+    <div
+      className="chip"
+      style={{ justifyContent: "space-between", alignItems: "flex-start", padding: "8px 12px", flexWrap: "wrap", gap: 6 }}
+    >
+      <div style={{ minWidth: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span className="chip-dot" style={{ background: "#f59e0b" }} />
+          <strong style={{ color: "var(--text-primary)", fontSize: 12.5 }}>{wp.name}</strong>
+        </div>
+        {wp.note && (
+          <div style={{ fontSize: 11.5, color: "var(--text-muted)", marginTop: 3, fontStyle: "italic" }}>
+            {wp.note}
+          </div>
+        )}
+        <div style={{ marginTop: 5 }}>
+          {placeLoading ? (
+            <span style={{ fontSize: 9, color: "var(--text-muted)", fontFamily: "var(--mono)" }}>📍 locating…</span>
+          ) : placeName ? (
+            <span className="place-tag">📍 {placeName}</span>
+          ) : null}
+        </div>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 3, flexShrink: 0 }}>
+        <span style={{ fontFamily: "var(--mono)", fontSize: 11 }}>
+          {Number(wp.lat).toFixed(5)}, {Number(wp.lng).toFixed(5)}
+        </span>
+        {wp.time && (
+          <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-muted)" }}>
+            {fmtDate(wp.time)}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Photo Cell (table) ────────────────────────────────────────────────────────
 function PhotoCell({ track, onOpen }) {
   const photos = getTrackPhotos(track);
@@ -463,6 +537,17 @@ function PhotoCell({ track, onOpen }) {
       ))}
       <button className="btn btn-ghost" onClick={() => onOpen(photos, 0)} style={{ padding: "2px 8px", fontSize: 10 }}>📷 {photos.length}</button>
     </div>
+  );
+}
+
+// ── Waypoints Cell (table) ────────────────────────────────────────────────────
+function WaypointsCell({ track }) {
+  const waypoints = getTrackWaypoints(track);
+  if (waypoints.length === 0) return <span style={{ color: "var(--text-muted)", fontSize: 11 }}>—</span>;
+  return (
+    <span className="badge badge-yellow" title={waypoints.map(w => w.name).join(", ")}>
+      📌 {waypoints.length}
+    </span>
   );
 }
 
@@ -746,7 +831,7 @@ function TracksTab({ showToast }) {
     if(!selected)return;
     setExportingPhotos(true);
     showToast("Fetching place names… this may take a few seconds");
-    try{await exportPhotosCSV(selected);showToast("Photos CSV exported!");}
+    try{await exportPhotosCSV(selected);showToast("Locations CSV exported!");}
     catch(e){showToast("Export failed: "+e.message,"error");}
     finally{setExportingPhotos(false);}
   };
@@ -760,6 +845,7 @@ function TracksTab({ showToast }) {
   const totalPointCount=selected?.coordinates?.length||0;
   const mkIcon=(color)=>L.divIcon({html:`<div style="width:12px;height:12px;border-radius:50%;background:${color};border:2.5px solid #fff;box-shadow:0 0 10px ${color}99"></div>`,className:"",iconAnchor:[6,6]});
   const selectedPhotos=selected?getTrackPhotos(selected):[];
+  const selectedWaypoints=selected?getTrackWaypoints(selected):[];
 
   return (
     <div className="fade-up">
@@ -778,9 +864,9 @@ function TracksTab({ showToast }) {
           {selected&&(
             <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
               {selectedPhotos.length>0&&<button className="btn btn-ghost" onClick={()=>setLightbox({photos:selectedPhotos,index:0})}>📷 Photos ({selectedPhotos.length})</button>}
-              {selectedPhotos.length>0&&(
-                <button className="btn btn-purple" onClick={handleExportPhotos} disabled={exportingPhotos} title="Export photo locations as CSV with full address">
-                  {exportingPhotos?<><span className="loading-spinner" style={{ width:12,height:12 }}/> Fetching…</>:<><Icons.Download/> Export Photos CSV</>}
+              {(selectedPhotos.length>0||selectedWaypoints.length>0)&&(
+                <button className="btn btn-purple" onClick={handleExportPhotos} disabled={exportingPhotos} title="Export photo + waypoint locations as CSV with full address">
+                  {exportingPhotos?<><span className="loading-spinner" style={{ width:12,height:12 }}/> Fetching…</>:<><Icons.Download/> Export Locations CSV</>}
                 </button>
               )}
               <button className="btn btn-success" onClick={()=>downloadCSV(selected)}><Icons.Download/> Track CSV</button>
@@ -797,6 +883,11 @@ function TracksTab({ showToast }) {
               <Polyline positions={leafletCoords} color="#3b82f6" weight={4} opacity={0.9}/>
               {startPt&&<Marker position={startPt} icon={mkIcon("#10b981")}><Popup><strong>Start</strong><br/>{fmtDate(selected.startedAt)}</Popup></Marker>}
               {endPt&&startPt!==endPt&&<Marker position={endPt} icon={mkIcon("#ef4444")}><Popup><strong>End</strong><br/>{fmtDate(selected.endedAt)}</Popup></Marker>}
+              {selectedWaypoints.map((w,i)=>(
+                <Marker key={`wp-${i}`} position={[w.lat,w.lng]} icon={mkIcon("#f59e0b")}>
+                  <Popup><strong>{w.name}</strong>{w.note&&<><br/>{w.note}</>}</Popup>
+                </Marker>
+              ))}
               <FitBounds coords={selected.coordinates}/>
             </MapContainer>
           ):(
@@ -811,7 +902,7 @@ function TracksTab({ showToast }) {
 
         {selected&&(
           <div style={{ padding:"16px 20px", borderTop:"1px solid var(--border)", background:"rgba(59,130,246,0.03)" }}>
-            <div style={{ display:"flex", gap:24, flexWrap:"wrap", marginBottom:selectedPhotos.length>0?16:0 }}>
+            <div style={{ display:"flex", gap:24, flexWrap:"wrap", marginBottom:(selectedPhotos.length>0||selectedWaypoints.length>0)?16:0 }}>
               {[["User",selected.username],["Session",selected.sessionName],["Distance",fmtDist(selected.distanceMeters)],["Started",fmtDate(selected.startedAt)],["Ended",fmtDate(selected.endedAt)],["Duration",duration(selected.startedAt,selected.endedAt)],["Valid Pts",validPointCount],["Total Pts",totalPointCount]].map(([k,v])=>(
                 <div key={k}>
                   <div style={{ fontSize:9, fontWeight:700, color:"var(--text-muted)", letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:3, fontFamily:"var(--mono)" }}>{k}</div>
@@ -821,13 +912,26 @@ function TracksTab({ showToast }) {
             </div>
 
             {selectedPhotos.length>0&&(
-              <div>
+              <div style={{ marginBottom: selectedWaypoints.length>0?16:0 }}>
                 <div style={{ fontSize:9, fontWeight:700, color:"var(--text-muted)", letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:10, fontFamily:"var(--mono)" }}>
                   Photos ({selectedPhotos.length})
                 </div>
                 <div style={{ display:"flex", gap:10, overflowX:"auto", paddingBottom:4 }}>
                   {selectedPhotos.map((p,i)=>(
                     <PhotoCard key={i} photo={p} index={i} onLightbox={(idx)=>setLightbox({photos:selectedPhotos,index:idx})} onDownload={downloadPhoto}/>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {selectedWaypoints.length>0&&(
+              <div>
+                <div style={{ fontSize:9, fontWeight:700, color:"var(--text-muted)", letterSpacing:"0.1em", textTransform:"uppercase", marginBottom:10, fontFamily:"var(--mono)" }}>
+                  Waypoints ({selectedWaypoints.length})
+                </div>
+                <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+                  {selectedWaypoints.map((w,i)=>(
+                    <WaypointCard key={i} wp={w}/>
                   ))}
                 </div>
               </div>
@@ -845,7 +949,7 @@ function TracksTab({ showToast }) {
         <div className="card" style={{ overflow:"hidden" }}>
           <div style={{ overflowX:"auto" }} className="scrollbar-thin">
             <table>
-              <thead><tr><th>ID</th><th>Name</th><th>User</th><th>Session</th><th>Started</th><th>Ended</th><th>Duration</th><th>Distance</th><th>Points</th><th>Photos</th><th>Actions</th></tr></thead>
+              <thead><tr><th>ID</th><th>Name</th><th>User</th><th>Session</th><th>Started</th><th>Ended</th><th>Duration</th><th>Distance</th><th>Points</th><th>Photos</th><th>Waypoints</th><th>Actions</th></tr></thead>
               <tbody>
                 {filtered.map(t=>(
                   <tr key={t.id} style={{ background:selected?.id===t.id?"rgba(59,130,246,0.08)":"transparent" }}>
@@ -859,6 +963,7 @@ function TracksTab({ showToast }) {
                     <td><span style={{ fontFamily:"var(--mono)", fontSize:12, color:"var(--cyan)" }}>{fmtDist(t.distanceMeters)}</span></td>
                     <td><span style={{ fontFamily:"var(--mono)", fontSize:11.5 }}>{t.pointCount??"-"}</span></td>
                     <td><PhotoCell track={t} onOpen={(photos,idx)=>setLightbox({photos,index:idx})}/></td>
+                    <td><WaypointsCell track={t}/></td>
                     <td>
                       <div style={{ display:"flex", gap:6 }}>
                         <button className={`btn ${selected?.id===t.id?"btn-warning":"btn-ghost"}`} onClick={()=>viewTrack(t.id)}>{selected?.id===t.id?"✓ Shown":"View Map"}</button>
@@ -867,7 +972,7 @@ function TracksTab({ showToast }) {
                     </td>
                   </tr>
                 ))}
-                {filtered.length===0&&<tr><td colSpan={11} style={{ textAlign:"center", padding:48, color:"var(--text-muted)" }}>No tracks found</td></tr>}
+                {filtered.length===0&&<tr><td colSpan={12} style={{ textAlign:"center", padding:48, color:"var(--text-muted)" }}>No tracks found</td></tr>}
               </tbody>
             </table>
           </div>

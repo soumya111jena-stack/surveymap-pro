@@ -131,6 +131,7 @@ export const saveTrack = async (
     endedAt        = null,
     distanceMeters = 0,
     photos         = [],        // [{dataURL, filename, name, note, lat, lng, time}]
+    waypoints      = [],        // [{name, note, lat, lng, time}] — plain (non-photo) waypoints
     photoDataURL   = null,      // legacy single photo fallback
     photoFilename  = "photo.jpg",
     photoName      = null,
@@ -152,6 +153,7 @@ export const saveTrack = async (
       : [];
 
   console.log(`[saveTrack] allPhotos count: ${allPhotos.length}`);
+  console.log(`[saveTrack] plain waypoints count: ${(waypoints || []).length}`);
 
   // ── STEP 1: Upload all photos directly to Cloudinary ──────────────────
   // Bypasses Render entirely. No multer, no timeout.
@@ -204,6 +206,20 @@ export const saveTrack = async (
     time:  p.time,
   }));
 
+  // ── STEP 2b: Build plain (non-photo) waypoint entries — no upload needed
+  const plainWaypoints = (waypoints || [])
+    .filter(w => w && w.lat != null && w.lng != null)
+    .map(w => ({
+      photo: false,
+      name:  w.name || "Waypoint",
+      note:  w.note || null,
+      lat:   w.lat,
+      lng:   w.lng,
+      time:  w.time || null,
+    }));
+
+  console.log(`[saveTrack] ${plainWaypoints.length} plain waypoint(s) prepared for waypointsMeta`);
+
   const firstPhoto = uploadedPhotos[0];
 
   // ── STEP 3: POST plain JSON to backend (no binary files, no multer timeout)
@@ -238,11 +254,13 @@ export const saveTrack = async (
       }))
     ),
 
-    // Pre-built waypointsMeta so backend merges correctly
-    waypointsMeta: JSON.stringify(photoWaypoints),
+    // Pre-built waypointsMeta so backend merges correctly.
+    // Includes BOTH photo waypoints and plain (non-photo) waypoints.
+    waypointsMeta: JSON.stringify([...photoWaypoints, ...plainWaypoints]),
   };
 
   console.log("[saveTrack] sending JSON to backend (no binary files)");
+  console.log(`[saveTrack] waypointsMeta total entries: ${photoWaypoints.length + plainWaypoints.length}`);
 
   const res = await fetch(`${BASE}/api/tracks`, {
     method:  "POST",

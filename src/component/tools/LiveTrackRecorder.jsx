@@ -1,7 +1,13 @@
 /**
- * LiveTrackRecorder.jsx -- SurveyMap Pro v5.4.0
+ * LiveTrackRecorder.jsx -- SurveyMap Pro v5.4.1
  * ─────────────────────────────────────────────────────────────────────────────
- * NEW in v5.4.0:
+ * NEW in v5.4.1:
+ *  ✅ FIX: plain (non-photo) waypoints are now included in the sync payload
+ *     sent to the backend via syncTrack(). Previously only photo-flagged
+ *     waypoints were forwarded, so pins added via "Add Waypoint" (no photo)
+ *     never reached the server / admin dashboard / CSV exports.
+ *
+ * v5.4.0:
  *  ✅ OFFLINE SYNC QUEUE — if stopRecording() runs while offline (or upload
  *     fails), the track + photos are queued in IndexedDB (STORE_PENDING).
  *     A separate <SyncQueueManager/> component retries them once online.
@@ -313,7 +319,7 @@ export async function queuePendingSync(trackId, payload, meta = {}) {
       attempts: 0,
       lastError: null,
     });
-    console.log(`[LiveTrackRecorder] queued ${trackId} for sync (${payload.photos?.length || 0} photos)`);
+    console.log(`[LiveTrackRecorder] queued ${trackId} for sync (${payload.photos?.length || 0} photos, ${payload.waypoints?.length || 0} waypoints)`);
     return true;
   } catch (e) {
     console.error("[LiveTrackRecorder] failed to queue pending sync:", e);
@@ -926,6 +932,7 @@ export default function LiveTrackRecorder({
 
       const safeName = (trackNameRef.current || "track").replace(/[^a-z0-9]/gi, "_");
 
+      // Photo waypoints — need their dataURL uploaded
       const photos = waypointsRef.current
         .filter(w => w.photo && w.photoId && photosRef.current[w.photoId])
         .map((w, idx) => ({
@@ -938,6 +945,22 @@ export default function LiveTrackRecorder({
           time:     w.time,
         }));
 
+      // ── FIX v5.4.1: Plain (non-photo) waypoints — pins with just
+      // name/note/lat/lng. These were previously dropped here entirely,
+      // so they never made it into syncPayload and never reached the
+      // backend / admin dashboard / CSV exports.
+      const plainWaypoints = waypointsRef.current
+        .filter(w => !w.photo && w.lat != null && w.lng != null)
+        .map(w => ({
+          name: w.name || "Waypoint",
+          note: w.note || null,
+          lat:  w.lat,
+          lng:  w.lng,
+          time: w.time || null,
+        }));
+
+      console.log(`[LiveTrackRecorder] stopRecording — photos: ${photos.length}, plain waypoints: ${plainWaypoints.length}`);
+
       const syncPayload = {
         points: pts,
         name: trackNameRef.current || "Field Track",
@@ -945,6 +968,7 @@ export default function LiveTrackRecorder({
         endedAt,
         distanceMeters,
         photos,
+        waypoints: plainWaypoints,
       };
 
       // ── NEW: check real connectivity before attempting upload ─────────
@@ -954,7 +978,7 @@ export default function LiveTrackRecorder({
         setUploading(true);
         try {
           console.log("[LiveTrackRecorder] online — calling syncTrack, pts:", pts.length,
-            "| photos:", photos.length);
+            "| photos:", photos.length, "| waypoints:", plainWaypoints.length);
           await syncFn(syncPayload);
           console.log("[LiveTrackRecorder] ✅ Track uploaded to backend");
         } catch (err) {
@@ -968,7 +992,7 @@ export default function LiveTrackRecorder({
         }
       } else {
         console.log("[LiveTrackRecorder] offline — queuing track for later sync, pts:", pts.length,
-          "| photos:", photos.length);
+          "| photos:", photos.length, "| waypoints:", plainWaypoints.length);
         await queuePendingSync(trackIdRef.current, syncPayload, {
           sessionClientId: sessionClientIdRef.current,
         });
