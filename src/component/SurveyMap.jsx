@@ -165,7 +165,6 @@ const UNIFIED_MENU_DEFS = {
     { label: "GPS / Live Track",     icon: "Record",    action: "openTracker" },
     { label: "Get Directions",       icon: "Navigation", action: "openDirections" },
     { divider: true },
-    { label: "Elevation Profile",    icon: "Mountain",  action: "openElevation" },
     { label: "Compass Navigation",   icon: "Navigation",action: "openCompassNav" },
     { divider: true },
     { label: "Offline Map Manager",  icon: "Offline",   action: "openOffline" },
@@ -1160,7 +1159,6 @@ setTimeout(() => setTrackerOpen(true), 300);
     if (A === "openTracker")         { setTrackerOpen(true); return; }
     if (A === "openOffline")         { setOfflineOpen(true); return; }
     if (A === "toggleOfflineMode")   { setOfflineMode(p => !p); return; }
-    if (A === "openElevation")       { if (isMobile) setActiveSheet("elevation"); else setElevOpen(true); return; }
     if (A === "openCompassNav")      { compass.compassNavActive ? compass.stopCompassNav() : compass.startCompassNav(); return; }
     if (A === "about") { setShowAbout(true); return; }
     if (A === "options"){ setOptionsOpen(true); return;}
@@ -1490,7 +1488,6 @@ setTimeout(() => setTrackerOpen(true), 300);
           <button className={`tb-btn ${offlineMode ? "offline-active" : "inactive"}`} onClick={() => setOfflineMode(p => !p)}><span style={{ fontSize: 13 }}>{offlineMode ? "🗺" : "🌐"}</span><span>{offlineMode ? "Cached" : "Cache"}</span></button>
 
           <div style={{ width: 1, height: 22, background: "rgba(255,255,255,0.08)", margin: "0 3px", flexShrink: 0 }} />
-          <button className={`tb-btn ${elevOpen ? "active" : "inactive"}`} onClick={() => { setElevOpen(p => !p); if (!elevOpen && !elevMode) setElevMode("survey"); }}><Ico name="Mountain" size={14} /><span>Elevation</span></button>
           <button className={`tb-btn ${compass.compassNavActive ? "compass-active" : "inactive"}`} onClick={() => compass.compassNavActive ? compass.stopCompassNav() : compass.startCompassNav()} style={{ position: "relative", minWidth: 78 }}>
             <Ico name="Navigation" size={14} style={{ animation: compass.compassNavActive ? "spin 4s linear infinite" : "none" }} /><span>Compass</span>
             {compass.compassNavActive && <span style={{ position: "absolute", top: 4, right: 4, width: 6, height: 6, borderRadius: "50%", background: "#0ea5e9", animation: "blink 0.8s infinite" }} />}
@@ -1792,7 +1789,7 @@ setTimeout(() => setTrackerOpen(true), 300);
             </div>
           )}
 
-          {activeSheet === "elevation" && (
+          {false && activeSheet === "elevation" && (
             <MobileElevationSheet
               elevMode={elevMode} elevProfileData={elevProfileData} elevLoading={elevLoading}
               elevSourceLabel={elevSourceLabel} customElevPts={customElevPts}
@@ -1813,7 +1810,6 @@ setTimeout(() => setTrackerOpen(true), 300);
                 ...(kmlAnalyzerData ? [{ label:"📐 Area Measurements", sub:`${kmlAnalyzerData.fileName} · polygons + merge`, color:"#fbbf24", active:true, action:() => { setActiveSheet(null); setKmlAnalyzerOpen(true); } }] : []),
                 ...(kmlName ? [{ label:"🏔 DEM / Contour / Shapefile", sub:`${kmlName} · Global Mapper style`, color:"#fb7185", active:kmlProcessingOpen, action:() => { setActiveSheet(null); setKmlProcessingOpen(true); } }] : []),
                 { label:"DEM Elevation Layer",  sub:demFileName ? `${demFileName} · ${demRasterData?"draping active":"loading…"}` : "Import .tif / .asc / .dem", color:"#fb7185", active:!!demFileName, action:() => setActiveSheet("files") },
-                { label:"Elevation Profile",    sub:"Terrain elevation chart",   color:"#38bdf8", action:() => { handleElevModeRequest(elevMode||"survey"); setActiveSheet("elevation"); } },
                 { label:"Compass Navigation",   sub:compass.compassNavActive ? `Active · ${Math.round(((compass.compassHeading??0)%360+360)%360)}°` : "Map stays north-up", color:"#0ea5e9", active:compass.compassNavActive, action:() => { setActiveSheet(null); compass.compassNavActive ? compass.stopCompassNav() : compass.startCompassNav(); } },
                 { label:"Survey Route",         sub:surveyMode ? `${route.length} pts · recording` : "Tap points for route", color:"#3b82f6", active:surveyMode, action:() => { handleToggleSurvey(); setActiveSheet(null); } },
                 { label:"3D Globe View",        sub:"Interactive 3D earth", color:"#a78bfa", action:() => { setShow3D(true); setActiveSheet(null); } },
@@ -2039,7 +2035,6 @@ setTimeout(() => setTrackerOpen(true), 300);
                 <div style={{ color:"rgba(255,255,255,0.28)",fontSize:9.5,fontWeight:700,letterSpacing:"0.1em",marginBottom:8,textTransform:"uppercase",fontFamily:"'DM Mono',monospace" }}>More Tools</div>
                 <div style={{ display:"flex",flexDirection:"column",gap:5 }}>
                   <PrimaryButton onClick={() => setTrackerOpen(true)} variant="rose"><Ico name="Record" size={13} />{isTracking?"Open Recorder":"Live Track Recorder"}</PrimaryButton>
-                  <PrimaryButton onClick={() => { setElevOpen(true); handleElevModeRequest(elevMode||"survey"); }} variant="blue"><Ico name="Mountain" size={13} />Elevation Profile</PrimaryButton>
                   <PrimaryButton onClick={() => setOfflineOpen(true)} variant="blue"><Ico name="Offline" size={13} />Manage Offline Maps</PrimaryButton>
                   <PrimaryButton onClick={() => setOfflineMode(p => !p)} variant={offlineMode?"green":"blue"}><span style={{ fontSize:13 }}>{offlineMode?"🗺":"🌐"}</span>{offlineMode?"Go Live":"Use Cached Map"}</PrimaryButton>
                   {kmlName && (
@@ -2082,7 +2077,7 @@ setTimeout(() => setTrackerOpen(true), 300);
   syncTrack={syncTrack}
   sessionClientId={activeSessionClientId}
 />
-        {!isMobile && <ElevationProfile visible={elevOpen} onClose={() => setElevOpen(false)} profileData={elevProfileData} loading={elevLoading} isOnline={isOnline} sourceLabel={elevSourceLabel} leafletMap={mapRefForTracker} activeMode={elevMode} onRequestPoints={handleElevModeRequest} />}
+        {false && !isMobile && <ElevationProfile visible={elevOpen} onClose={() => setElevOpen(false)} profileData={elevProfileData} loading={elevLoading} isOnline={isOnline} sourceLabel={elevSourceLabel} leafletMap={mapRefForTracker} activeMode={elevMode} onRequestPoints={handleElevModeRequest} />}
         <OfflineMapManager visible={offlineOpen} onClose={() => setOfflineOpen(false)} leafletMap={mapRefForTracker} activeLayer={activeLayer} isOnline={isOnline} swReady={swReady} swError={swError} cacheStats={cacheStats} precaching={precaching} precacheProgress={precacheProgress} precacheCurrentView={precacheCurrentView} precacheRegion={precacheRegion} clearTileCache={clearTileCache} fetchCacheStats={fetchCacheStats} stopPrecache={stopPrecache} />
         <OfflineStatusBadge isOnline={isOnline} swReady={swReady} swError={swError} precaching={precaching} precacheProgress={precacheProgress} cacheStats={cacheStats} onClick={() => { setOfflineOpen(true); if (isMobile) setActiveSheet(null); }} />
 
@@ -2169,7 +2164,6 @@ setTimeout(() => setTrackerOpen(true), 300);
           <div style={{ display:"flex",alignItems:"center",gap:8,flexShrink:0 }}>
             <span style={{ color:"rgba(255,255,255,0.38)",fontSize:10,fontFamily:"'DM Mono',monospace" }}>Z{mapZoom}</span>
             {activeTool!=="select"&&<span style={{ color:"#1a73e8",fontSize:10,background:"rgba(26,115,232,0.1)",padding:"2px 8px",borderRadius:12,border:"1px solid rgba(26,115,232,0.22)",display:"flex",alignItems:"center",gap:3 }}>🛠 {activeTool}</span>}
-            {cursorElevation!=null&&<span onClick={() => setElevOpen(true)} style={{ color:"#38bdf8",fontSize:10,fontFamily:"'DM Mono',monospace",cursor:"pointer",background:"rgba(56,189,248,0.07)",padding:"2px 8px",borderRadius:10,border:"1px solid rgba(56,189,248,0.18)",display:"flex",alignItems:"center",gap:3 }}><Ico name="Mountain" size={10}/>{Math.round(cursorElevation)} m</span>}
             {demFileName&&demStats&&<span style={{ color:"#fb7185",fontSize:10,background:"rgba(251,113,133,0.09)",padding:"2px 8px",borderRadius:12,border:"1px solid rgba(251,113,133,0.22)",display:"flex",alignItems:"center",gap:3 }}>🏔 {Math.round(demStats.min)}–{Math.round(demStats.max)} m{demRasterData?" · draped":""}{kmlMask?" · clipped":""}</span>}
             {kmlAnalyzerData&&<span onClick={() => setKmlAnalyzerOpen(true)} style={{ color:"#fbbf24",fontSize:10,cursor:"pointer",background:"rgba(251,191,36,0.09)",padding:"2px 8px",borderRadius:12,border:"1px solid rgba(251,191,36,0.22)",display:"flex",alignItems:"center",gap:3 }}>📐 {kmlAnalyzerData.fileName?.slice(0,14)}</span>}
             {geoJSON.importedGeoJSONLayers.length>0&&<span style={{ color:"#2dd4bf",fontSize:10,background:"rgba(20,184,166,0.09)",padding:"2px 8px",borderRadius:12,border:"1px solid rgba(20,184,16,0.22)",display:"flex",alignItems:"center",gap:3 }}><Ico name="GeoJSON" size={10}/>{geoJSON.importedGeoJSONLayers.length} GeoJSON</span>}
