@@ -21,6 +21,13 @@
  *  • LiveTrackRecorder receives syncTrack + sessionClientId props
  *
  *  PRINT MAP PANEL — preserved
+ *
+ *  v7.2.2 FIX:
+ *  • "New Project" / "Reset All" now fully tears down the project: clears
+ *    KML, KMZ/CSV, GeoJSON file, Shapefile, DEM, drawings, measurements,
+ *    survey route, imported GeoJSON layers, overlay layers, KML analyzer /
+ *    processing panel state, directions, print panel, boundary/search info,
+ *    fly target, and all related file-visibility/UI state.
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
@@ -959,6 +966,72 @@ setTimeout(() => setTrackerOpen(true), 300);
     setFileVisibility(p => { const n = { ...p }; delete n.__shp__; return n; });
   };
 
+  /* ── NEW PROJECT / FULL RESET ────────────────────────────────────────────
+     Tears down every piece of project state: drawings, measurements, survey
+     route, all imported files (KML / KMZ / CSV / GeoJSON / Shapefile / DEM),
+     imported GeoJSON layers, overlay layers, KML analyzer & processing
+     panels, directions, print panel, search/boundary info, and fly target.
+  ──────────────────────────────────────────────────────────────────────── */
+  const handleNewProject = useCallback(() => {
+    if (!window.confirm("Reset everything? This will clear all drawings, imports, and measurements.")) return;
+
+    // Drawings / measure / survey
+    setSavedDrawings([]);
+    cancelDrawing();
+    clearMeasure();
+    setRoute([]);
+    if (surveyMode) {
+      if (polylineRef.current) { polylineRef.current.remove(); polylineRef.current = null; }
+      endSurveySession();
+    }
+    setSurveyMode(false);
+
+    // Imported files
+    removeKML();
+    removeExtra();
+    removeGeojson();
+    removeShapefile();
+    handleDEMRemoveWithClear();
+
+    // Imported GeoJSON layers + generic overlay layers
+    geoJSON.clearAllGeoJSONLayers();
+    overlayControls.removeAllLayers();
+
+    // KML analyzer / processing panels
+    setKmlAnalyzerOpen(false);
+    setKmlAnalyzerData(null);
+    setKmlProcessingOpen(false);
+    setKmlBounds(null);
+
+    // Directions / print
+    clearRoute();
+    setDirectionsOpen(false);
+    setPrintOpen(false);
+    setActiveRouteIdx(0);
+
+    // Search / boundary / fly-to
+    setLocationInfo(null);
+    setBoundaryGeojson(null);
+    setFlyTarget(null);
+    setSearchQuery("");
+
+    // Selection / editing UI
+    setClickedDrawing(null);
+    setPropertiesDrawing(null);
+    setPropertiesGeoJSONFeature(null);
+    setContextMenu({ visible: false, x: 0, y: 0, feature: null });
+    setShowNameModal(false);
+
+    // Tools
+    setActiveTool("select");
+    setDrawMode(false);
+    setMeasureMode(false);
+    setFileVisibility({});
+  }, [
+    surveyMode, endSurveySession, geoJSON, overlayControls,
+    handleDEMRemoveWithClear, clearRoute,
+  ]);
+
   /* ── Draw handlers ─────────────────────────────────────────────────────── */
   const handleToggleSurvey = () => {
   if (surveyMode) {
@@ -1138,7 +1211,7 @@ setTimeout(() => setTrackerOpen(true), 300);
     if (A === "exportCSV")           { exportCSV(savedDrawings, route, measurePoints); return; }
     if (A === "exportKMZ")           { exportKMZ(savedDrawings, route, measurePoints); return; }
     if (A === "exportSHP")           { exportShapefile(savedDrawings, route, measurePoints); return; }
-    if (A === "resetAll")            { if (!window.confirm("Reset everything?")) return; setSavedDrawings([]); cancelDrawing(); clearMeasure(); setRoute([]); setSurveyMode(false); geoJSON.clearAllGeoJSONLayers(); handleDEMRemoveWithClear(); return; }
+    if (A === "resetAll")            { handleNewProject(); return; }
     if (A === "startDraw") { setDrawMode(true); setDrawPoints([]); setActiveSheet(null); return; }
     if (A === "cancelDraw")          { cancelDrawing(); return; }
     if (A === "startMeasure") { setMeasureMode(true); setActiveTool("ruler"); return; }
