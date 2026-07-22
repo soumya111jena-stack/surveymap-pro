@@ -28,9 +28,8 @@ function Loader() {
 }
 
 function Protected({ children }) {
-  const token = localStorage.getItem("accessToken");
-  const role  = localStorage.getItem("role");
-  if (!token || role !== "ADMIN") return <Navigate to="/login" replace />;
+  const role = localStorage.getItem("role");
+  if (role !== "ADMIN") return <Navigate to="/login" replace />;
   return children;
 }
 

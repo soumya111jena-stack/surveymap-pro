@@ -7,7 +7,6 @@ const CLOUDINARY_UPLOAD_PRESET = "geoxis_tracks"; // unsigned preset
 
 const authHeaders = () => ({
   "Content-Type": "application/json",
-  Authorization: `Bearer ${localStorage.getItem("accessToken") || ""}`,
 });
 
 const throwIfNotOk = async (res) => {
@@ -92,7 +91,7 @@ async function uploadToCloudinaryDirect(blob, filename) {
 }
 
 // ── AUTH ──────────────────────────────────────────────────────────────────
-export const isLoggedIn = () => !!localStorage.getItem("accessToken");
+export const isLoggedIn = () => !!localStorage.getItem("role");
 export const getLoggedInUser = () => ({
   username: localStorage.getItem("username") || null,
   email:    localStorage.getItem("email")    || null,
@@ -104,19 +103,24 @@ export const createSession = async ({ name = "Field Survey", description = "" } 
   const clientId = `client_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const res = await fetch(`${BASE}/api/sessions`, {
     method: "POST", headers: authHeaders(),
+    credentials: "include",
     body: JSON.stringify({ clientId, name, description }),
   });
   return throwIfNotOk(res);
 };
 
 export const getSessions = async () => {
-  const res = await fetch(`${BASE}/api/sessions`, { headers: authHeaders() });
+  const res = await fetch(`${BASE}/api/sessions`, {
+    headers: authHeaders(),
+    credentials: "include",
+  });
   return throwIfNotOk(res);
 };
 
 export const completeSession = async (sessionId) => {
   const res = await fetch(`${BASE}/api/sessions/${sessionId}/complete`, {
     method: "PATCH", headers: authHeaders(),
+    credentials: "include",
   });
   return throwIfNotOk(res);
 };
@@ -265,6 +269,7 @@ export const saveTrack = async (
   const res = await fetch(`${BASE}/api/tracks`, {
     method:  "POST",
     headers: authHeaders(), // Content-Type: application/json
+    credentials: "include",
     body:    JSON.stringify(payload),
   });
   return throwIfNotOk(res);
@@ -273,6 +278,7 @@ export const saveTrack = async (
 export const getTracksForSession = async (sessionClientId) => {
   const res = await fetch(`${BASE}/api/tracks/session/${sessionClientId}`, {
     headers: authHeaders(),
+    credentials: "include",
   });
   return throwIfNotOk(res);
 };
@@ -280,6 +286,7 @@ export const getTracksForSession = async (sessionClientId) => {
 export const bulkSync = async (payload) => {
   const res = await fetch(`${BASE}/api/sync`, {
     method: "POST", headers: authHeaders(),
+    credentials: "include",
     body: JSON.stringify(payload),
   });
   return throwIfNotOk(res);

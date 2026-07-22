@@ -307,9 +307,8 @@ export default function LoginPage() {
 
   // ── FIXED: redirect already-logged-in users based on role ────────────────
   useEffect(() => {
-    const token = localStorage.getItem("accessToken");
-    if (token) {
-      const role = localStorage.getItem("role");
+    const role = localStorage.getItem("role");
+    if (role) {
       navigate(role === "ADMIN" ? "/admin" : "/", { replace: true });
     }
   }, [navigate]);
@@ -324,10 +323,9 @@ export default function LoginPage() {
     setLoading(true);
     try {
       const data = await login(email.trim().toLowerCase(), password);
-      localStorage.setItem("accessToken", data.accessToken);
-      localStorage.setItem("role",        data.role);
-      localStorage.setItem("username",    data.username || "");
-      localStorage.setItem("email",       data.email || email);
+      localStorage.setItem("role",     data.role);
+      localStorage.setItem("username", data.username || "");
+      localStorage.setItem("email",    data.email || email);
 
       // ── FIXED: redirect based on role ─────────────────────────────────
       if (data.role === "ADMIN") {

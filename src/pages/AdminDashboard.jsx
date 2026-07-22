@@ -4,15 +4,15 @@ import { MapContainer, TileLayer, Polyline, Marker, Popup, useMap } from "react-
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { BASE_URL } from "../services/apiConfig";
+import { logoutUser } from "../services/adminApi";
 
 const BASE = BASE_URL;
 const hdrs = () => ({
   "Content-Type": "application/json",
-  Authorization: `Bearer ${localStorage.getItem("accessToken") || ""}`,
 });
 
 const api = async (path, opts = {}) => {
-  const r = await fetch(`${BASE}${path}`, { headers: hdrs(), ...opts });
+  const r = await fetch(`${BASE}${path}`, { headers: hdrs(), credentials: "include", ...opts });
   if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.message || `HTTP ${r.status}`); }
   return r.json();
 };
@@ -996,7 +996,11 @@ export default function AdminDashboard() {
   const [tab, setTab] = useState("tracks");
   const [toast, setToast] = useState(null);
   const showToast = (msg, type="success") => { setToast({msg,type}); setTimeout(()=>setToast(null),3500); };
-  const logout = () => { localStorage.clear(); navigate("/login",{replace:true}); };
+  const logout = async () => {
+    try { await logoutUser(); } catch (_) {}
+    localStorage.clear();
+    navigate("/login", { replace: true });
+  };
   const navItems = [
     {key:"tracks",label:"Tracks",icon:<Icons.Map/>},
     {key:"analytics",label:"Analytics",icon:<Icons.Chart/>},
