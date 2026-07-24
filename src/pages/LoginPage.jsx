@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { login } from "../services/adminApi";
+import { login, getMe } from "../services/adminApi";
 
 // ── CSS Variables & Global Styles ─────────────────────────────────────────────
 const GlobalStyles = () => (
@@ -290,6 +290,7 @@ export default function LoginPage() {
   const [coords, setCoords] = useState("Fetching location...");
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
   const [showPassword, setShowPassword] = useState(false);
+  const [checkingSession, setCheckingSession] = useState(true);
 
   const intent = sessionStorage.getItem("loginIntent") || "";
 
@@ -305,12 +306,17 @@ export default function LoginPage() {
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  // ── FIXED: redirect already-logged-in users based on role ────────────────
+  // ── Ask the server (via the httpOnly cookie) if we're already logged in ──
   useEffect(() => {
-    const role = localStorage.getItem("role");
-    if (role) {
-      navigate(role === "ADMIN" ? "/admin" : "/", { replace: true });
-    }
+    getMe()
+      .then((user) => {
+        if (user?.role) {
+          navigate(user.role === "ADMIN" ? "/admin" : "/", { replace: true });
+        } else {
+          setCheckingSession(false);
+        }
+      })
+      .catch(() => setCheckingSession(false));
   }, [navigate]);
 
   const handleLogin = async (e) => {
@@ -323,11 +329,6 @@ export default function LoginPage() {
     setLoading(true);
     try {
       const data = await login(email.trim().toLowerCase(), password);
-      localStorage.setItem("role",     data.role);
-      localStorage.setItem("username", data.username || "");
-      localStorage.setItem("email",    data.email || email);
-
-      // ── FIXED: redirect based on role ─────────────────────────────────
       if (data.role === "ADMIN") {
         navigate("/admin", { replace: true });
       } else {
@@ -345,6 +346,8 @@ export default function LoginPage() {
     e.stopPropagation();
     setShowPassword(!showPassword);
   };
+
+  if (checkingSession) return null;
 
   // ── MOBILE VIEW ───────────────────────────────────────────────────────────
   if (isMobile) {

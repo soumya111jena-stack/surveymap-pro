@@ -996,11 +996,10 @@ export default function AdminDashboard() {
   const [tab, setTab] = useState("tracks");
   const [toast, setToast] = useState(null);
   const showToast = (msg, type="success") => { setToast({msg,type}); setTimeout(()=>setToast(null),3500); };
-  const logout = async () => {
-    try { await logoutUser(); } catch (_) {}
-    localStorage.clear();
-    navigate("/login", { replace: true });
-  };
+const logout = async () => {
+  try { await logoutUser(); } catch (_) {}
+  navigate("/login", { replace: true });
+};
   const navItems = [
     {key:"tracks",label:"Tracks",icon:<Icons.Map/>},
     {key:"analytics",label:"Analytics",icon:<Icons.Chart/>},

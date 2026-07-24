@@ -1,5 +1,6 @@
-import React, { Suspense, lazy } from "react";
+import React, { Suspense, lazy, useState, useEffect } from "react";
 import { HashRouter, Routes, Route, Navigate } from "react-router-dom";
+import { getMe } from "./services/adminApi";
 
 import SurveyMap from "./component/SurveyMap";
 
@@ -28,8 +29,16 @@ function Loader() {
 }
 
 function Protected({ children }) {
-  const role = localStorage.getItem("role");
-  if (role !== "ADMIN") return <Navigate to="/login" replace />;
+  const [status, setStatus] = useState("checking"); // "checking" | "allowed" | "denied"
+
+  useEffect(() => {
+    getMe()
+      .then((user) => setStatus(user?.role === "ADMIN" ? "allowed" : "denied"))
+      .catch(() => setStatus("denied"));
+  }, []);
+
+  if (status === "checking") return <Loader />;
+  if (status === "denied") return <Navigate to="/login" replace />;
   return children;
 }
 
