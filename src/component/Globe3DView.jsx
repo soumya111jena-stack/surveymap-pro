@@ -648,7 +648,7 @@ function computeCurrentBbox() {
         const Cesium=await import("cesium");
         await import("cesium/Build/Cesium/Widgets/widgets.css");
         CesiumRef.current=Cesium;
-        Cesium.Ion.defaultAccessToken="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiI1MzBjMzg2Zi05YWQ0LTQxZDUtYTlkOC1iNzIyYzA5Mzk1MWIiLCJpZCI6Mzk4NDk3LCJpYXQiOjE3NzU4MTE3MTF9.lczkYVARN6Yv0yCgFsp-4jb2VCxwyTo-OjDkoGOHrHQ";
+        Cesium.Ion.defaultAccessToken="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiI2YWRmZjNhNC01MWM5LTRjZjYtYjQ2Ny02MjA5NWUxMGEzOTAiLCJpZCI6Mzk0NzE5LCJzdWIiOiJtdW5hMjIiLCJpc3MiOiJodHRwczovL2FwaS5jZXNpdW0uY29tIiwiYXVkIjoidXBkYXRlICIsImlhdCI6MTc4NTQ4MTY1MX0.H_qAC5sGs_d7MwgMJwzkv08Gd36dIpbYCu2nc8hoDrc";
         viewer=new Cesium.Viewer(containerRef.current,{
           terrainProvider:await Cesium.createWorldTerrainAsync({requestWaterMask:false,requestVertexNormals:true}),
           timeline:false,animation:false,baseLayerPicker:false,geocoder:false,
