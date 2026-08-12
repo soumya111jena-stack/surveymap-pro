@@ -307,11 +307,16 @@ export default function LoginPage() {
   }, []);
 
   // ── Ask the server (via the httpOnly cookie) if we're already logged in ──
+ // ── Ask the server (via the httpOnly cookie) if we're already logged in ──
+  // Only auto-redirect away from the login form if the existing session is
+  // genuinely ADMIN. A stale non-admin session (e.g. left over from testing
+  // a field-user account on this device) must NOT bounce the admin away
+  // before they can type their own credentials.
   useEffect(() => {
     getMe()
       .then((user) => {
-        if (user?.role) {
-          navigate(user.role === "ADMIN" ? "/admin" : "/", { replace: true });
+        if (user?.role === "ADMIN") {
+          navigate("/admin", { replace: true });
         } else {
           setCheckingSession(false);
         }

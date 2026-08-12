@@ -6,6 +6,23 @@ const headers = () => ({
   "Content-Type": "application/json",
 });
 
+const persistSession = (data) => {
+  if (!data) return;
+  if (data.accessToken) localStorage.setItem("accessToken", data.accessToken);
+  if (data.refreshToken) localStorage.setItem("refreshToken", data.refreshToken);
+  if (data.role)     localStorage.setItem("role", data.role);
+  if (data.username) localStorage.setItem("username", data.username);
+  if (data.email)    localStorage.setItem("email", data.email);
+};
+
+const clearSession = () => {
+  localStorage.removeItem("accessToken");
+  localStorage.removeItem("refreshToken");
+  localStorage.removeItem("role");
+  localStorage.removeItem("username");
+  localStorage.removeItem("email");
+};
+
 // ── AUTH ──────────────────────────────────────────────────────────────────
 export const login = async (email, password) => {
   const res = await fetch(`${BASE}/api/auth/login`, {
@@ -16,15 +33,18 @@ export const login = async (email, password) => {
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.message || "Login failed");
+  persistSession(data);
   return data;
 };
 
-export const logoutUser = () =>
-  fetch(`${BASE}/api/auth/logout`, {
+export const logoutUser = async () => {
+  clearSession();
+  return fetch(`${BASE}/api/auth/logout`, {
     method: "POST",
     credentials: "include",
     headers: headers(),
   }).then(r => r.json());
+};
 
 export const getMe = () =>
   fetch(`${BASE}/api/auth/me`, {
