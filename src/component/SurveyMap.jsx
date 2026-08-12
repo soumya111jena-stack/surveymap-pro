@@ -1486,7 +1486,7 @@ setTimeout(() => setTrackerOpen(true), 300);
               </div>
             ) : (
               <button
-                  onClick={() => { alert("clicked!"); navigate("/login"); }}
+                 onClick={() => navigate("/login")}
                 style={{ display:"flex", alignItems:"center", gap:6, padding:"4px 12px", borderRadius:6, border:"1px solid rgba(74,158,255,0.3)", background:"rgba(74,158,255,0.12)", color:"#80c4ff", cursor:"pointer", fontSize:11, fontWeight:600, marginRight:10 }}
               >
                 <Ico name="User" size={12} /> Sign In
