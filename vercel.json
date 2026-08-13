@@ -5,7 +5,7 @@
       "headers": [
         {
           "key": "Content-Security-Policy",
-          "value": "default-src 'self'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https:; connect-src 'self' https://geoxis-backend.onrender.com https://nominatim.openstreetmap.org https://api.cloudinary.com https://*.tile.openstreetmap.org https://router.project-osrm.org https://en.wikipedia.org https://corsproxy.io https://api.allorigins.win https://api.cesium.com https://assets.cesium.com https://*.cesium.com blob:;"
+          "value": "default-src 'self'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https:; connect-src 'self' https://geoxis-backend.onrender.com https://nominatim.openstreetmap.org https://api.cloudinary.com https://*.tile.openstreetmap.org https://router.project-osrm.org https://en.wikipedia.org https://corsproxy.io https://api.allorigins.win https://api.cesium.com https://assets.cesium.com https://*.cesium.com https://api.open-elevation.com https://api.open-meteo.com blob:;"
         },
         {
           "key": "X-Frame-Options",
