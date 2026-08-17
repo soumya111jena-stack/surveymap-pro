@@ -101,7 +101,12 @@ async function downloadPhoto(url, filename) {
 async function exportPhotosCSV(track) {
   const photos    = getTrackPhotos(track).map(p => ({ ...p, kind: "photo" }));
   const waypoints = getTrackWaypoints(track).map(w => ({ ...w, kind: "waypoint" }));
-  const rows = [...photos, ...waypoints];
+
+  // A waypoint with a photo is already represented in `photos` — drop the duplicate waypoint row
+  const photoIds = new Set(photos.map(p => p.id).filter(Boolean));
+  const dedupedWaypoints = waypoints.filter(w => !(w.hasPhoto && photoIds.has(w.id)));
+
+  const rows = [...photos, ...dedupedWaypoints];
 
   if (!rows.length) { alert("No photos or waypoints in this track."); return; }
 
@@ -117,7 +122,7 @@ async function exportPhotosCSV(track) {
     const time  = p.time ? new Date(p.time).toLocaleString("en-IN") : "";
     const lat   = p.lat  != null ? Number(p.lat).toFixed(6) : "";
     const lng   = p.lng  != null ? Number(p.lng).toFixed(6) : "";
-    const url   = p.url  || "";
+    const url   = p.url || p.photoUrl || "";
     return `${i+1},${p.kind},${name},${note},${lat},${lng},${place},${time},${url}`;
   }).join("\n");
 
@@ -289,7 +294,8 @@ function getTrackPhotos(track) {
     if (Array.isArray(m)) {
       const photoEntries = m.filter(w => w.photo && w.url);
       if (photoEntries.length > 0) {
-        return photoEntries.map(w => ({
+        return photoEntries.map((w, i) => ({
+          id: w.id ?? `${w.lat}_${w.lng}_${w.time || i}`,
           url: w.url, name: w.name || "Photo", note: w.note || null,
           lat: w.lat ?? null, lng: w.lng ?? null, time: w.time || null,
         }));
@@ -303,7 +309,7 @@ function getTrackPhotos(track) {
   return [];
 }
 
-// ── Plain (non-photo) waypoints — pins with just name/note/lat/lng ───────────
+// ── All pinned waypoints — includes plain pins AND ones with a photo attached ─
 function getTrackWaypoints(track) {
   const meta = track.waypointsMeta;
   if (!meta) return [];
@@ -312,13 +318,16 @@ function getTrackWaypoints(track) {
     : meta;
   if (!Array.isArray(m)) return [];
   return m
-    .filter(w => !w.photo && w.lat != null && w.lng != null)
-    .map(w => ({
+    .filter(w => w.lat != null && w.lng != null)
+    .map((w, i) => ({
+      id: w.id ?? `${w.lat}_${w.lng}_${w.time || i}`,
       name: w.name || "Waypoint",
       note: w.note || null,
       lat: Number(w.lat),
       lng: Number(w.lng),
       time: w.time || null,
+      hasPhoto: !!w.photo,
+      photoUrl: w.photo ? w.url : null,
     }));
 }
 
@@ -473,7 +482,7 @@ function PhotoCard({ photo, index, onLightbox, onDownload }) {
 }
 
 // ── Waypoint Card ──────────────────────────────────────────────────────────────
-function WaypointCard({ wp }) {
+function WaypointCard({ wp, onLightbox }) {
   const [placeName, setPlaceName] = useState(null);
   const [placeLoading, setPlaceLoading] = useState(false);
 
@@ -492,10 +501,20 @@ function WaypointCard({ wp }) {
       className="chip"
       style={{ justifyContent: "space-between", alignItems: "flex-start", padding: "8px 12px", flexWrap: "wrap", gap: 6 }}
     >
-      <div style={{ minWidth: 0 }}>
+      <div style={{ minWidth: 0, display: "flex", gap: 8 }}>
+        {wp.hasPhoto && wp.photoUrl && (
+          <img
+            src={absUrl(wp.photoUrl)}
+            alt=""
+            onClick={() => onLightbox && onLightbox()}
+            style={{ width: 32, height: 32, borderRadius: 6, objectFit: "cover", cursor: onLightbox ? "pointer" : "default", flexShrink: 0, border: "1px solid var(--border)" }}
+          />
+        )}
+        <div style={{ minWidth: 0 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span className="chip-dot" style={{ background: "#f59e0b" }} />
+          <span className="chip-dot" style={{ background: wp.hasPhoto ? "#06b6d4" : "#f59e0b" }} />
           <strong style={{ color: "var(--text-primary)", fontSize: 12.5 }}>{wp.name}</strong>
+          {wp.hasPhoto && <span style={{ fontSize: 10 }}>📷</span>}
         </div>
         {wp.note && (
           <div style={{ fontSize: 11.5, color: "var(--text-muted)", marginTop: 3, fontStyle: "italic" }}>
@@ -508,6 +527,7 @@ function WaypointCard({ wp }) {
           ) : placeName ? (
             <span className="place-tag">📍 {placeName}</span>
           ) : null}
+        </div>
         </div>
       </div>
       <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 3, flexShrink: 0 }}>
@@ -544,9 +564,10 @@ function PhotoCell({ track, onOpen }) {
 function WaypointsCell({ track }) {
   const waypoints = getTrackWaypoints(track);
   if (waypoints.length === 0) return <span style={{ color: "var(--text-muted)", fontSize: 11 }}>—</span>;
+  const withPhoto = waypoints.filter(w => w.hasPhoto).length;
   return (
     <span className="badge badge-yellow" title={waypoints.map(w => w.name).join(", ")}>
-      📌 {waypoints.length}
+      📌 {waypoints.length}{withPhoto > 0 ? ` (📷${withPhoto})` : ""}
     </span>
   );
 }
@@ -884,8 +905,15 @@ function TracksTab({ showToast }) {
               {startPt&&<Marker position={startPt} icon={mkIcon("#10b981")}><Popup><strong>Start</strong><br/>{fmtDate(selected.startedAt)}</Popup></Marker>}
               {endPt&&startPt!==endPt&&<Marker position={endPt} icon={mkIcon("#ef4444")}><Popup><strong>End</strong><br/>{fmtDate(selected.endedAt)}</Popup></Marker>}
               {selectedWaypoints.map((w,i)=>(
-                <Marker key={`wp-${i}`} position={[w.lat,w.lng]} icon={mkIcon("#f59e0b")}>
-                  <Popup><strong>{w.name}</strong>{w.note&&<><br/>{w.note}</>}</Popup>
+                <Marker key={`wp-${i}`} position={[w.lat,w.lng]} icon={mkIcon(w.hasPhoto ? "#06b6d4" : "#f59e0b")}>
+                  <Popup>
+                    <strong>{w.name}</strong>{w.note&&<><br/>{w.note}</>}
+                    {w.hasPhoto && w.photoUrl && (
+                      <div style={{ marginTop: 6 }}>
+                        <img src={absUrl(w.photoUrl)} alt="" style={{ width: 120, borderRadius: 4 }} />
+                      </div>
+                    )}
+                  </Popup>
                 </Marker>
               ))}
               <FitBounds coords={selected.coordinates}/>
@@ -931,7 +959,11 @@ function TracksTab({ showToast }) {
                 </div>
                 <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
                   {selectedWaypoints.map((w,i)=>(
-                    <WaypointCard key={i} wp={w}/>
+                    <WaypointCard
+                      key={i}
+                      wp={w}
+                      onLightbox={w.hasPhoto ? () => setLightbox({ photos: [{ url: w.photoUrl, name: w.name, note: w.note }], index: 0 }) : undefined}
+                    />
                   ))}
                 </div>
               </div>
