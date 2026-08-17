@@ -8,16 +8,12 @@ const headers = () => ({
 
 const persistSession = (data) => {
   if (!data) return;
-  if (data.accessToken) localStorage.setItem("accessToken", data.accessToken);
-  if (data.refreshToken) localStorage.setItem("refreshToken", data.refreshToken);
   if (data.role)     localStorage.setItem("role", data.role);
   if (data.username) localStorage.setItem("username", data.username);
   if (data.email)    localStorage.setItem("email", data.email);
 };
 
 const clearSession = () => {
-  localStorage.removeItem("accessToken");
-  localStorage.removeItem("refreshToken");
   localStorage.removeItem("role");
   localStorage.removeItem("username");
   localStorage.removeItem("email");
