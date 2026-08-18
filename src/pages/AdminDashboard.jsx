@@ -261,6 +261,30 @@ function Toast({ toast }) {
   );
 }
 
+// ── Error Boundary — prevents one bad track/waypoint from blanking the whole tab ──
+class ErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(error) { return { error }; }
+  componentDidCatch(error, info) { console.error("[AdminDashboard] render error:", error, info); }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="card" style={{ padding: 24, margin: 24 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, color: "#ef4444", fontWeight: 700, marginBottom: 8 }}>
+            <Icons.Warning/> Something went wrong rendering this section
+          </div>
+          <div style={{ fontSize: 12, color: "var(--text-muted)", fontFamily: "var(--mono)", marginBottom: 14, wordBreak: "break-word" }}>
+            {String(this.state.error?.message || this.state.error)}
+          </div>
+          <button className="btn btn-ghost" onClick={() => this.setState({ error: null })}>Try again</button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+
 function FitBounds({ coords }) {
   const map = useMap();
   useEffect(() => {
@@ -280,47 +304,83 @@ function absUrl(url, base) {
   return `${((base || BASE) + "").replace(/\/$/, "")}${url}`;
 }
 
+// ── Robust waypointsMeta helpers ───────────────────────────────────────────────
+// Backends sometimes send photo:"false" (string) instead of photo:false (boolean),
+// or lat/lng under different keys, or waypointsMeta double-JSON-encoded.
+// These helpers normalise all of that so counting/filtering never silently breaks.
+
+function isTruthyFlag(v) {
+  return v === true || v === "true" || v === 1 || v === "1";
+}
+
+function pickNum(w, keys) {
+  for (const k of keys) {
+    if (w[k] != null && w[k] !== "") {
+      const n = Number(w[k]);
+      if (isFinite(n)) return n;
+    }
+  }
+  return null;
+}
+
+function parseWaypointsMeta(meta) {
+  if (!meta) return [];
+  let m = meta;
+  // Handle double-encoded JSON strings (string that itself is a JSON string)
+  for (let i = 0; i < 2 && typeof m === "string"; i++) {
+    try { m = JSON.parse(m); } catch { return []; }
+  }
+  if (!Array.isArray(m)) return [];
+  return m.filter(w => w && typeof w === "object");
+}
+
+function normalizeEntry(w) {
+  const isPhoto = isTruthyFlag(w.photo) || !!(w.url || w.photoUrl);
+  return {
+    raw: w,
+    isPhoto,
+    name: w.name || w.title || (isPhoto ? "Photo" : "Waypoint"),
+    note: w.note || w.description || null,
+    lat: pickNum(w, ["lat", "latitude", "y"]),
+    lng: pickNum(w, ["lng", "lon", "longitude", "x"]),
+    time: w.time || w.timestamp || w.createdAt || null,
+    url: w.url || w.photoUrl || null,
+  };
+}
+
+// ── Photos — entries flagged as photo (or carrying a url) ─────────────────────
 function getTrackPhotos(track) {
   if (track.photos?.length > 0) return track.photos;
+
+  const entries = parseWaypointsMeta(track.waypointsMeta).map(normalizeEntry);
+  const photoEntries = entries.filter(e => e.isPhoto && e.url);
+  if (photoEntries.length > 0) {
+    return photoEntries.map(e => ({
+      url: e.url, name: e.name, note: e.note, lat: e.lat, lng: e.lng, time: e.time,
+    }));
+  }
+
   const meta = track.waypointsMeta;
   if (meta) {
-    const m = typeof meta === "string"
-      ? (() => { try { return JSON.parse(meta); } catch { return null; } })()
-      : meta;
-    if (Array.isArray(m)) {
-      const photoEntries = m.filter(w => w.photo && w.url);
-      if (photoEntries.length > 0) {
-        return photoEntries.map(w => ({
-          url: w.url, name: w.name || "Photo", note: w.note || null,
-          lat: w.lat ?? null, lng: w.lng ?? null, time: w.time || null,
-        }));
-      }
+    let m = meta;
+    for (let i = 0; i < 2 && typeof m === "string"; i++) {
+      try { m = JSON.parse(m); } catch { m = null; break; }
     }
     if (m?.photoUrls?.length > 0) return m.photoUrls;
   }
+
   if (track.photoUrl) {
     return [{ url: track.photoUrl, name: track.photoName || "Photo", note: track.photoDescription || null, lat: null, lng: null, time: null }];
   }
   return [];
 }
 
-// ── Plain (non-photo) waypoints — pins with just name/note/lat/lng ───────────
+// ── Plain waypoints — entries NOT flagged as photo, with valid coordinates ────
 function getTrackWaypoints(track) {
-  const meta = track.waypointsMeta;
-  if (!meta) return [];
-  const m = typeof meta === "string"
-    ? (() => { try { return JSON.parse(meta); } catch { return null; } })()
-    : meta;
-  if (!Array.isArray(m)) return [];
-  return m
-    .filter(w => !w.photo && w.lat != null && w.lng != null)
-    .map(w => ({
-      name: w.name || "Waypoint",
-      note: w.note || null,
-      lat: Number(w.lat),
-      lng: Number(w.lng),
-      time: w.time || null,
-    }));
+  const entries = parseWaypointsMeta(track.waypointsMeta).map(normalizeEntry);
+  return entries
+    .filter(e => !e.isPhoto && e.lat != null && e.lng != null)
+    .map(e => ({ name: e.name, note: e.note, lat: e.lat, lng: e.lng, time: e.time }));
 }
 
 function downloadCSV(track) {
@@ -543,13 +603,13 @@ function PhotoCell({ track, onOpen }) {
 
 // ── Waypoints Cell (table) ────────────────────────────────────────────────────
 function WaypointsCell({ track }) {
-  const meta = track.waypointsMeta;
-  const m = typeof meta === "string"
-    ? (() => { try { return JSON.parse(meta); } catch { return null; } })()
-    : meta;
-  const total = Array.isArray(m) ? m.filter(w => w.lat != null && w.lng != null).length : 0;
-  if (total === 0) return <span style={{ color: "var(--text-muted)", fontSize: 11 }}>—</span>;
-  return <span className="badge badge-yellow" title={`${total} point(s)`}>📌 {total}</span>;
+  const waypoints = getTrackWaypoints(track);
+  if (waypoints.length === 0) return <span style={{ color: "var(--text-muted)", fontSize: 11 }}>—</span>;
+  return (
+    <span className="badge badge-yellow" title={waypoints.map(w => w.name).join(", ")}>
+      📌 {waypoints.length}
+    </span>
+  );
 }
 
 // ── Analytics Tab ─────────────────────────────────────────────────────────────
@@ -826,7 +886,17 @@ function TracksTab({ showToast }) {
   const load=useCallback(async(p=0)=>{setLoading(true);try{const d=await api(`/api/admin/tracks?page=${p}&size=20`);setTracks(d.tracks||[]);setTotal(d.total||0);setPage(p);}catch(e){console.error(e);}finally{setLoading(false);};},[]);
   useEffect(()=>{load(0);},[load]);
 
-  const viewTrack=async(id)=>{setLoadingTrack(true);try{const t=await api(`/api/admin/tracks/${id}`);setSelected(t);setMapKey(k=>k+1);}catch(e){console.error(e);}finally{setLoadingTrack(false);};};
+  const viewTrack=async(id)=>{
+    setLoadingTrack(true);
+    try{
+      const t=await api(`/api/admin/tracks/${id}`);
+      setSelected(t);
+      setMapKey(k=>k+1);
+      // Sync the full detail back into the table row so Photos/Waypoints badges
+      // match what's actually shown below — list and detail endpoints can disagree.
+      setTracks(prev => prev.map(row => row.id === id ? { ...row, ...t } : row));
+    }catch(e){console.error(e);}finally{setLoadingTrack(false);};
+  };
 
   const handleExportPhotos=async()=>{
     if(!selected)return;
@@ -1026,10 +1096,12 @@ export default function AdminDashboard() {
         </div>
       </nav>
       <main style={{ padding:"28px 28px", maxWidth:1480, margin:"0 auto" }}>
-        {tab==="tracks"    && <TracksTab showToast={showToast}/>}
-        {tab==="analytics" && <AnalyticsTab/>}
-        {tab==="users"     && <UsersTab showToast={showToast}/>}
-        {tab==="sessions"  && <SessionsTab/>}
+        <ErrorBoundary>
+          {tab==="tracks"    && <TracksTab showToast={showToast}/>}
+          {tab==="analytics" && <AnalyticsTab/>}
+          {tab==="users"     && <UsersTab showToast={showToast}/>}
+          {tab==="sessions"  && <SessionsTab/>}
+        </ErrorBoundary>
       </main>
     </div>
   );
