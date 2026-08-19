@@ -121,6 +121,11 @@ export function useSurveySession({ enqueue, isOnline }) {
       const endedAt        = isArray ? null          : (trackOrPoints.endedAt        || null);
       const distanceMeters = isArray ? 0             : (trackOrPoints.distanceMeters || 0);
       const photos         = isArray ? []            : (trackOrPoints.photos         || []);
+      // ── FIX: plain (non-photo) waypoints were being dropped here.
+      // LiveTrackRecorder builds syncPayload.waypoints, but this function
+      // never read it, so saveTrack() always received an empty array and
+      // waypoints never reached the backend / admin panel.
+      const waypoints       = isArray ? []            : (trackOrPoints.waypoints       || []);
       const photoDataURL   = isArray ? null          : (trackOrPoints.photoDataURL   || null);
       const photoFilename  = isArray ? "photo.jpg"   : (trackOrPoints.photoFilename  || "photo.jpg");
       const photoName      = isArray ? null          : (trackOrPoints.photoName      || null);
@@ -129,6 +134,7 @@ export function useSurveySession({ enqueue, isOnline }) {
       console.log("[syncTrack] points:", points?.length,
         "| name:", name,
         "| photos:", photos.length,
+        "| waypoints:", waypoints.length,
         "| photoName:", photoName,
         "| photoNote:", photoNote);
 
@@ -165,6 +171,7 @@ export function useSurveySession({ enqueue, isOnline }) {
           endedAt,
           distanceMeters,
           photos,
+          waypoints,
           photoDataURL,
           photoFilename,
           photoName,
@@ -178,6 +185,7 @@ export function useSurveySession({ enqueue, isOnline }) {
           await enqueue("track", {
             sessionClientId, points, name,
             startedAt, endedAt, distanceMeters,
+            photos, waypoints,
           });
           setSyncStatus("queued");
         } catch (qErr) {
